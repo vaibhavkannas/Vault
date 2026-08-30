@@ -7,7 +7,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon.svg">
-<meta name="theme-color" content="#12241f">
+<meta name="theme-color" content="#1a73e8">
 <script>
   // Applied before first paint so there's no flash of the wrong theme on load.
   try{
@@ -47,14 +47,21 @@
   }
   *{box-sizing:border-box;}
   body{margin:0;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;}
+  /* Baseline tap feedback for every button so nothing feels inert — more specific :active rules
+     elsewhere (e.g. button.primary's scale(0.98)) simply override this by CSS specificity. */
+  button, .doc-icon, .icon-pick-btn, .cat-toggle{transition:transform 0.1s ease;}
+  button:active, .doc-icon:active, .icon-pick-btn:active, .cat-toggle:active{transform:scale(0.94);}
+  @media (prefers-reduced-motion: reduce){
+    *{animation-duration:0.001ms !important; animation-iteration-count:1 !important; transition-duration:0.001ms !important;}
+  }
   .app{max-width:480px;margin:0 auto;min-height:100vh;background:var(--paper);position:relative;}
   header.topbar{display:flex;align-items:center;justify-content:space-between;padding:20px 16px 12px;}
   .brand{display:flex;align-items:center;gap:10px;}
   .brand-mark{width:36px;height:36px;border-radius:28%;background:var(--brass);display:flex;align-items:center;justify-content:center;flex:none;}
   .brand-name{font-size:22px;font-weight:400;letter-spacing:0;}
 
-  .login-screen{padding:64px 28px 40px;text-align:center;}
-  .seal{width:64px;height:64px;margin:0 auto 22px;border-radius:28%;background:var(--brass);display:flex;align-items:center;justify-content:center;}
+  .login-screen{padding:56px 28px 40px;text-align:center;}
+  .seal{width:92px;height:92px;margin:0 auto 24px;border-radius:28%;background:var(--brass);display:flex;align-items:center;justify-content:center;box-shadow:var(--elevation-2);}
   .login-screen h1{font-weight:400;font-size:28px;margin:0 0 8px;}
   .login-screen p{color:var(--ink-soft);font-size:14px;line-height:1.55;margin:0 auto 30px;max-width:320px;}
   .google-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:12px 16px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius-full);font-size:14px;font-weight:500;color:var(--ink);cursor:pointer;box-shadow:var(--elevation-1);}
@@ -138,8 +145,10 @@
   .fab .primary{width:auto;padding:16px 22px;border-radius:16px;box-shadow:var(--elevation-2);display:flex;align-items:center;gap:8px;}
   .fab .camera-fab{width:56px;height:56px;flex:none;background:var(--primary-container);color:var(--on-primary-container);border:none;border-radius:16px;box-shadow:var(--elevation-2);display:flex;align-items:center;justify-content:center;}
 
-  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:flex-end;justify-content:center;z-index:50;}
-  .modal-sheet{width:100%;max-width:480px;background:var(--paper);border-radius:28px 28px 0 0;padding:22px 20px 28px;max-height:88vh;overflow-y:auto;}
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:flex-end;justify-content:center;z-index:50;animation:overlayFadeIn 0.2s ease;}
+  .modal-sheet{width:100%;max-width:480px;background:var(--paper);border-radius:28px 28px 0 0;padding:22px 20px 28px;max-height:88vh;overflow-y:auto;animation:sheetSlideUp 0.24s cubic-bezier(0.05,0.7,0.1,1);}
+  @keyframes overlayFadeIn{from{opacity:0;}to{opacity:1;}}
+  @keyframes sheetSlideUp{from{transform:translateY(28px);opacity:0;}to{transform:translateY(0);opacity:1;}}
   .modal-sheet h3{font-weight:400;font-size:20px;margin:0 0 4px;}
   .modal-sheet .sub{font-size:12.5px;color:var(--ink-soft);margin:0 0 18px;}
   label.field-label{font-size:12px;font-weight:500;color:var(--ink-soft);display:block;margin-bottom:6px;}
@@ -162,7 +171,9 @@
   .camera-controls button{flex:1;}
   .capture-btn{background:var(--brass);color:#fff;border:none;border-radius:var(--radius-full);padding:13px;font-weight:500;font-size:14px;cursor:pointer;}
   .page-thumbs{display:flex;gap:8px;overflow-x:auto;margin-bottom:12px;padding-bottom:4px;}
-  .page-thumb{width:56px;height:56px;border-radius:10px;object-fit:cover;flex:none;}
+  .page-thumb-wrap{position:relative;flex:none;}
+  .page-thumb{width:56px;height:56px;border-radius:10px;object-fit:cover;display:block;}
+  .page-thumb-del{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--danger);color:#fff;border:2px solid var(--paper);font-size:13px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;}
   .progress-row{font-size:12.5px;color:var(--ink-soft);text-align:center;margin:10px 0;}
   .progress-track{height:4px;background:var(--surface-container);border-radius:4px;overflow:hidden;margin-bottom:6px;}
   .progress-fill{height:100%;background:var(--brass);transition:width 0.2s ease;}
@@ -270,7 +281,12 @@ if('serviceWorker' in navigator){
 // token client doesn't have that dependency.
 const GOOGLE_OAUTH_CLIENT_ID = '713625816347-61h6pgrra3ec7639kq3o8v3vdfpgmsjb.apps.googleusercontent.com';
 let gisTokenClient = null;
-function requestDriveAccessToken(){
+// silent=true (default) asks for a token with zero UI — works only when there's already a valid
+// grant and no third-party-storage restriction blocking it. silent=false lets GIS show whatever
+// popup it actually needs (a real user gesture, e.g. a button click, must be on the call stack
+// for the popup to survive the browser's popup blocker).
+function requestDriveAccessToken(silent){
+  if(silent === undefined) silent = true;
   return new Promise((resolve, reject) => {
     if(!gisTokenClient){
       gisTokenClient = google.accounts.oauth2.initTokenClient({
@@ -286,7 +302,7 @@ function requestDriveAccessToken(){
       if(resp.error) reject(new Error(resp.error));
       else resolve(resp);
     };
-    gisTokenClient.requestAccessToken({prompt: ''});
+    gisTokenClient.requestAccessToken(silent ? {prompt: ''} : {});
   });
 }
 
@@ -497,12 +513,16 @@ window.addEventListener('popstate', () => {
   if(guardArmed){
     guardArmed = false;
     if(exitConfirmed){ exitConfirmed = false; return; } // already agreed to leave — let this one through
-    state.modal = 'exitConfirm';
-    render();
+    // Re-arm the trap FIRST, before spending any time on render() — pushState is effectively
+    // instant, so this keeps the window where "no trap exists yet" as close to zero as possible.
+    // A second rapid Back press landing inside that window (rather than after re-arming) is the
+    // one way this could still let the app close instead of showing the dialog again.
     if(safePushHistoryState({vaultDepth: appHistoryDepth + 1, guard: true})){
       appHistoryDepth++;
       guardArmed = true;
     }
+    state.modal = 'exitConfirm';
+    render();
     return;
   }
   clearTopLayerState();
@@ -798,6 +818,7 @@ async function runOcr(dataUrl, onProgress){
 function render(){
   const app = document.getElementById('app');
   if(state.screen === 'login') return renderLogin(app);
+  if(state.screen === 'reconnect') return renderReconnect(app);
   if(state.screen === 'settings') return renderSettings(app);
   renderVault(app);
 }
@@ -805,7 +826,7 @@ function render(){
 function renderLogin(app){
   app.innerHTML = `
     <div class="login-screen">
-      <div class="seal">${brandMarkSvg(34)}</div>
+      <div class="seal">${brandMarkSvg(50)}</div>
       <h1>Vault</h1>
       <p>One secure place for Aadhaar, bills, warranty cards, and licences — organized in your own Google Drive, and searchable by what's inside them.</p>
       <button class="google-btn" id="googleBtn">
@@ -830,6 +851,7 @@ function renderLogin(app){
       const tokenResp = await requestDriveAccessToken();
       state.driveAccessToken = tokenResp.access_token;
       state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
+      btn.textContent = 'Setting up your vault…';
       await loadUserData();
       state.screen = 'vault';
       render();
@@ -842,6 +864,49 @@ function renderLogin(app){
     }
   };
   renderModal();
+}
+
+// Shown when Firebase still has the identity (so we know who's signed in) but the silent Drive
+// token reacquisition failed — most likely because it needed to show real UI and there was no
+// user gesture on the call stack for a popup to survive on (an automatic on-load check isn't a
+// click). A single tap here IS a real gesture, so the same request that failed silently goes
+// through normally, without a full sign-in / account-picker round trip.
+function renderReconnect(app){
+  app.innerHTML = `
+    <div class="login-screen">
+      <div class="seal">${brandMarkSvg(50)}</div>
+      <h1>Welcome back</h1>
+      <p>Signed in as <strong>${escapeHtml(state.user.email)}</strong>. Reconnect to Google Drive to pick up where you left off — this won't ask you to choose an account again.</p>
+      <button class="primary" id="reconnectContinueBtn">Continue</button>
+      <div class="error-text" id="reconnectErr" style="display:none;"></div>
+      <button class="ghost" id="reconnectSignOutBtn">Not you? Sign out</button>
+    </div>
+  `;
+  document.getElementById('reconnectContinueBtn').onclick = completeReconnect;
+  document.getElementById('reconnectSignOutBtn').onclick = () => signOutUser();
+  renderModal();
+}
+async function completeReconnect(){
+  const btn = document.getElementById('reconnectContinueBtn');
+  const errEl = document.getElementById('reconnectErr');
+  errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Connecting…';
+  try{
+    const tokenResp = await requestDriveAccessToken(false);
+    state.driveAccessToken = tokenResp.access_token;
+    state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
+    btn.textContent = 'Loading your vault…';
+    await loadUserData();
+    state.screen = 'vault';
+    render();
+  } catch(e){
+    console.error('Reconnect failed', e);
+    btn.disabled = false;
+    btn.textContent = 'Continue';
+    errEl.textContent = 'Could not reconnect to Google Drive — please try again.';
+    errEl.style.display = 'block';
+  }
 }
 
 function renderSettings(app){
@@ -952,6 +1017,8 @@ function renderSettings(app){
   renderModal();
 }
 
+let actionMenuOutsideClickHandler = null;
+let searchRenderTimer = null;
 function matchesSearch(doc){
   if(!state.searchQuery) return {match:true, snippet:null};
   const q = state.searchQuery.toLowerCase();
@@ -1055,12 +1122,18 @@ function renderVault(app){
   const searchInput = document.getElementById('searchInput');
   searchInput.oninput = (e) => {
     state.searchQuery = e.target.value;
-    render();
-    // render() just rebuilt the whole vault view via innerHTML, destroying the input we're
-    // typing into — re-query the freshly created one and refocus it, or every keystroke drops
-    // the on-screen keyboard (focusing the old, now-detached node is a silent no-op).
-    const freshInput = document.getElementById('searchInput');
-    if(freshInput){ freshInput.focus(); freshInput.setSelectionRange(freshInput.value.length, freshInput.value.length); }
+    // Debounced: render() rebuilds the whole document list, which can be noticeably slower than
+    // a keystroke on a large vault — waiting for a short pause in typing keeps every keystroke
+    // itself snappy instead of rebuilding the DOM on each one.
+    clearTimeout(searchRenderTimer);
+    searchRenderTimer = setTimeout(() => {
+      render();
+      // render() just rebuilt the whole vault view via innerHTML, destroying the input we're
+      // typing into — re-query the freshly created one and refocus it, or the on-screen keyboard
+      // drops (focusing the old, now-detached node is a silent no-op).
+      const freshInput = document.getElementById('searchInput');
+      if(freshInput){ freshInput.focus(); freshInput.setSelectionRange(freshInput.value.length, freshInput.value.length); }
+    }, 150);
   };
 
   document.querySelectorAll('.cat-toggle').forEach(el => {
@@ -1097,11 +1170,16 @@ function renderVault(app){
     };
   });
 
-  // Close any open overflow menu on an outside click — the listener is added fresh per render
-  // and removes itself on first fire, so it never stacks up across re-renders.
+  // Close any open overflow menu on an outside click. Explicitly drop any handler from a previous
+  // render before attaching a new one — render() can run more than once while the menu stays open
+  // (e.g. an unrelated toast or background refresh), and {once:true} alone doesn't prevent those
+  // extra renders from each attaching their own listener, which would fire and re-render multiple
+  // times for a single click.
+  if(actionMenuOutsideClickHandler) document.removeEventListener('click', actionMenuOutsideClickHandler);
+  actionMenuOutsideClickHandler = null;
   if(state.openActionMenu){
-    const closeMenu = () => { state.openActionMenu = null; render(); };
-    document.addEventListener('click', closeMenu, {once: true});
+    actionMenuOutsideClickHandler = () => { state.openActionMenu = null; actionMenuOutsideClickHandler = null; render(); };
+    document.addEventListener('click', actionMenuOutsideClickHandler, {once: true});
   }
 
   renderModal();
@@ -1301,7 +1379,12 @@ function renderModal(){
         <div class="camera-controls">
           <button class="capture-btn" id="captureBtn">Capture page</button>
         </div>
-        ${state.capturedPages.length ? `<div class="page-thumbs">${state.capturedPages.map(p=>`<img class="page-thumb" src="${p}">`).join('')}</div>` : ''}
+        ${state.capturedPages.length ? `<div class="page-thumbs">${state.capturedPages.map((p,i)=>`
+          <div class="page-thumb-wrap">
+            <img class="page-thumb" src="${p}">
+            <button type="button" class="page-thumb-del" data-remove-page="${i}" aria-label="Remove this page">×</button>
+          </div>
+        `).join('')}</div>` : ''}
         <div class="progress-row" id="ocrProgress" style="display:none;"></div>
         <label class="field-label">Document title</label>
         <input type="text" id="camTitle" placeholder="e.g. Electricity bill" />
@@ -1318,6 +1401,9 @@ function renderModal(){
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('captureBtn').onclick = capturePage;
     document.getElementById('saveCamBtn').onclick = saveCameraDocument;
+    overlay.querySelectorAll('[data-remove-page]').forEach(btn => {
+      btn.onclick = () => removeCapturedPage(+btn.getAttribute('data-remove-page'));
+    });
     startCamera();
   }
 
@@ -1503,11 +1589,20 @@ function readFileAsDataURL(file){
 }
 
 /* ---------- camera capture ---------- */
+let pendingPageOcrTexts = []; // per-page OCR text, parallel to state.capturedPages — lets removing
+                               // a page also cleanly drop just that page's text from pendingOcrText
 async function startCamera(){
+  const video = document.getElementById('cameraVideo');
+  if(state.cameraStream){
+    // Every capture re-renders the modal, which rebuilds the <video> element from scratch — the
+    // stream itself is still live, so reattach it instead of requesting a brand-new one from
+    // getUserMedia each time, which would leak the previous stream's tracks running unseen.
+    if(video) video.srcObject = state.cameraStream;
+    return;
+  }
   try{
     state.cameraStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
-    const video = document.getElementById('cameraVideo');
-    if(video){ video.srcObject = state.cameraStream; }
+    if(video) video.srcObject = state.cameraStream;
   } catch(e){
     const err = document.getElementById('camErr');
     if(err){ err.textContent = "Couldn't access the camera — check browser permissions."; err.style.display='block'; }
@@ -1516,7 +1611,7 @@ async function startCamera(){
 function stopCamera(){
   if(state.cameraStream){ state.cameraStream.getTracks().forEach(t=>t.stop()); state.cameraStream = null; }
 }
-function openCameraModal(){ state.modal = 'camera'; state.capturedPages = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+function openCameraModal(){ state.modal = 'camera'; state.capturedPages = []; pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
 
 async function capturePage(){
   const video = document.getElementById('cameraVideo');
@@ -1527,17 +1622,30 @@ async function capturePage(){
   canvas.getContext('2d').drawImage(video, 0, 0);
   const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
   state.capturedPages.push(dataUrl);
+  pendingPageOcrTexts.push('');
   pendingOcrRunning = true;
   renderModal();
   const pageNum = state.capturedPages.length;
   const pageText = await runOcr(dataUrl, pct => setOcrProgress(pct, pageNum, pageNum));
   const progEl = document.getElementById('ocrProgress');
   if(progEl) progEl.style.display = 'none';
-  pendingOcrText = (pendingOcrText + '\n' + pageText).trim();
+  // Re-find this page's CURRENT position rather than trusting the index captured before the
+  // OCR await — another page could have been deleted in the meantime, shifting positions, and
+  // writing to a stale index would land this text on the wrong page.
+  const currentIndex = state.capturedPages.indexOf(dataUrl);
+  if(currentIndex !== -1) pendingPageOcrTexts[currentIndex] = pageText;
+  pendingOcrText = pendingPageOcrTexts.join('\n').trim();
   applyExpirySuggestionIfEmpty('camExpiry', 'camExpirySuggestNote', pendingOcrText);
   pendingOcrRunning = false;
   const saveBtn = document.getElementById('saveCamBtn');
   if(saveBtn) saveBtn.disabled = false;
+}
+
+function removeCapturedPage(index){
+  state.capturedPages.splice(index, 1);
+  pendingPageOcrTexts.splice(index, 1);
+  pendingOcrText = pendingPageOcrTexts.join('\n').trim();
+  renderModal();
 }
 
 async function saveCameraDocument(){
@@ -1640,6 +1748,9 @@ async function viewDocument(id){
   render();
   const isPdf = doc.mimeType === 'application/pdf';
   const pdfTab = isPdf ? window.open('', '_blank') : null;
+  if(pdfTab){
+    pdfTab.document.write(`<title>${escapeHtml(doc.title)}</title><body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;font-family:sans-serif;color:#5f6368;background:#fff;">Loading ${escapeHtml(doc.title)}…</body>`);
+  }
   try{
     const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
     const blob = await res.blob();
@@ -1899,9 +2010,9 @@ function resetToLoggedOutState(){
     vaultFolderId: null, categories: [], documents: [], shares: [], modal: null,
     searchQuery: '', showArchived: false, collapsedCats: {}, openActionMenu: null
   });
-  // A hard reset like this can happen mid-navigation (e.g. idle timeout while deep in Settings)
-  // — flatten our own depth/guard bookkeeping to match; the caller re-arms the guard for the
-  // fresh login screen right after this.
+  // A hard reset like this can happen mid-navigation (e.g. sign-out while deep in Settings) —
+  // flatten our own depth/guard bookkeeping to match; the caller re-arms the guard for the fresh
+  // login screen right after this.
   appHistoryDepth = 0;
   guardArmed = false;
 }
@@ -1953,9 +2064,9 @@ async function deleteEverything(){
 // back to asking for a fresh sign-in if that silent reacquisition itself fails.
 auth.onAuthStateChanged(async (user) => {
   if(!user || state.user) return;
+  state.user = {name: user.displayName, email: user.email, uid: user.uid, photoURL: user.photoURL};
   try{
-    const tokenResp = await requestDriveAccessToken();
-    state.user = {name: user.displayName, email: user.email, uid: user.uid, photoURL: user.photoURL};
+    const tokenResp = await requestDriveAccessToken(true);
     state.driveAccessToken = tokenResp.access_token;
     state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
     await loadUserData();
@@ -1963,9 +2074,28 @@ auth.onAuthStateChanged(async (user) => {
     render();
     armExitGuardIfIdle();
   } catch(e){
-    console.warn('Could not silently restore the signed-in session — showing the sign-in screen.', e);
+    console.warn('Could not silently restore Drive access — asking for a one-tap reconnect instead.', e);
+    state.screen = 'reconnect';
+    render();
+    armExitGuardIfIdle();
   }
 });
+
+// Proactively refreshes the Drive token a few minutes before it expires, so an active session
+// doesn't hit a dead end mid-action — same silent request used everywhere else. If it fails (e.g.
+// the browser blocks the third-party storage a silent grant depends on), the existing "reconnect"
+// banner in the vault header still catches it the moment something actually needs the token.
+setInterval(async () => {
+  if(!state.user || !state.driveAccessToken || !state.driveTokenExpiresAt) return;
+  if(state.driveTokenExpiresAt - Date.now() > 5*60*1000) return;
+  try{
+    const tokenResp = await requestDriveAccessToken(true);
+    state.driveAccessToken = tokenResp.access_token;
+    state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
+  } catch(e){
+    console.warn('Background Drive token refresh failed — falling back to the manual reconnect banner.', e);
+  }
+}, 60*1000);
 
 render();
 armExitGuardIfIdle();
