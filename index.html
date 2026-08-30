@@ -1,0 +1,1974 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vault — your documents, secured</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="theme-color" content="#12241f">
+<script>
+  // Applied before first paint so there's no flash of the wrong theme on load.
+  try{
+    const saved = localStorage.getItem('vault-theme');
+    if(saved === 'dark' || saved === 'light') document.documentElement.setAttribute('data-theme', saved);
+  } catch(e){}
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://accounts.google.com/gsi/client"></script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap">
+<style>
+  :root{
+    --ink:#1f1f1f;
+    --ink-soft:#5f6368;
+    --paper:#ffffff;
+    --paper-2:#ffffff;
+    --brass:#1a73e8;
+    --brass-dark:#0842a0;
+    --line:#dadce0;
+    --danger:#c5221f;
+    --danger-bg:#fce8e6;
+    --success:#188038;
+    --success-bg:#e6f4ea;
+    --radius:16px;
+    --radius-sm:8px;
+    --radius-full:999px;
+    --surface-container:#f1f3f4;
+    --primary-container:#d3e3fd;
+    --on-primary-container:#0842a0;
+    --elevation-1:0 1px 2px rgba(60,64,67,0.15), 0 1px 3px 1px rgba(60,64,67,0.08);
+    --elevation-2:0 1px 3px rgba(60,64,67,0.3), 0 4px 8px 3px rgba(60,64,67,0.15);
+    font-family:'Roboto',-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;}
+  .app{max-width:480px;margin:0 auto;min-height:100vh;background:var(--paper);position:relative;}
+  header.topbar{display:flex;align-items:center;justify-content:space-between;padding:20px 16px 12px;}
+  .brand{display:flex;align-items:center;gap:10px;}
+  .brand-mark{width:36px;height:36px;border-radius:28%;background:var(--brass);display:flex;align-items:center;justify-content:center;flex:none;}
+  .brand-name{font-size:22px;font-weight:400;letter-spacing:0;}
+
+  .login-screen{padding:64px 28px 40px;text-align:center;}
+  .seal{width:64px;height:64px;margin:0 auto 22px;border-radius:28%;background:var(--brass);display:flex;align-items:center;justify-content:center;}
+  .login-screen h1{font-weight:400;font-size:28px;margin:0 0 8px;}
+  .login-screen p{color:var(--ink-soft);font-size:14px;line-height:1.55;margin:0 auto 30px;max-width:320px;}
+  .google-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:12px 16px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius-full);font-size:14px;font-weight:500;color:var(--ink);cursor:pointer;box-shadow:var(--elevation-1);}
+  .google-btn:active{transform:scale(0.98);}
+  .gicon{width:18px;height:18px;flex:none;}
+  .demo-note{margin-top:16px;font-size:11.5px;color:var(--ink-soft);background:var(--surface-container);border-radius:12px;padding:10px 12px;text-align:left;line-height:1.5;}
+
+  input[type="text"], input[type="date"], select, textarea{width:100%;padding:12px 14px;border:1px solid transparent;border-radius:var(--radius-sm);background:var(--surface-container);font-size:14px;color:var(--ink);margin-bottom:12px;font-family:inherit;}
+  input[type="text"]:focus, input[type="date"]:focus, select:focus, textarea:focus{outline:2px solid var(--brass);outline-offset:-1px;}
+  button.primary{width:100%;padding:13px 16px;background:var(--brass);color:#fff;border:none;border-radius:var(--radius-full);font-size:14px;font-weight:500;cursor:pointer;}
+  button.primary:active{transform:scale(0.98);}
+  button.primary:disabled{opacity:0.5;}
+  button.danger-solid{width:100%;padding:13px 16px;background:var(--danger);color:#fff;border:none;border-radius:var(--radius-full);font-size:14px;font-weight:500;cursor:pointer;}
+  button.danger-solid:active{transform:scale(0.98);}
+  button.danger-solid:disabled{opacity:0.5;}
+  button.ghost{width:100%;padding:12px 16px;background:transparent;color:var(--brass);border:1px solid var(--line);border-radius:var(--radius-full);font-size:13.5px;font-weight:500;cursor:pointer;margin-top:8px;}
+  .error-text{color:var(--danger);font-size:12.5px;text-align:left;margin:-6px 0 12px;}
+
+  .vault{padding:8px 16px 86px;}
+  .search-bar{position:relative;margin-bottom:14px;}
+  .search-bar input{margin-bottom:0;padding-left:44px;background:var(--surface-container);border-radius:var(--radius-full);box-shadow:var(--elevation-1);}
+  .search-bar .sicon{position:absolute;left:15px;top:50%;transform:translateY(-50%);display:flex;color:var(--ink-soft);}
+  .search-hint{font-size:11.5px;color:var(--ink-soft);margin:6px 2px 0;}
+
+  .quick-actions{display:flex;gap:8px;margin-bottom:6px;}
+  .quick-actions button{flex:1;padding:11px 8px;background:var(--surface-container);border:none;border-radius:var(--radius-sm);font-size:13px;font-weight:500;cursor:pointer;color:var(--ink);}
+
+  .section-title{font-size:13px;font-weight:500;color:var(--ink);margin:18px 4px 9px;display:flex;align-items:center;justify-content:space-between;}
+  .cat-toggle{cursor:pointer;user-select:none;}
+  .cat-title-label{display:inline-flex;align-items:center;gap:7px;}
+  .cat-count{font-weight:400;color:var(--ink-soft);font-size:12px;display:inline-flex;align-items:center;gap:2px;}
+  .cat-chevron{display:flex;transition:transform 0.15s ease;}
+  .cat-chevron.collapsed{transform:rotate(-90deg);}
+  .archive-toggle{background:none;border:none;color:var(--brass);font-size:12.5px;font-weight:500;cursor:pointer;padding:4px;margin:0 0 14px;display:inline-flex;align-items:center;gap:4px;}
+
+  .reminder-card{display:flex;align-items:center;gap:10px;background:var(--success-bg);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px;font-size:13px;}
+  .reminder-card.urgent{background:var(--danger-bg);}
+  .reminder-card .rtitle{font-weight:500;flex:1;color:var(--ink);}
+  .reminder-card .rdays{font-size:11.5px;color:var(--ink-soft);white-space:nowrap;}
+  .renewal-strip{display:flex;gap:9px;overflow-x:auto;margin:0 0 20px;scrollbar-width:none;}
+  .renewal-strip::-webkit-scrollbar{display:none;}
+  .renewal-card{flex:0 0 auto;min-width:148px;max-width:190px;background:var(--success-bg);border-radius:16px;padding:11px 13px;}
+  .renewal-card.urgent{background:var(--danger-bg);}
+  .renewal-title{font-size:13px;font-weight:500;color:var(--ink);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .renewal-days{font-size:11.5px;font-weight:500;color:var(--success);}
+  .renewal-card.urgent .renewal-days{color:var(--danger);}
+
+  .doc-card{background:var(--paper-2);border-radius:var(--radius);padding:12px;margin-bottom:8px;display:flex;gap:11px;align-items:flex-start;box-shadow:var(--elevation-1);}
+  .doc-card.is-archived{opacity:0.65;}
+  .doc-icon{width:38px;height:38px;border-radius:50%;background:var(--primary-container);color:var(--on-primary-container);display:flex;align-items:center;justify-content:center;flex:none;position:relative;cursor:pointer;}
+  .doc-icon.ocr-badge::after{content:'';position:absolute;bottom:-1px;right:-1px;width:10px;height:10px;border-radius:50%;background:var(--success);border:2px solid var(--paper-2);}
+  .doc-body{flex:1;min-width:0;}
+  .doc-title{font-weight:400;font-size:15px;margin:0 0 2px;}
+  .doc-meta{font-size:12px;color:var(--ink-soft);margin:0;}
+  .doc-snippet{font-size:12px;color:var(--ink-soft);margin:4px 0 0;background:var(--surface-container);padding:6px 9px;border-radius:8px;}
+  .doc-snippet mark{background:var(--primary-container);color:var(--on-primary-container);padding:0 1px;border-radius:2px;}
+  .doc-expiry{font-size:11.5px;margin-top:4px;display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:20px;}
+  .doc-actions{display:flex;align-items:center;gap:6px;margin-top:8px;}
+  .chip-btn{background:var(--primary-container);color:var(--on-primary-container);border:none;border-radius:8px;padding:6px 12px;font-size:12.5px;font-weight:500;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:5px;}
+  .chip-btn.secondary{background:none;color:var(--ink-soft);padding:6px 8px;}
+  .icon-btn{border:1px solid var(--line);background:var(--paper-2);border-radius:var(--radius-sm);padding:6px 10px;font-size:11.5px;cursor:pointer;color:var(--ink);}
+  svg.icon{flex:none;display:block;}
+  .icon-btn.danger{color:var(--danger);border-color:var(--danger-bg);}
+  .icon-only-btn{background:none;border:none;font-size:20px;cursor:pointer;color:var(--ink);padding:8px;line-height:1;border-radius:50%;display:flex;align-items:center;justify-content:center;}
+  .icon-only-btn:hover{background:var(--surface-container);}
+  .icon-only-btn.small{width:32px;height:32px;padding:0;}
+  .legacy-emoji-icon{font-size:18px;line-height:1;}
+  .icon-picker{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px;}
+  .icon-pick-btn{width:38px;height:38px;border-radius:50%;border:1px solid var(--line);background:var(--paper-2);color:var(--ink-soft);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;}
+  .icon-pick-btn.selected{background:var(--primary-container);color:var(--on-primary-container);border-color:transparent;}
+  .action-menu-wrap{position:relative;margin-left:auto;}
+  .action-menu{position:absolute;right:0;top:38px;background:var(--paper-2);border-radius:12px;box-shadow:var(--elevation-2);padding:6px;min-width:170px;z-index:20;display:flex;flex-direction:column;}
+  .action-menu button{background:none;border:none;text-align:left;padding:10px 12px;font-size:13.5px;color:var(--ink);border-radius:8px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:9px;white-space:nowrap;}
+  .action-menu button:hover{background:var(--surface-container);}
+  .action-menu button.danger{color:var(--danger);}
+
+  .empty-state{text-align:center;padding:40px 20px;color:var(--ink-soft);font-size:13.5px;}
+
+  .fab{position:fixed;max-width:480px;margin:0 auto;left:0;right:0;bottom:0;display:flex;justify-content:flex-end;align-items:center;gap:12px;padding:16px 20px;pointer-events:none;}
+  .fab button{pointer-events:all;}
+  .fab .primary{width:auto;padding:16px 22px;border-radius:16px;box-shadow:var(--elevation-2);display:flex;align-items:center;gap:8px;}
+  .fab .camera-fab{width:56px;height:56px;flex:none;background:var(--primary-container);color:var(--on-primary-container);border:none;border-radius:16px;box-shadow:var(--elevation-2);display:flex;align-items:center;justify-content:center;}
+
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:flex-end;justify-content:center;z-index:50;}
+  .modal-sheet{width:100%;max-width:480px;background:var(--paper);border-radius:28px 28px 0 0;padding:22px 20px 28px;max-height:88vh;overflow-y:auto;}
+  .modal-sheet h3{font-weight:400;font-size:20px;margin:0 0 4px;}
+  .modal-sheet .sub{font-size:12.5px;color:var(--ink-soft);margin:0 0 18px;}
+  label.field-label{font-size:12px;font-weight:500;color:var(--ink-soft);display:block;margin-bottom:6px;}
+  .modal-close{display:flex;justify-content:flex-end;margin-bottom:6px;}
+  .modal-close button{background:none;border:none;font-size:20px;color:var(--ink-soft);cursor:pointer;padding:6px;border-radius:50%;}
+  .modal-close button:hover{background:var(--surface-container);}
+  .file-drop{border:1.5px dashed var(--line);border-radius:var(--radius-sm);padding:18px;text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;cursor:pointer;background:var(--surface-container);}
+  .file-drop.has-file{color:var(--success);background:var(--success-bg);}
+
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#333537;color:#f1f1f1;padding:12px 20px;border-radius:8px;font-size:13.5px;z-index:100;opacity:0;transition:opacity 0.25s ease, transform 0.25s ease;pointer-events:none;max-width:88%;text-align:center;box-shadow:var(--elevation-2);}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(-6px);}
+
+  .share-link-box{background:var(--surface-container);border-radius:var(--radius-sm);padding:12px;font-size:12px;word-break:break-all;color:var(--ink-soft);margin-bottom:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+  .share-row{display:flex;align-items:center;justify-content:space-between;background:var(--surface-container);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:8px;font-size:12.5px;}
+
+  /* Camera modal */
+  .camera-wrap{position:relative;background:#000;border-radius:16px;overflow:hidden;margin-bottom:12px;}
+  .camera-wrap video, .camera-wrap canvas{width:100%;display:block;}
+  .camera-controls{display:flex;gap:10px;margin-bottom:12px;}
+  .camera-controls button{flex:1;}
+  .capture-btn{background:var(--brass);color:#fff;border:none;border-radius:var(--radius-full);padding:13px;font-weight:500;font-size:14px;cursor:pointer;}
+  .page-thumbs{display:flex;gap:8px;overflow-x:auto;margin-bottom:12px;padding-bottom:4px;}
+  .page-thumb{width:56px;height:56px;border-radius:10px;object-fit:cover;flex:none;}
+  .progress-row{font-size:12.5px;color:var(--ink-soft);text-align:center;margin:10px 0;}
+  .progress-track{height:4px;background:var(--surface-container);border-radius:4px;overflow:hidden;margin-bottom:6px;}
+  .progress-fill{height:100%;background:var(--brass);transition:width 0.2s ease;}
+  .suggest-note{font-size:11.5px;color:var(--success);margin:-8px 0 12px;}
+
+  /* Dark mode: system preference by default, data-theme attribute forces either way.
+     Values follow Material 3's dark color roles — surfaces stay near-black rather than
+     inverting to a lit-up dark grey, and the primary/tonal-container pairing swaps so
+     containers stay dark with light text on them, matching Google's own dark-mode apps. */
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#e3e3e3; --ink-soft:#c4c7c5; --paper:#131314; --paper-2:#1e1f20;
+      --brass:#a8c7fa; --brass-dark:#d3e3fd;
+      --line:#444746; --danger:#f2b8b5; --danger-bg:#601410; --success:#6dd58c; --success-bg:#0f5223;
+      --surface-container:#282a2c; --primary-container:#0842a0; --on-primary-container:#d3e3fd;
+      --elevation-1:0 1px 3px rgba(0,0,0,0.5); --elevation-2:0 2px 8px rgba(0,0,0,0.6);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink:#e3e3e3; --ink-soft:#c4c7c5; --paper:#131314; --paper-2:#1e1f20;
+    --brass:#a8c7fa; --brass-dark:#d3e3fd;
+    --line:#444746; --danger:#f2b8b5; --danger-bg:#601410; --success:#6dd58c; --success-bg:#0f5223;
+    --surface-container:#282a2c; --primary-container:#0842a0; --on-primary-container:#d3e3fd;
+    --elevation-1:0 1px 3px rgba(0,0,0,0.5); --elevation-2:0 2px 8px rgba(0,0,0,0.6);
+  }
+
+  /* Settings screen */
+  .settings-header{display:flex;align-items:center;gap:14px;padding:20px 16px 14px;}
+  .settings{padding:12px 20px 60px;}
+  .settings-section{margin-bottom:28px;}
+  .settings-section h4{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);margin:0 0 10px;font-weight:500;}
+  .acct-card{display:flex;align-items:center;gap:12px;background:var(--paper-2);border-radius:var(--radius);padding:14px;box-shadow:var(--elevation-1);}
+  .acct-avatar{width:44px;height:44px;border-radius:50%;background:var(--brass);flex:none;object-fit:cover;}
+  .acct-name{font-weight:500;font-size:14.5px;}
+  .acct-email{font-size:12px;color:var(--ink-soft);}
+  .storage-bar-track{height:8px;background:var(--surface-container);border-radius:4px;overflow:hidden;margin:10px 0 6px;}
+  .storage-bar-fill{height:100%;background:var(--brass);}
+  .settings-row{display:flex;align-items:center;justify-content:space-between;background:var(--paper-2);border-radius:var(--radius);padding:14px;margin-bottom:8px;font-size:13.5px;box-shadow:var(--elevation-1);}
+  .settings-row button{flex:none;}
+  .cat-manage-row{display:flex;align-items:center;gap:10px;background:var(--paper-2);border-radius:var(--radius);padding:10px 12px;margin-bottom:8px;box-shadow:var(--elevation-1);}
+  .cat-manage-row .cm-icon{width:32px;height:32px;border-radius:50%;background:var(--primary-container);color:var(--on-primary-container);display:flex;align-items:center;justify-content:center;flex:none;}
+  .cat-manage-row .cm-label{flex:1;font-size:13.5px;}
+  .danger-zone{border-radius:16px;padding:14px;background:var(--danger-bg);}
+  .danger-zone p{font-size:12.5px;color:var(--ink-soft);margin:0 0 12px;}
+  .theme-toggle-row{display:flex;gap:8px;}
+  .theme-toggle-row button{flex:1;padding:11px;border-radius:var(--radius-full);border:1px solid var(--line);background:var(--paper-2);color:var(--ink);cursor:pointer;font-size:13px;font-family:inherit;}
+  .theme-toggle-row button.active{background:var(--primary-container);color:var(--on-primary-container);border-color:transparent;}
+
+  /* Responsive: wider viewports get real desktop treatment, not a stretched mobile column */
+  @media (min-width:860px){
+    .app{max-width:1100px;}
+    .vault, .settings{padding-left:40px;padding-right:40px;}
+    .search-bar{max-width:420px;}
+    .doc-card-grid{display:grid;grid-template-columns:repeat(auto-fill, minmax(300px,1fr));gap:12px;}
+    .fab{max-width:1100px;justify-content:flex-end;padding-right:40px;}
+    .modal-overlay{align-items:center;}
+    .modal-sheet{border-radius:16px;max-width:520px;}
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app"></div>
+
+<script>
+/* ============================================================
+   VAULT — functional prototype
+   Real: OCR (Tesseract.js) with an on-device best-effort expiry-
+   date guesser, full-text search over OCR'd content, camera
+   capture, PDF export of captured pages, Google Sign-In (Firebase
+   Auth), per-account cloud storage — Firestore holds document
+   metadata, the user's own Google Drive (drive.file scope) holds
+   the actual files, organized under a "Vault" folder with one
+   subfolder per category.
+   By design (per product decision): documents are stored as
+   plain, Drive-viewable files, not encrypted — Google Sign-In is
+   the only access gate, there is no separate passphrase.
+   Simulated: share links — the token/expiry are real and stored
+   in Firestore, but nothing resolves vault.app/shared/... since
+   there's no backend to serve a document to someone who isn't
+   signed into this account.
+   ============================================================ */
+
+const firebaseConfig = {
+  apiKey: "AIzaSyC9zVPWgTekPiDUDn1YcLDInHBFRRUgW9w",
+  authDomain: "elite-vault-7b00a.firebaseapp.com",
+  projectId: "elite-vault-7b00a",
+  storageBucket: "elite-vault-7b00a.firebasestorage.app",
+  messagingSenderId: "713625816347",
+  appId: "1:713625816347:web:72d45d04fbb9e6944c97be"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(e => console.error('Service worker registration failed', e));
+}
+
+// Firebase Auth (above) only handles identity — who's signed in. The Drive access token is
+// fetched separately via Google Identity Services' own token client, NOT via Firebase's
+// signInWithPopup credential: that credential path depends on a storage-relay iframe between
+// this origin and the authDomain, which needs third-party storage access that modern Chrome
+// (and any org-managed browser policy) increasingly blocks by default — when blocked, sign-in
+// still succeeds but GoogleAuthProvider.credentialFromResult() silently comes back null. GIS's
+// token client doesn't have that dependency.
+const GOOGLE_OAUTH_CLIENT_ID = '713625816347-61h6pgrra3ec7639kq3o8v3vdfpgmsjb.apps.googleusercontent.com';
+let gisTokenClient = null;
+function requestDriveAccessToken(){
+  return new Promise((resolve, reject) => {
+    if(!gisTokenClient){
+      gisTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_OAUTH_CLIENT_ID,
+        // drive.file: read/write only the files and folders this app creates.
+        // drive.metadata.readonly: read-only access to account-wide storage quota, for the
+        // Settings storage display — this app still can't see the *content* of other files.
+        scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.metadata.readonly',
+        callback: () => {} // overwritten per-call below, immediately before requestAccessToken()
+      });
+    }
+    gisTokenClient.callback = (resp) => {
+      if(resp.error) reject(new Error(resp.error));
+      else resolve(resp);
+    };
+    gisTokenClient.requestAccessToken({prompt: ''});
+  });
+}
+
+const DEFAULT_CATEGORIES = [
+  {id:'id', label:'ID proof', icon:'id'},
+  {id:'bill', label:'Bill', icon:'receipt'},
+  {id:'warranty', label:'Warranty', icon:'tool'},
+  {id:'licence', label:'Licence', icon:'car'},
+  {id:'insurance', label:'Insurance', icon:'umbrella'},
+  {id:'other', label:'Other', icon:'doc'}
+];
+const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps nagging in "Renewals coming up"
+
+/* ---------- icon system ----------
+   Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
+   follows currentColor / CSS instead of relying on the OS emoji font rendering consistently. */
+const ICONS = {
+  search: '<circle cx="11" cy="11" r="6.5"></circle><line x1="16" y1="16" x2="21" y2="21"></line>',
+  settings: '<circle cx="12" cy="12" r="2.2"></circle><path d="M12 4.5v2M12 17.5v2M4.5 12h2M17.5 12h2M6.6 6.6l1.4 1.4M16 16l1.4 1.4M6.6 17.4l1.4-1.4M16 8l1.4-1.4"></path>',
+  camera: '<path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"></path><circle cx="12" cy="14" r="3.2"></circle>',
+  plus: '<line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>',
+  back: '<line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline>',
+  more: '<circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"></circle><circle cx="12" cy="6" r="1.6" fill="currentColor" stroke="none"></circle><circle cx="12" cy="18" r="1.6" fill="currentColor" stroke="none"></circle>',
+  chevronDown: '<polyline points="6 9 12 15 18 9"></polyline>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line>',
+  eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line>',
+  edit: '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>',
+  share: '<circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>',
+  archive: '<polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line>',
+  restore: '<polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>',
+  trash: '<polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line>',
+  id: '<rect x="3" y="5" width="18" height="14" rx="2.5"></rect><circle cx="8.5" cy="11" r="2"></circle><line x1="14" y1="10" x2="18" y2="10"></line><line x1="14" y1="13" x2="18" y2="13"></line>',
+  receipt: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line>',
+  tool: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>',
+  car: '<path d="M5 16v-4l2-4h10l2 4v4"></path><rect x="3.5" y="16" width="17" height="3" rx="1.2"></rect><circle cx="7.5" cy="19.5" r="1.3" fill="currentColor" stroke="none"></circle><circle cx="16.5" cy="19.5" r="1.3" fill="currentColor" stroke="none"></circle>',
+  umbrella: '<path d="M12 2a10 10 0 0 1 10 10H2A10 10 0 0 1 12 2z"></path><path d="M12 12v8a2 2 0 0 1-4 0"></path><line x1="12" y1="2" x2="12" y2="4"></line>',
+  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>',
+  doc: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline>',
+  folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>',
+  star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" fill="currentColor" stroke="none"></polygon>',
+  heart: '<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" fill="currentColor" stroke="none"></path>',
+  home: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline>'
+};
+const CATEGORY_ICON_KEYS = ['id','receipt','tool','car','umbrella','shield','doc','folder','star','heart','home'];
+
+function icon(key, size){
+  size = size || 20;
+  const body = ICONS[key] || ICONS.doc;
+  return `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+}
+
+function categoryIconHtml(cat, size){
+  // Legacy accounts may still carry a raw emoji in their category icon field — pass it through
+  // rather than silently swapping in the wrong glyph for a category the user picked deliberately.
+  const key = (cat && cat.icon) || 'doc';
+  return ICONS[key] ? icon(key, size) : `<span class="legacy-emoji-icon">${key}</span>`;
+}
+
+function brandMarkSvg(size){
+  // The app's own mark — a shield around a document — kept separate from the flat-line ICONS
+  // set above since it's a filled logo glyph, not a UI icon, and always sits on a --brass tile.
+  size = size || 36;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <path d="M64 26 L94 39 V64 C94 86 81 100 64 106 C47 100 34 86 34 64 V39 Z" fill="none" stroke="#ffffff" stroke-width="7" stroke-linejoin="round"/>
+    <rect x="52" y="52" width="24" height="30" rx="2.5" fill="#ffffff"/>
+    <line x1="57" y1="60" x2="71" y2="60" stroke="var(--brass)" stroke-width="2.5"/>
+    <line x1="57" y1="67" x2="71" y2="67" stroke="var(--brass)" stroke-width="2.5"/>
+    <line x1="57" y1="74" x2="66" y2="74" stroke="var(--brass)" stroke-width="2.5"/>
+  </svg>`;
+}
+
+function iconPickerHtml(inputId, selected){
+  const sel = ICONS[selected] ? selected : 'doc';
+  return `
+    <input type="hidden" id="${inputId}" value="${sel}" />
+    <div class="icon-picker" id="${inputId}Picker">
+      ${CATEGORY_ICON_KEYS.map(key => `<button type="button" class="icon-pick-btn ${key===sel?'selected':''}" data-icon-key="${key}">${icon(key,18)}</button>`).join('')}
+    </div>
+  `;
+}
+function wireIconPicker(inputId){
+  const input = document.getElementById(inputId);
+  const wrap = document.getElementById(inputId+'Picker');
+  if(!input || !wrap) return;
+  wrap.querySelectorAll('[data-icon-key]').forEach(btn => {
+    btn.onclick = () => {
+      input.value = btn.getAttribute('data-icon-key');
+      wrap.querySelectorAll('[data-icon-key]').forEach(b => b.classList.toggle('selected', b===btn));
+    };
+  });
+}
+
+const state = {
+  screen: 'login', // 'login' | 'vault'
+  user: null,           // {name, email, uid, photoURL}
+  driveAccessToken: null,     // OAuth token for Drive API calls; separate from the Firebase auth session
+  driveTokenExpiresAt: null,  // ms epoch; Google doesn't silently refresh this client-side (no backend)
+  vaultFolderId: null,  // Drive folder ID of the "Vault" folder at Drive root
+  categories: [],        // [{id, label, icon, driveFolderId, order}]
+  documents: [],      // {id,title,category,expiry,driveFileId,mimeType,size,ocrText,addedAt,archived}
+  shares: [],
+  modal: null,
+  shareDocId: null,
+  editDocId: null,
+  deleteDocId: null,
+  editCategoryId: null,
+  viewDocId: null,
+  viewObjectUrl: null, // tracks the current in-app viewer's blob URL so it can be revoked on close
+  lastGeneratedShareId: null, // drives the "here's your link" box after Generate — see generateShare()
+  searchQuery: '',
+  collapsedCats: {},
+  showArchived: false,
+  cameraStream: null,
+  capturedPages: [],  // dataURLs from camera, before combining
+  openActionMenu: null // doc id whose card's ⋮ overflow menu is currently open, or null
+};
+
+function categoryFor(id){
+  return state.categories.find(c => c.id === id)
+    || state.categories.find(c => c.id === 'other')
+    || state.categories[0]
+    || {id:'other', label:'Other', icon:'doc'};
+}
+
+function toast(msg){
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  requestAnimationFrame(()=> el.classList.add('show'));
+  setTimeout(()=>{ el.classList.remove('show'); setTimeout(()=> el.remove(), 300); }, 2400);
+}
+
+/* ---------- back-button navigation ----------
+   Without this, the browser/hardware Back button has nowhere to go within a single-page app
+   that never touches history — it just exits the site from any screen. Every "deeper" view
+   (Settings, the archived-documents view, any open modal) pushes one history entry; Back (or
+   an in-app back control, routed through goBackOneLayer so both paths stay in sync) pops
+   exactly one layer via popstate before ever reaching the browser's own "leave the page" step. */
+let appHistoryDepth = 0;
+// Chromium throws a SecurityError on pushState when the document's origin is the opaque "null"
+// origin — which is exactly what a page opened via file:// gets (deployed https:// pages are
+// unaffected). Guard every call so a blocked History API degrades cleanly instead of leaving
+// appHistoryDepth/guardArmed claiming a trap exists that was never actually pushed — that desync
+// is what let Back exit immediately with zero interception. Only commit the bookkeeping once the
+// push has actually succeeded.
+function safePushHistoryState(data){
+  try{
+    history.pushState(data, '', location.href);
+    return true;
+  } catch(e){
+    console.warn('History API pushState blocked (likely a file:// origin) — the back-button exit guard cannot run in this environment; it will work once deployed to a real https:// origin.', e);
+    return false;
+  }
+}
+function pushAppHistoryState(){
+  // Whatever guard was armed underneath is no longer the topmost entry — clear the flag so
+  // popping back out of THIS layer is treated as an ordinary layer-peel, not as "the exit guard
+  // was just consumed" (that was the bug: guardArmed stayed stale/true from the very first arm,
+  // so Back from Settings/Archive incorrectly triggered the exit-confirmation).
+  guardArmed = false;
+  if(safePushHistoryState({vaultDepth: appHistoryDepth + 1})) appHistoryDepth++;
+}
+function clearTopLayerState(){
+  if(state.modal){
+    stopCamera();
+    if(state.viewObjectUrl){ URL.revokeObjectURL(state.viewObjectUrl); state.viewObjectUrl = null; }
+    state.modal = null; state.shareDocId = null; state.editDocId = null; state.deleteDocId = null;
+    state.editCategoryId = null; state.viewDocId = null; state.lastGeneratedShareId = null; state.capturedPages = [];
+    pendingOcrText = ''; pendingExpirySuggested = false; pendingOcrRunning = false;
+  } else if(state.showArchived){
+    state.showArchived = false; state.searchQuery = '';
+  } else if(state.screen === 'settings'){
+    state.screen = 'vault';
+  }
+}
+function goBackOneLayer(){
+  if(appHistoryDepth > 0){
+    history.back(); // popstate below does the actual state cleanup + render
+  } else {
+    // Nothing was pushed for this layer (shouldn't normally happen) — clear it directly rather
+    // than risk history.back() navigating away from the site entirely.
+    clearTopLayerState();
+    render();
+    armExitGuardIfIdle();
+  }
+}
+
+// Beyond peeling modal/Settings/Archived layers, the *idle root* screen (Vault or Login, with
+// nothing else open) needs its own protection: many browsers/WebViews (notably Android) close
+// the page entirely once its history stack is exhausted, which is what "closes the whole app
+// from the main screen" was. Fix: keep one extra "guard" entry pushed whenever idle at root; the
+// moment it gets popped, ask for confirmation instead of letting the exhaustion happen, and
+// re-arm immediately so the confirmation dialog itself is protected the same way.
+let guardArmed = false;
+let exitConfirmed = false;
+function armExitGuardIfIdle(){
+  if(!guardArmed && !state.modal && !state.showArchived && state.screen !== 'settings'){
+    if(safePushHistoryState({vaultDepth: appHistoryDepth + 1, guard: true})){
+      appHistoryDepth++;
+      guardArmed = true;
+    }
+  }
+}
+window.addEventListener('popstate', () => {
+  if(appHistoryDepth > 0) appHistoryDepth--;
+  if(guardArmed){
+    guardArmed = false;
+    if(exitConfirmed){ exitConfirmed = false; return; } // already agreed to leave — let this one through
+    state.modal = 'exitConfirm';
+    render();
+    if(safePushHistoryState({vaultDepth: appHistoryDepth + 1, guard: true})){
+      appHistoryDepth++;
+      guardArmed = true;
+    }
+    return;
+  }
+  clearTopLayerState();
+  render();
+  armExitGuardIfIdle();
+});
+function cancelExitConfirm(){
+  state.modal = null;
+  render();
+}
+function confirmExitApp(){
+  exitConfirmed = true;
+  state.modal = null;
+  render();
+  // Back past every one of our own pushed entries (however many piled up from repeated
+  // Back-while-the-dialog-was-showing re-arms) to the true entry that existed before we ever
+  // touched history — using the tracked depth rather than a fixed guess, since history.go()
+  // silently does nothing at all if the offset overshoots past what's actually there. Landing
+  // here exhausts our page's own history; a plain web page has no API to force-close its own
+  // tab/window (window.close() only works on windows opened by script), so an actual close from
+  // here on is the platform's own back-button/WebView behavior taking over — which, on Android
+  // specifically, is exactly the "exhausted history closes the app" behavior this whole feature
+  // exists to gate behind a confirmation, now deliberately allowed through.
+  if(appHistoryDepth > 0) history.go(-appHistoryDepth);
+}
+
+/* ---------- theme ---------- */
+function currentTheme(){
+  try{ return localStorage.getItem('vault-theme') || 'system'; } catch(e){ return 'system'; }
+}
+function applyTheme(theme){
+  if(theme === 'dark' || theme === 'light') document.documentElement.setAttribute('data-theme', theme);
+  else document.documentElement.removeAttribute('data-theme');
+  try{ localStorage.setItem('vault-theme', theme); } catch(e){}
+}
+
+/* ---------- Google Drive ---------- */
+function driveTokenValid(){ return !!(state.driveAccessToken && state.driveTokenExpiresAt && Date.now() < state.driveTokenExpiresAt); }
+
+// Wraps fetch() with the Drive OAuth token. This token is a client-side popup grant with no
+// refresh token behind it (no backend to hold one) — it expires in ~1hr, at which point every
+// call here throws DRIVE_TOKEN_EXPIRED so callers can prompt the user to reconnect instead of
+// surfacing a raw 401.
+async function driveFetch(url, options={}){
+  if(!driveTokenValid()){
+    const err = new Error('Your Google Drive connection expired.');
+    err.code = 'DRIVE_TOKEN_EXPIRED';
+    throw err;
+  }
+  const res = await fetch(url, { ...options, headers: { ...(options.headers||{}), Authorization: 'Bearer ' + state.driveAccessToken } });
+  if(res.status === 401){
+    const err = new Error('Your Google Drive connection expired.');
+    err.code = 'DRIVE_TOKEN_EXPIRED';
+    throw err;
+  }
+  if(!res.ok){
+    let detail = '';
+    try{ detail = await res.text(); } catch(_){}
+    throw new Error(`Drive request failed: ${res.status} ${detail}`.trim());
+  }
+  return res;
+}
+
+async function driveCreateFolder(name, parentId){
+  const body = {name, mimeType: 'application/vnd.google-apps.folder'};
+  if(parentId) body.parents = [parentId];
+  const res = await driveFetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  const json = await res.json();
+  return json.id;
+}
+
+// Files are stored as their real type (image/PDF) — not encrypted, per product decision — so
+// they're directly viewable if opened in Drive itself. Google's multipart-upload endpoint is
+// documented to expect the request body as multipart/related (metadata part, then content
+// part, joined by a boundary) — NOT the browser's FormData/multipart-form-data format, which
+// uses different per-part headers (Content-Disposition instead of a bare Content-Type). Building
+// it by hand as a Blob (which can mix strings and binary content directly, no base64 needed)
+// matches the documented format exactly instead of relying on Google's parser tolerating the
+// wrong one. Uses XMLHttpRequest instead of fetch specifically because fetch has no
+// upload-progress event — XHR's upload.onprogress is what powers the progress bar shown while
+// saving a document.
+function driveUpload(blob, filename, mimeType, parentFolderId, onProgress){
+  return new Promise((resolve, reject) => {
+    if(!driveTokenValid()){
+      const err = new Error('Your Google Drive connection expired.');
+      err.code = 'DRIVE_TOKEN_EXPIRED';
+      reject(err);
+      return;
+    }
+    const boundary = 'vaultpart_' + Date.now();
+    const metadata = {name: filename, mimeType, parents: [parentFolderId]};
+    const body = new Blob([
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`,
+      `--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`,
+      blob,
+      `\r\n--${boundary}--`
+    ]);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart');
+    xhr.setRequestHeader('Authorization', 'Bearer ' + state.driveAccessToken);
+    xhr.setRequestHeader('Content-Type', `multipart/related; boundary=${boundary}`);
+    if(onProgress) xhr.upload.onprogress = (e) => { if(e.lengthComputable) onProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      if(xhr.status >= 200 && xhr.status < 300){
+        resolve(JSON.parse(xhr.responseText).id);
+      } else if(xhr.status === 401){
+        const err = new Error('Your Google Drive connection expired.');
+        err.code = 'DRIVE_TOKEN_EXPIRED';
+        reject(err);
+      } else {
+        reject(new Error(`Drive request failed: ${xhr.status} ${xhr.responseText}`.trim()));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Network error while uploading to Drive'));
+    xhr.send(body);
+  });
+}
+// The Vault's own usage is just the sum of document sizes already known locally — no extra
+// call needed. Overall quota needs the drive.metadata.readonly scope (about.get isn't covered
+// by drive.file, since it's account-wide info, not something this app created).
+async function driveGetStorageQuota(){
+  const res = await driveFetch('https://www.googleapis.com/drive/v3/about?fields=storageQuota');
+  const json = await res.json();
+  return json.storageQuota; // {limit, usage, usageInDrive, ...} — limit is absent for unlimited plans
+}
+function formatBytes(n){
+  if(!n || n<=0) return '0 B';
+  const units = ['B','KB','MB','GB','TB'];
+  const i = Math.min(units.length-1, Math.floor(Math.log(n)/Math.log(1024)));
+  return (n/Math.pow(1024,i)).toFixed(i===0?0:1) + ' ' + units[i];
+}
+async function driveMoveFile(fileId, fromFolderId, toFolderId){
+  await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?addParents=${toFolderId}&removeParents=${fromFolderId}`, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({})
+  });
+}
+async function driveDelete(fileId){
+  await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {method:'DELETE'});
+}
+function friendlyCloudError(e){
+  if(e && e.code === 'DRIVE_TOKEN_EXPIRED') return 'Your Google Drive connection expired — reconnect to Google and try again.';
+  return 'Something went wrong: ' + (e && e.message ? e.message : 'unknown error');
+}
+
+/* ---------- Firestore ---------- */
+function userDoc(){ return db.collection('users').doc(state.user.uid); }
+
+// Runs once per account, the first time it signs in: creates the Vault folder at Drive root
+// plus one subfolder per default category, and records everything in Firestore so this never
+// has to run again for this account.
+async function provisionVault(){
+  const vaultFolderId = await driveCreateFolder('Vault');
+  const categories = [];
+  for(let i=0; i<DEFAULT_CATEGORIES.length; i++){
+    const c = DEFAULT_CATEGORIES[i];
+    const driveFolderId = await driveCreateFolder(c.label, vaultFolderId);
+    categories.push({id:c.id, label:c.label, icon:c.icon, driveFolderId, order:i});
+  }
+  await userDoc().collection('meta').doc('vault').set({vaultFolderId, createdAt: new Date().toISOString()});
+  const batch = db.batch();
+  categories.forEach(c => {
+    batch.set(userDoc().collection('categories').doc(c.id), {label:c.label, icon:c.icon, driveFolderId:c.driveFolderId, order:c.order});
+  });
+  await batch.commit();
+  state.vaultFolderId = vaultFolderId;
+  state.categories = categories;
+}
+
+// Loads everything for the signed-in account. Called right after sign-in once state.user.uid
+// and a valid Drive token are both ready — provisioning a brand-new account needs Drive access.
+async function loadUserData(){
+  try{
+    // metaSnap.data().vaultFolderId is checked, not just metaSnap.exists — an account from
+    // before this cloud-storage redesign has an old-shape meta/vault doc (passphrase salt and
+    // canary, no vaultFolderId), which would otherwise be mistaken for an already-provisioned
+    // vault and skip folder/category creation entirely.
+    const metaSnap = await userDoc().collection('meta').doc('vault').get();
+    if(metaSnap.exists && metaSnap.data().vaultFolderId){
+      state.vaultFolderId = metaSnap.data().vaultFolderId;
+      const catsSnap = await userDoc().collection('categories').orderBy('order').get();
+      state.categories = catsSnap.docs.map(d => ({id:d.id, ...d.data()}));
+    } else {
+      await provisionVault();
+    }
+    const docsSnap = await userDoc().collection('documents').orderBy('addedAt', 'desc').get();
+    // Same reasoning: a document written under the old encrypted schema has no plain `title`/
+    // `driveFileId` fields this version relies on. Skip anything that doesn't look like the
+    // current shape instead of crashing the render on undefined fields.
+    state.documents = docsSnap.docs.map(d => ({id: d.id, ...d.data()})).filter(d => {
+      const ok = typeof d.title === 'string' && typeof d.driveFileId === 'string';
+      if(!ok) console.warn('Skipping document with an outdated/incompatible shape', d.id);
+      return ok;
+    });
+    const sharesSnap = await userDoc().collection('shares').get();
+    state.shares = sharesSnap.docs.map(d => ({id: d.id, ...d.data()}));
+  } catch(e){
+    console.error('Could not load vault data from the cloud', e);
+    toast('Could not load your vault — check your connection and try again.');
+  }
+}
+
+async function persistDocument(doc){
+  await userDoc().collection('documents').doc(doc.id).set(doc);
+}
+
+// Expiry dates come from <input type="date"> as plain "YYYY-MM-DD" strings with no timezone.
+// Parsing those with `new Date(str)` treats them as UTC midnight, which silently shifts the
+// calendar date by a day in timezones behind UTC. Parse the components as a local date instead.
+function parseLocalDate(dateStr){ const [y,m,d] = dateStr.split('-').map(Number); return new Date(y, m-1, d); }
+function daysUntil(dateStr){ const t=new Date(); t.setHours(0,0,0,0); return Math.round((parseLocalDate(dateStr)-t)/86400000); }
+function formatDate(iso){ return new Date(iso).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}); }
+function formatExpiryDate(dateStr){ return parseLocalDate(dateStr).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}); }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Google Calendar's "quick add" URL needs no API call and no extra OAuth scope — it just opens
+// a pre-filled event-creation page that the user reviews and saves themselves.
+function addToCalendarUrl(doc){
+  const d = doc.expiry.replace(/-/g, '');
+  const text = encodeURIComponent(`Renew: ${doc.title}`);
+  const details = encodeURIComponent(`Reminder from Vault to renew "${doc.title}" (${categoryFor(doc.category).label}).`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${d}/${d}&details=${details}`;
+}
+
+// Converts a data: URL (from canvas capture or jsPDF output) into a Blob for Drive upload.
+function dataUrlToBlob(dataUrl){
+  const [header, base64] = dataUrl.split(',');
+  const mime = header.match(/data:(.*?);base64/)[1];
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], {type: mime});
+}
+function extensionForMime(mime){
+  if(mime === 'application/pdf') return 'pdf';
+  if(mime === 'image/png') return 'png';
+  if(mime === 'image/jpeg' || mime === 'image/jpg') return 'jpg';
+  return 'dat';
+}
+function safeFilename(title, mime){
+  return title.replace(/[\\/:*?"<>|]/g, '_') + '.' + extensionForMime(mime);
+}
+
+// Best-effort: scans OCR text for a date and returns it as "YYYY-MM-DD", or null. Prefers a
+// line that mentions expiry-ish keywords over the first date found anywhere. Ambiguous
+// DD/MM vs MM/DD numeric dates are read as DD/MM (matches Aadhaar/licence/insurance conventions
+// in India, which is what formatDate/formatExpiryDate elsewhere in this app already assume via
+// 'en-IN' formatting). Always shown as an editable suggestion, never applied silently.
+function guessExpiryDate(ocrText){
+  if(!ocrText) return null;
+  const lines = ocrText.split('\n');
+  const keywordLine = lines.find(l => /expir|valid\s*(upto|until|till)|exp\s*date/i.test(l));
+  const searchIn = keywordLine || ocrText;
+  const monthNames = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+
+  let m = searchIn.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b/); // DD/MM/YYYY
+  if(m) return validYmd(+m[3], +m[2]-1, +m[1]);
+
+  m = searchIn.match(/\b(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})\b/); // YYYY-MM-DD
+  if(m) return validYmd(+m[1], +m[2]-1, +m[3]);
+
+  m = searchIn.match(/\b(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{4})\b/i); // DD Mon YYYY
+  if(m) return validYmd(+m[3], monthNames[m[2].slice(0,3).toLowerCase()], +m[1]);
+
+  return null;
+}
+function validYmd(y, moIdx, d){
+  if(moIdx>=0 && moIdx<=11 && d>=1 && d<=31 && y>1990 && y<2100){
+    return `${y}-${String(moIdx+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  }
+  return null;
+}
+
+/* ---------- OCR ---------- */
+async function runOcr(dataUrl, onProgress){
+  try{
+    const result = await Tesseract.recognize(dataUrl, 'eng', {
+      logger: m => { if(m.status === 'recognizing text' && onProgress) onProgress(m.progress); }
+    });
+    return result.data.text.trim();
+  } catch(e){
+    console.error('OCR failed', e);
+    return '';
+  }
+}
+
+/* ---------- render root ---------- */
+function render(){
+  const app = document.getElementById('app');
+  if(state.screen === 'login') return renderLogin(app);
+  if(state.screen === 'settings') return renderSettings(app);
+  renderVault(app);
+}
+
+function renderLogin(app){
+  app.innerHTML = `
+    <div class="login-screen">
+      <div class="seal">${brandMarkSvg(34)}</div>
+      <h1>Vault</h1>
+      <p>One secure place for Aadhaar, bills, warranty cards, and licences — organized in your own Google Drive, and searchable by what's inside them.</p>
+      <button class="google-btn" id="googleBtn">
+        <svg class="gicon" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.6-6 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.1 8 3.1l5.7-5.7C34.6 6.1 29.6 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.2-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.5 15.9 18.9 13 24 13c3.1 0 5.9 1.1 8 3.1l5.7-5.7C34.6 6.1 29.6 4 24 4 16.3 4 9.6 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.5 0 10.4-1.9 14.3-5.1l-6.6-5.4C29.7 35.4 27 36.4 24 36.4c-5.3 0-9.7-3.4-11.3-8.1l-6.6 5.1C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.2 5.7l6.6 5.4C41.9 35.9 44 30.4 44 24c0-1.2-.1-2.4-.4-3.5z"/></svg>
+        Sign in with Google
+      </button>
+      <div class="error-text" id="loginErr" style="display:none;"></div>
+      <div class="demo-note">Your documents are stored as regular files in your own Google Drive, under a "Vault" folder, and organized by category. This app can only see the files and folders it creates there.</div>
+    </div>
+  `;
+  document.getElementById('googleBtn').onclick = async () => {
+    const btn = document.getElementById('googleBtn');
+    const errEl = document.getElementById('loginErr');
+    const originalLabel = btn.innerHTML;
+    errEl.style.display = 'none';
+    btn.disabled = true;
+    btn.textContent = 'Signing in…';
+    try{
+      const provider = new firebase.auth.GoogleAuthProvider();
+      const result = await auth.signInWithPopup(provider);
+      state.user = {name: result.user.displayName, email: result.user.email, uid: result.user.uid, photoURL: result.user.photoURL};
+      const tokenResp = await requestDriveAccessToken();
+      state.driveAccessToken = tokenResp.access_token;
+      state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
+      await loadUserData();
+      state.screen = 'vault';
+      render();
+    } catch(e){
+      console.error('Sign-in failed', e);
+      btn.disabled = false;
+      btn.innerHTML = originalLabel;
+      errEl.textContent = 'Sign-in failed — please try again.';
+      errEl.style.display = 'block';
+    }
+  };
+  renderModal();
+}
+
+function renderSettings(app){
+  app.innerHTML = `
+    <div class="settings-header">
+      <button class="icon-only-btn" id="backToVaultBtn" aria-label="Back">${icon('back',22)}</button>
+      <div class="brand-name">Settings</div>
+    </div>
+    <div class="settings">
+      <div class="settings-section">
+        <h4>Account</h4>
+        <div class="acct-card">
+          ${state.user.photoURL ? `<img class="acct-avatar" src="${state.user.photoURL}" alt="">` : `<div class="acct-avatar"></div>`}
+          <div>
+            <div class="acct-name">${escapeHtml(state.user.name)}</div>
+            <div class="acct-email">${escapeHtml(state.user.email)}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Storage</h4>
+        <div id="storageInfo" class="search-hint">Loading…</div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Appearance</h4>
+        <div class="theme-toggle-row">
+          <button data-theme-choice="system" class="${currentTheme()==='system'?'active':''}">System</button>
+          <button data-theme-choice="light" class="${currentTheme()==='light'?'active':''}">Light</button>
+          <button data-theme-choice="dark" class="${currentTheme()==='dark'?'active':''}">Dark</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Categories</h4>
+        ${state.categories.map(c => `
+          <div class="cat-manage-row">
+            <span class="cm-icon">${categoryIconHtml(c, 17)}</span>
+            <span class="cm-label">${escapeHtml(c.label)}</span>
+            <button class="icon-btn" data-rename-cat="${c.id}">Rename</button>
+            <button class="icon-btn danger" data-delete-cat="${c.id}">Delete</button>
+          </div>
+        `).join('')}
+        <button class="ghost" id="addCategoryBtn">+ Add category</button>
+      </div>
+
+      <div class="settings-section">
+        <h4>Drive</h4>
+        <div class="settings-row"><span>Open Vault folder in Drive</span><button class="icon-btn" id="openDriveBtn">Open</button></div>
+        <div class="settings-row"><span>Sync files added directly in Drive</span><button class="icon-btn" id="syncDriveBtn">Sync now</button></div>
+        <div class="settings-row"><span>Export document list (CSV)</span><button class="icon-btn" id="exportCsvBtn">Export</button></div>
+      </div>
+
+      <div class="settings-section">
+        <button class="ghost" id="signOutBtn">Sign out</button>
+      </div>
+
+      <div class="settings-section">
+        <h4>Danger zone</h4>
+        <div class="danger-zone">
+          <p>Permanently deletes every document, the Vault folder in your Drive, and this sign-in account. This cannot be undone.</p>
+          <button class="danger-solid" id="deleteAccountBtn">Delete account &amp; vault</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('backToVaultBtn').onclick = () => goBackOneLayer();
+
+  const vaultBytes = state.documents.reduce((sum,d) => sum + (d.size||0), 0);
+  driveGetStorageQuota().then(quota => {
+    const el = document.getElementById('storageInfo');
+    if(!el) return;
+    if(quota && quota.limit){
+      const pct = Math.min(100, Math.round((+quota.usage / +quota.limit) * 100));
+      el.innerHTML = `
+        <div class="storage-bar-track"><div class="storage-bar-fill" style="width:${pct}%"></div></div>
+        <div class="search-hint">${formatBytes(+quota.usage)} of ${formatBytes(+quota.limit)} used in Drive · Vault: ${formatBytes(vaultBytes)}</div>
+      `;
+    } else {
+      el.textContent = `Vault: ${formatBytes(vaultBytes)} · Drive storage is unlimited on this account`;
+    }
+  }).catch(e => {
+    console.error('Could not load storage quota', e);
+    const el = document.getElementById('storageInfo');
+    if(el) el.textContent = `Vault: ${formatBytes(vaultBytes)} · could not load overall Drive usage (${e && e.code === 'DRIVE_TOKEN_EXPIRED' ? 'reconnect to Google' : 'check your connection'})`;
+  });
+
+  document.querySelectorAll('[data-theme-choice]').forEach(btn => {
+    btn.onclick = () => { applyTheme(btn.getAttribute('data-theme-choice')); render(); };
+  });
+
+  document.getElementById('addCategoryBtn').onclick = openAddCategoryModal;
+  document.querySelectorAll('[data-rename-cat]').forEach(btn => {
+    btn.onclick = () => openEditCategoryModal(btn.getAttribute('data-rename-cat'));
+  });
+  document.querySelectorAll('[data-delete-cat]').forEach(btn => {
+    btn.onclick = () => deleteCategory(btn.getAttribute('data-delete-cat'));
+  });
+
+  document.getElementById('openDriveBtn').onclick = () => window.open(`https://drive.google.com/drive/folders/${state.vaultFolderId}`, '_blank');
+  document.getElementById('syncDriveBtn').onclick = runSyncFromDrive;
+  document.getElementById('exportCsvBtn').onclick = exportDocumentListCsv;
+  document.getElementById('signOutBtn').onclick = () => signOutUser();
+  document.getElementById('deleteAccountBtn').onclick = openDeleteAccountModal;
+
+  renderModal();
+}
+
+function matchesSearch(doc){
+  if(!state.searchQuery) return {match:true, snippet:null};
+  const q = state.searchQuery.toLowerCase();
+  if(doc.title.toLowerCase().includes(q)) return {match:true, snippet:null};
+  const text = doc.ocrText || '';
+  const idx = text.toLowerCase().indexOf(q);
+  if(idx === -1) return {match:false, snippet:null};
+  const start = Math.max(0, idx-28);
+  const end = Math.min(text.length, idx+q.length+28);
+  const re = new RegExp('('+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','ig');
+  const snippet = escapeHtml(text.slice(start,end)).replace(re, '<mark>$1</mark>');
+  return {match:true, snippet: (start>0?'…':'') + snippet + (end<text.length?'…':'')};
+}
+
+function renderVault(app){
+  const visibleDocs = state.documents.filter(d => !!d.archived === state.showArchived);
+  const filtered = visibleDocs.map(d => ({...d, ...matchesSearch(d)})).filter(d => d.match);
+  const upcoming = state.documents
+    .filter(d => d.expiry && !d.archived)
+    .map(d => ({...d, days: daysUntil(d.expiry)}))
+    .filter(d => d.days<=60 && d.days>=-EXPIRED_REMINDER_GRACE_DAYS)
+    .sort((a,b)=>a.days-b.days);
+
+  const grouped = {};
+  filtered.forEach(d => { (grouped[d.category] = grouped[d.category] || []).push(d); });
+  const catOrder = state.categories.map(c=>c.id).filter(c => grouped[c] && grouped[c].length);
+
+  const archivedCount = state.documents.filter(d => d.archived).length;
+
+  app.innerHTML = `
+    <header class="topbar">
+      <div class="brand"><div class="brand-mark">${brandMarkSvg(20)}</div><div class="brand-name">Vault</div></div>
+      <button class="icon-only-btn" id="openSettingsBtn" aria-label="Settings" title="Settings">${icon('settings',22)}</button>
+    </header>
+    <div class="vault">
+      ${!driveTokenValid() ? `
+        <div class="reminder-card urgent">
+          <span class="rtitle">Google Drive connection expired</span>
+          <button class="icon-btn" id="reconnectDriveBtn">Reconnect</button>
+        </div>
+      ` : ''}
+      <div class="search-bar">
+        <span class="sicon">${icon('search',18)}</span>
+        <input type="text" id="searchInput" placeholder="Search titles or text inside documents" value="${escapeHtml(state.searchQuery)}" />
+      </div>
+      ${state.searchQuery ? `<div class="search-hint">${filtered.length} result${filtered.length===1?'':'s'} for "${escapeHtml(state.searchQuery)}"</div>` : ''}
+
+      ${!state.searchQuery && !state.showArchived && upcoming.length ? `
+        <div class="section-title">Renewals</div>
+        <div class="renewal-strip">
+          ${upcoming.map(d => `
+            <div class="renewal-card ${d.days<=7?'urgent':''}">
+              <div class="renewal-title">${escapeHtml(d.title)}</div>
+              <div class="renewal-days">${d.days<0?'Expired':d.days===0?'Due today':d.days+' day'+(d.days===1?'':'s')+' left'}</div>
+            </div>
+          `).join('')}
+        </div>` : ''}
+
+      ${archivedCount ? `<button class="archive-toggle" id="archiveToggleBtn">${state.showArchived ? `${icon('back',14)} Back to active documents` : `View archived (${archivedCount})`}</button>` : ''}
+
+      ${visibleDocs.length === 0 ? `
+        <div class="empty-state">${state.showArchived ? 'No archived documents.' : 'No documents yet.<br>Add your first one below.'}</div>
+      ` : filtered.length === 0 ? `
+        <div class="empty-state">No documents match "${escapeHtml(state.searchQuery)}".</div>
+      ` : catOrder.map(cat => {
+        const meta = categoryFor(cat);
+        return `
+        <div class="section-title cat-toggle" data-cat="${cat}" role="button" tabindex="0">
+          <span class="cat-title-label">${categoryIconHtml(meta,15)} ${escapeHtml(meta.label)}</span>
+          <span class="cat-count">${grouped[cat].length}<span class="cat-chevron ${state.collapsedCats[cat] ? 'collapsed' : ''}">${icon('chevronDown',15)}</span></span>
+        </div>
+        ${state.collapsedCats[cat] ? '' : `<div class="doc-card-grid">${grouped[cat].map(renderDocCard).join('')}</div>`}
+      `; }).join('')}
+    </div>
+    ${!state.showArchived ? `
+      <div class="fab">
+        <button class="camera-fab" id="cameraFabBtn" aria-label="Capture with camera">${icon('camera',22)}</button>
+        <button class="primary" id="addDocBtn">${icon('plus',20)} Add document</button>
+      </div>
+    ` : ''}
+  `;
+
+  document.getElementById('openSettingsBtn').onclick = () => { state.screen = 'settings'; pushAppHistoryState(); render(); };
+  const addBtn = document.getElementById('addDocBtn');
+  if(addBtn) addBtn.onclick = () => openAddModal();
+  const camBtn = document.getElementById('cameraFabBtn');
+  if(camBtn) camBtn.onclick = () => openCameraModal();
+  const reconnectBtn = document.getElementById('reconnectDriveBtn');
+  if(reconnectBtn) reconnectBtn.onclick = reconnectDrive;
+  const archiveToggleBtn = document.getElementById('archiveToggleBtn');
+  if(archiveToggleBtn) archiveToggleBtn.onclick = () => {
+    if(state.showArchived){
+      goBackOneLayer();
+    } else {
+      state.showArchived = true; state.searchQuery = '';
+      pushAppHistoryState();
+      render();
+    }
+  };
+
+  const searchInput = document.getElementById('searchInput');
+  searchInput.oninput = (e) => {
+    state.searchQuery = e.target.value;
+    render();
+    // render() just rebuilt the whole vault view via innerHTML, destroying the input we're
+    // typing into — re-query the freshly created one and refocus it, or every keystroke drops
+    // the on-screen keyboard (focusing the old, now-detached node is a silent no-op).
+    const freshInput = document.getElementById('searchInput');
+    if(freshInput){ freshInput.focus(); freshInput.setSelectionRange(freshInput.value.length, freshInput.value.length); }
+  };
+
+  document.querySelectorAll('.cat-toggle').forEach(el => {
+    const toggle = () => { const c = el.getAttribute('data-cat'); state.collapsedCats[c] = !state.collapsedCats[c]; render(); };
+    el.onclick = toggle;
+    el.onkeydown = (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); toggle(); } };
+  });
+
+  filtered.forEach(d => {
+    const v = document.getElementById('view-'+d.id), s = document.getElementById('share-'+d.id),
+          m = document.getElementById('menu-'+d.id), ic = document.getElementById('docicon-'+d.id);
+    if(v) v.onclick = () => viewDocument(d.id);
+    if(s) s.onclick = () => openShareModal(d.id);
+    if(ic) ic.onclick = () => viewDocument(d.id);
+    if(m) m.onclick = (e) => {
+      e.stopPropagation();
+      state.openActionMenu = state.openActionMenu === d.id ? null : d.id;
+      render();
+    };
+  });
+
+  document.querySelectorAll('[data-menu-action]').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const docId = btn.getAttribute('data-doc');
+      const action = btn.getAttribute('data-menu-action');
+      const doc = state.documents.find(x => x.id === docId);
+      state.openActionMenu = null;
+      if(action === 'edit') openEditModal(docId);
+      else if(action === 'archive') toggleArchive(docId);
+      else if(action === 'remind' && doc) window.open(addToCalendarUrl(doc), '_blank');
+      else if(action === 'download') downloadDocument(docId);
+      else if(action === 'delete') requestDeleteDocument(docId);
+    };
+  });
+
+  // Close any open overflow menu on an outside click — the listener is added fresh per render
+  // and removes itself on first fire, so it never stacks up across re-renders.
+  if(state.openActionMenu){
+    const closeMenu = () => { state.openActionMenu = null; render(); };
+    document.addEventListener('click', closeMenu, {once: true});
+  }
+
+  renderModal();
+}
+
+function renderDocCard(d){
+  const meta = categoryFor(d.category);
+  let expiryBadge = '';
+  if(d.expiry){
+    const days = daysUntil(d.expiry);
+    const isExpired = days<0;
+    const style = isExpired ? 'background:var(--danger-bg);color:var(--danger);' : days<=7 ? 'background:var(--danger-bg);color:var(--danger);' : days<=30 ? 'background:#f7edd9;color:#8a5a05;' : 'background:var(--success-bg);color:var(--success);';
+    expiryBadge = `<span class="doc-expiry" style="${style}">${isExpired ? 'Expired' : 'Expires'} ${formatExpiryDate(d.expiry)}</span>`;
+  }
+  const activeShares = state.shares.filter(s => s.docId===d.id && !s.revoked && new Date(s.expiresAt)>new Date());
+  const menuOpen = state.openActionMenu === d.id;
+  return `
+    <div class="doc-card ${d.archived ? 'is-archived' : ''}">
+      <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" id="docicon-${d.id}" role="button" aria-label="View ${escapeHtml(d.title)}">${categoryIconHtml(meta,19)}</div>
+      <div class="doc-body">
+        <p class="doc-title">${escapeHtml(d.title)}</p>
+        <p class="doc-meta">Added ${formatDate(d.addedAt)}${activeShares.length ? ' · shared with '+activeShares.length : ''}${d.archived ? ' · archived' : ''}</p>
+        ${d.snippet ? `<p class="doc-snippet">${d.snippet}</p>` : ''}
+        ${expiryBadge}
+        <div class="doc-actions">
+          <button class="chip-btn" id="view-${d.id}">View</button>
+          <button class="chip-btn secondary" id="share-${d.id}">Share</button>
+          <div class="action-menu-wrap">
+            <button class="icon-only-btn small" id="menu-${d.id}" aria-label="More actions" aria-haspopup="true" aria-expanded="${menuOpen}">${icon('more',18)}</button>
+            ${menuOpen ? `
+              <div class="action-menu" id="actionMenu-${d.id}">
+                <button data-menu-action="edit" data-doc="${d.id}">${icon('edit',15)} Edit</button>
+                <button data-menu-action="archive" data-doc="${d.id}">${icon(d.archived?'restore':'archive',15)} ${d.archived ? 'Restore' : 'Archive'}</button>
+                ${d.expiry ? `<button data-menu-action="remind" data-doc="${d.id}">${icon('calendar',15)} Add reminder</button>` : ''}
+                <button data-menu-action="download" data-doc="${d.id}">${icon('download',15)} Download</button>
+                <button class="danger" data-menu-action="delete" data-doc="${d.id}">${icon('trash',15)} Delete</button>
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ---------- add document (file upload) ---------- */
+let pendingFile = null;
+let pendingOcrText = '';
+let pendingExpirySuggested = false;
+let pendingOcrRunning = false; // guards against saving before background OCR finishes
+
+function openAddModal(){ state.modal = 'add'; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+function closeModal(){
+  goBackOneLayer();
+}
+
+function categoryOptionsHtml(selected){
+  return state.categories.map(c => `<option value="${c.id}" ${c.id===selected?'selected':''}>${escapeHtml(c.label)}</option>`).join('');
+}
+
+function renderModal(){
+  const existing = document.getElementById('modalOverlay');
+  if(existing) existing.remove();
+  if(!state.modal) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'modalOverlay';
+
+  if(state.modal === 'add'){
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Add a document</h3>
+        <p class="sub">OCR runs on-device to make it searchable and to suggest an expiry date.</p>
+        <label class="field-label">File</label>
+        <div class="file-drop" id="fileDrop">Tap to choose a file</div>
+        <input type="file" id="fileInput" accept="image/*,application/pdf" style="display:none;" />
+        <div class="search-hint" id="pdfNote" style="display:none;">PDFs are stored, but text search and expiry suggestion only work on photos/scans right now — OCR can't read inside a PDF yet.</div>
+        <div class="progress-row" id="ocrProgress" style="display:none;"></div>
+        <label class="field-label">Document title</label>
+        <input type="text" id="docTitle" placeholder="e.g. Aadhaar card" />
+        <label class="field-label">Category</label>
+        <select id="docCategory">${categoryOptionsHtml()}</select>
+        <label class="field-label">Expiry date (optional)</label>
+        <input type="date" id="docExpiry" />
+        <div class="suggest-note" id="expirySuggestNote" style="display:none;"></div>
+        <div class="error-text" id="addErr" style="display:none;"></div>
+        <button class="primary" id="saveDocBtn">Save document</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('fileDrop').onclick = () => document.getElementById('fileInput').click();
+    document.getElementById('fileInput').onchange = async (e) => {
+      const f = e.target.files[0];
+      if(!f) return;
+      pendingFile = f;
+      pendingOcrText = '';
+      pendingExpirySuggested = false;
+      const drop = document.getElementById('fileDrop');
+      drop.textContent = f.name; drop.classList.add('has-file');
+      document.getElementById('pdfNote').style.display = f.type === 'application/pdf' ? 'block' : 'none';
+      if(f.type.startsWith('image/')){
+        const saveBtn = document.getElementById('saveDocBtn');
+        pendingOcrRunning = true;
+        if(saveBtn) saveBtn.disabled = true;
+        const dataUrl = await readFileAsDataURL(f);
+        pendingOcrText = await runOcr(dataUrl, setOcrProgress);
+        document.getElementById('ocrProgress').style.display = 'none';
+        applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
+        pendingOcrRunning = false;
+        if(saveBtn) saveBtn.disabled = false;
+      }
+    };
+    document.getElementById('saveDocBtn').onclick = saveDocument;
+  }
+
+  if(state.modal === 'edit'){
+    const doc = state.documents.find(d => d.id === state.editDocId);
+    if(!doc){ state.modal = null; return; }
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Edit document</h3>
+        <p class="sub">Changing category moves the file to that category's folder in Drive.</p>
+        <label class="field-label">Document title</label>
+        <input type="text" id="editTitle" value="${escapeHtml(doc.title)}" />
+        <label class="field-label">Category</label>
+        <select id="editCategory">${categoryOptionsHtml(doc.category)}</select>
+        <label class="field-label">Expiry date (optional)</label>
+        <input type="date" id="editExpiry" value="${doc.expiry || ''}" />
+        <div class="error-text" id="editErr" style="display:none;"></div>
+        <button class="primary" id="saveEditBtn">Save changes</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('saveEditBtn').onclick = saveEditedDocument;
+  }
+
+  if(state.modal === 'confirmDelete'){
+    const doc = state.documents.find(d => d.id === state.deleteDocId);
+    if(!doc){ state.modal = null; return; }
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Delete "${escapeHtml(doc.title)}"?</h3>
+        <p class="sub">This permanently deletes the file from your Drive and removes it from Vault. This can't be undone.</p>
+        <button class="danger-solid" id="confirmDelBtn">Yes, delete permanently</button>
+        <button class="ghost" id="cancelDelBtn">Cancel</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('cancelDelBtn').onclick = closeModal;
+    document.getElementById('confirmDelBtn').onclick = confirmDeleteDocument;
+  }
+
+  if(state.modal === 'viewFile'){
+    const doc = state.documents.find(d => d.id === state.viewDocId);
+    if(!doc){ state.modal = null; return; }
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>${escapeHtml(doc.title)}</h3>
+        <div id="viewFileContent" class="search-hint">Loading…</div>
+        <button class="ghost" id="downloadFromViewBtn">Download</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('downloadFromViewBtn').onclick = () => downloadDocument(doc.id);
+  }
+
+  if(state.modal === 'exitConfirm'){
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <h3>Leave Vault?</h3>
+        <p class="sub">Your documents stay exactly as they are in your Drive — this just closes the app.</p>
+        <button class="danger-solid" id="confirmExitBtn">Yes, close the app</button>
+        <button class="ghost" id="cancelExitBtn">Stay</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('confirmExitBtn').onclick = confirmExitApp;
+    document.getElementById('cancelExitBtn').onclick = cancelExitConfirm;
+  }
+
+  if(state.modal === 'camera'){
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Capture a document</h3>
+        <p class="sub">Capture one page at a time. Multiple pages combine into a single PDF.</p>
+        <div class="camera-wrap"><video id="cameraVideo" autoplay playsinline></video></div>
+        <div class="camera-controls">
+          <button class="capture-btn" id="captureBtn">Capture page</button>
+        </div>
+        ${state.capturedPages.length ? `<div class="page-thumbs">${state.capturedPages.map(p=>`<img class="page-thumb" src="${p}">`).join('')}</div>` : ''}
+        <div class="progress-row" id="ocrProgress" style="display:none;"></div>
+        <label class="field-label">Document title</label>
+        <input type="text" id="camTitle" placeholder="e.g. Electricity bill" />
+        <label class="field-label">Category</label>
+        <select id="camCategory">${categoryOptionsHtml()}</select>
+        <label class="field-label">Expiry date (optional)</label>
+        <input type="date" id="camExpiry" />
+        <div class="suggest-note" id="camExpirySuggestNote" style="display:none;"></div>
+        <div class="error-text" id="camErr" style="display:none;"></div>
+        <button class="primary" id="saveCamBtn" ${state.capturedPages.length && !pendingOcrRunning ? '' : 'disabled'}>Save ${state.capturedPages.length>1 ? 'as PDF' : ''} (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('captureBtn').onclick = capturePage;
+    document.getElementById('saveCamBtn').onclick = saveCameraDocument;
+    startCamera();
+  }
+
+  if(state.modal === 'share'){
+    const doc = state.documents.find(d => d.id === state.shareDocId);
+    if(!doc){ state.modal = null; state.shareDocId = null; return; }
+    const activeShares = state.shares.filter(s => s.docId === state.shareDocId);
+    const justGenerated = state.shares.find(s => s.id === state.lastGeneratedShareId);
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Share "${escapeHtml(doc.title)}"</h3>
+        <p class="sub">Generates a link that expires in 48 hours. Revoke it anytime.</p>
+        <button class="primary" id="genShareBtn">Generate share link</button>
+        <div id="shareResult">${justGenerated ? `
+          <div class="share-link-box">vault.app/shared/${justGenerated.token}</div>
+          <p class="sub" style="margin-top:-6px;">Send this link separately from anything you share verbally — that's what keeps it safe in transit.</p>
+        ` : ''}</div>
+        ${activeShares.length ? `
+          <div class="section-title" style="margin-top:20px;">Active and past shares</div>
+          ${activeShares.map(s => `
+            <div class="share-row">
+              <span>${s.revoked ? 'Revoked' : (new Date(s.expiresAt) > new Date() ? 'Active · expires ' + formatDate(s.expiresAt) : 'Expired')}</span>
+              ${!s.revoked && new Date(s.expiresAt) > new Date() ? `<button class="icon-btn danger" data-revoke="${s.id}">Revoke</button>` : ''}
+            </div>
+          `).join('')}
+        ` : ''}
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('genShareBtn').onclick = () => generateShare(doc.id);
+    overlay.querySelectorAll('[data-revoke]').forEach(btn => { btn.onclick = () => revokeShare(btn.getAttribute('data-revoke')); });
+  }
+
+  if(state.modal === 'addCategory'){
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Add a category</h3>
+        <p class="sub">Creates a matching subfolder inside Vault in your Drive.</p>
+        <label class="field-label">Icon</label>
+        ${iconPickerHtml('newCatIcon', 'doc')}
+        <label class="field-label">Label</label>
+        <input type="text" id="newCatLabel" placeholder="e.g. Medical" />
+        <div class="error-text" id="newCatErr" style="display:none;"></div>
+        <button class="primary" id="saveNewCatBtn">Create category</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('saveNewCatBtn').onclick = saveNewCategory;
+    wireIconPicker('newCatIcon');
+  }
+
+  if(state.modal === 'editCategory'){
+    const cat = state.categories.find(c => c.id === state.editCategoryId);
+    if(!cat){ state.modal = null; return; }
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Rename category</h3>
+        <p class="sub">Also renames the matching folder in Drive to match.</p>
+        <label class="field-label">Icon</label>
+        ${iconPickerHtml('editCatIcon', cat.icon)}
+        <label class="field-label">Label</label>
+        <input type="text" id="editCatLabel" value="${escapeHtml(cat.label)}" />
+        <div class="error-text" id="editCatErr" style="display:none;"></div>
+        <button class="primary" id="saveEditCatBtn">Save changes</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('saveEditCatBtn').onclick = saveRenamedCategory;
+    wireIconPicker('editCatIcon');
+  }
+
+  if(state.modal === 'deleteAccount'){
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Delete account &amp; vault</h3>
+        <p class="sub">This permanently deletes every document, the Vault folder in your Drive, and revokes this app's sign-in for your account. This cannot be undone.</p>
+        <label class="field-label">Type DELETE to confirm</label>
+        <input type="text" id="deleteConfirmPhrase" placeholder="DELETE" />
+        <div class="error-text" id="deleteAccountErr" style="display:none;"></div>
+        <button class="danger-solid" id="confirmDeleteAccountBtn" disabled>Permanently delete everything</button>
+        <button class="ghost" id="cancelDeleteAccountBtn">Cancel</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('cancelDeleteAccountBtn').onclick = closeModal;
+    const phraseInput = document.getElementById('deleteConfirmPhrase');
+    const confirmBtn = document.getElementById('confirmDeleteAccountBtn');
+    phraseInput.oninput = () => { confirmBtn.disabled = phraseInput.value.trim() !== 'DELETE'; };
+    confirmBtn.onclick = deleteEverything;
+  }
+}
+
+function applyExpirySuggestionIfEmpty(inputId, noteId, ocrText){
+  const input = document.getElementById(inputId);
+  const note = document.getElementById(noteId);
+  if(!input || pendingExpirySuggested || input.value) return;
+  const guess = guessExpiryDate(ocrText);
+  if(guess){
+    input.value = guess;
+    pendingExpirySuggested = true;
+    if(note){ note.textContent = 'Expiry date suggested from the scan — double-check it before saving.'; note.style.display = 'block'; }
+  }
+}
+
+function setOcrProgress(pct, pageNum, total){
+  const el = document.getElementById('ocrProgress');
+  if(!el) return;
+  el.style.display = 'block';
+  const pageLabel = (pageNum && total > 1) ? `Page ${pageNum} of ${total} — ` : '';
+  el.innerHTML = `<div class="progress-track"><div class="progress-fill" style="width:${Math.round(pct*100)}%"></div></div>${pageLabel}Reading text on-device… ${Math.round(pct*100)}%`;
+}
+// fetch() has no upload-progress event, so this is only meaningful for the XHR-based driveUpload.
+function setUploadProgress(pct){
+  const el = document.getElementById('ocrProgress');
+  if(!el) return;
+  el.style.display = 'block';
+  el.innerHTML = `<div class="progress-track"><div class="progress-fill" style="width:${Math.round(pct*100)}%"></div></div>Uploading to Drive… ${Math.round(pct*100)}%`;
+}
+
+async function saveDocument(){
+  const title = document.getElementById('docTitle').value.trim();
+  const category = document.getElementById('docCategory').value;
+  const expiry = document.getElementById('docExpiry').value;
+  const errEl = document.getElementById('addErr');
+  const saveBtn = document.getElementById('saveDocBtn');
+
+  if(!title){ errEl.textContent='Enter a document title.'; errEl.style.display='block'; return; }
+  if(!pendingFile){ errEl.textContent='Choose a file.'; errEl.style.display='block'; return; }
+  errEl.style.display = 'none';
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving…';
+
+  try{
+    await finalizeAndStoreDocument({title, category, expiry, blob: pendingFile, mimeType: pendingFile.type, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
+    closeModal();
+    toast(pendingOcrText ? 'Saved and indexed' : 'Saved');
+  } catch(e){
+    // Without this, any failure here (a huge file, a Drive error, OCR erroring in a way runOcr
+    // didn't already catch) left the button stuck on "Saving…" with no way to retry.
+    console.error('Save failed', e);
+    errEl.textContent = friendlyCloudError(e);
+    errEl.style.display = 'block';
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save document';
+  }
+}
+
+async function finalizeAndStoreDocument({title, category, expiry, blob, mimeType, ocrText, onUploadProgress}){
+  const cat = categoryFor(category);
+  const id = 'doc_' + Date.now();
+  const filename = safeFilename(title, mimeType);
+  const driveFileId = await driveUpload(blob, filename, mimeType, cat.driveFolderId, onUploadProgress);
+  const doc = {
+    id, title, category: cat.id, expiry: expiry || null,
+    driveFileId, mimeType, size: blob.size || 0,
+    ocrText: ocrText || '',
+    addedAt: new Date().toISOString(),
+    archived: false
+  };
+  try{
+    await persistDocument(doc);
+  } catch(e){
+    // The Firestore write failed after the Drive upload already succeeded — clean up the now-
+    // orphaned Drive file (best-effort) rather than leaving it dangling, and don't add the
+    // document to local state below: if it's not in Firestore, it isn't really saved, and the
+    // UI shouldn't show it as if it were.
+    try{ await driveDelete(driveFileId); } catch(cleanupErr){ console.error('Could not clean up orphaned Drive file', cleanupErr); }
+    throw e;
+  }
+  state.documents.unshift(doc);
+}
+
+function readFileAsDataURL(file){
+  return new Promise((resolve, reject) => { const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=reject; r.readAsDataURL(file); });
+}
+
+/* ---------- camera capture ---------- */
+async function startCamera(){
+  try{
+    state.cameraStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    const video = document.getElementById('cameraVideo');
+    if(video){ video.srcObject = state.cameraStream; }
+  } catch(e){
+    const err = document.getElementById('camErr');
+    if(err){ err.textContent = "Couldn't access the camera — check browser permissions."; err.style.display='block'; }
+  }
+}
+function stopCamera(){
+  if(state.cameraStream){ state.cameraStream.getTracks().forEach(t=>t.stop()); state.cameraStream = null; }
+}
+function openCameraModal(){ state.modal = 'camera'; state.capturedPages = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+
+async function capturePage(){
+  const video = document.getElementById('cameraVideo');
+  if(!video || !video.videoWidth) return;
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+  state.capturedPages.push(dataUrl);
+  pendingOcrRunning = true;
+  renderModal();
+  const pageNum = state.capturedPages.length;
+  const pageText = await runOcr(dataUrl, pct => setOcrProgress(pct, pageNum, pageNum));
+  const progEl = document.getElementById('ocrProgress');
+  if(progEl) progEl.style.display = 'none';
+  pendingOcrText = (pendingOcrText + '\n' + pageText).trim();
+  applyExpirySuggestionIfEmpty('camExpiry', 'camExpirySuggestNote', pendingOcrText);
+  pendingOcrRunning = false;
+  const saveBtn = document.getElementById('saveCamBtn');
+  if(saveBtn) saveBtn.disabled = false;
+}
+
+async function saveCameraDocument(){
+  const title = document.getElementById('camTitle').value.trim();
+  const category = document.getElementById('camCategory').value;
+  const expiry = document.getElementById('camExpiry').value;
+  const errEl = document.getElementById('camErr');
+  const saveBtn = document.getElementById('saveCamBtn');
+
+  if(!title){ errEl.textContent='Enter a document title.'; errEl.style.display='block'; return; }
+  if(!state.capturedPages.length){ errEl.textContent='Capture at least one page.'; errEl.style.display='block'; return; }
+  errEl.style.display = 'none';
+  const originalLabel = saveBtn.textContent;
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving…';
+
+  try{
+    let blob, mimeType;
+    if(state.capturedPages.length === 1){
+      blob = dataUrlToBlob(state.capturedPages[0]);
+      mimeType = 'image/jpeg';
+    } else {
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF();
+      state.capturedPages.forEach((img, i) => {
+        if(i > 0) pdf.addPage();
+        const props = pdf.getImageProperties(img);
+        const w = pdf.internal.pageSize.getWidth();
+        const h = (props.height * w) / props.width;
+        pdf.addImage(img, 'JPEG', 0, 0, w, h);
+      });
+      blob = dataUrlToBlob(pdf.output('datauristring'));
+      mimeType = 'application/pdf';
+    }
+
+    await finalizeAndStoreDocument({title, category, expiry, blob, mimeType, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
+    stopCamera();
+    closeModal();
+    toast('Captured and saved');
+  } catch(e){
+    console.error('Save failed', e);
+    errEl.textContent = friendlyCloudError(e);
+    errEl.style.display = 'block';
+    saveBtn.disabled = false;
+    saveBtn.textContent = originalLabel;
+  }
+}
+
+/* ---------- edit / view / archive / delete ---------- */
+function openEditModal(id){ state.modal = 'edit'; state.editDocId = id; pushAppHistoryState(); render(); }
+async function saveEditedDocument(){
+  const doc = state.documents.find(d => d.id === state.editDocId);
+  if(!doc) return;
+  const title = document.getElementById('editTitle').value.trim();
+  const category = document.getElementById('editCategory').value;
+  const expiry = document.getElementById('editExpiry').value;
+  const errEl = document.getElementById('editErr');
+  const saveBtn = document.getElementById('saveEditBtn');
+  if(!title){ errEl.textContent='Enter a document title.'; errEl.style.display='block'; return; }
+  errEl.style.display = 'none';
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving…';
+  try{
+    const newCat = categoryFor(category);
+    const oldCat = categoryFor(doc.category);
+    if(newCat.id !== oldCat.id){
+      await driveMoveFile(doc.driveFileId, oldCat.driveFolderId, newCat.driveFolderId);
+    }
+    const updated = {...doc, title, category: newCat.id, expiry: expiry || null};
+    await persistDocument(updated);
+    Object.assign(doc, updated);
+    closeModal();
+    toast('Document updated');
+  } catch(e){
+    console.error('Edit failed', e);
+    errEl.textContent = friendlyCloudError(e);
+    errEl.style.display = 'block';
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save changes';
+  }
+}
+
+// Fetches the file's actual bytes and shows them inline instead of leaving the app for Drive's
+// own viewer — same alt=media fetch already used for OCR during Drive sync, just rendered here
+// instead of run through Tesseract. The modal shell renders immediately (via pushAppHistoryState
+// + render below); the fetch result fills in #viewFileContent once it resolves.
+//
+// PDFs are the one exception: an embedded <embed>/<iframe> PDF is unreliable on mobile browsers
+// (most have no built-in plugin for a page-region viewer, only for a full-page/tab one), so a PDF
+// is handed to the browser's own full-tab viewer instead — the one approach that behaves the same
+// on desktop and mobile. That tab has to be opened synchronously, in the same click, or popup
+// blockers kill it — mimeType is already known from state.documents, so this doesn't need to wait
+// on the fetch below.
+async function viewDocument(id){
+  const doc = state.documents.find(d => d.id === id);
+  if(!doc) return;
+  state.modal = 'viewFile';
+  state.viewDocId = id;
+  pushAppHistoryState();
+  render();
+  const isPdf = doc.mimeType === 'application/pdf';
+  const pdfTab = isPdf ? window.open('', '_blank') : null;
+  try{
+    const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
+    const blob = await res.blob();
+    // Closed/navigated away before the fetch resolved — nothing to fill in, and no stale blob
+    // URL to leave dangling.
+    if(state.modal !== 'viewFile' || state.viewDocId !== id){ if(pdfTab) pdfTab.close(); return; }
+    const url = URL.createObjectURL(blob);
+    state.viewObjectUrl = url;
+    const contentEl = document.getElementById('viewFileContent');
+    if(!contentEl) return;
+    if(isPdf){
+      if(pdfTab) pdfTab.location.href = url;
+      contentEl.innerHTML = `<p class="search-hint">Opened in a new tab — your browser's own PDF viewer handles this more reliably than showing it inline here.</p>`;
+    } else {
+      contentEl.innerHTML = `<img src="${url}" alt="${escapeHtml(doc.title)}" style="max-width:100%;border-radius:8px;display:block;margin:0 auto;">`;
+    }
+  } catch(e){
+    console.error('View failed', e);
+    if(pdfTab) pdfTab.close();
+    const contentEl = document.getElementById('viewFileContent');
+    if(contentEl) contentEl.innerHTML = `<p class="error-text">${escapeHtml(friendlyCloudError(e))}</p>`;
+  }
+}
+
+async function downloadDocument(id){
+  const doc = state.documents.find(d => d.id === id);
+  if(!doc) return;
+  try{
+    const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = safeFilename(doc.title, doc.mimeType);
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch(e){
+    console.error('Download failed', e);
+    toast(friendlyCloudError(e));
+  }
+}
+
+async function toggleArchive(id){
+  const doc = state.documents.find(d => d.id === id);
+  if(!doc) return;
+  doc.archived = !doc.archived;
+  render();
+  toast(doc.archived ? 'Archived' : 'Restored');
+  try{ await userDoc().collection('documents').doc(id).update({archived: doc.archived}); }
+  catch(e){ console.error('Failed to update archive state', e); }
+}
+
+function requestDeleteDocument(id){ state.modal = 'confirmDelete'; state.deleteDocId = id; pushAppHistoryState(); render(); }
+async function confirmDeleteDocument(){
+  const id = state.deleteDocId;
+  const doc = state.documents.find(d => d.id === id);
+  state.documents = state.documents.filter(d => d.id !== id);
+  const removedShares = state.shares.filter(s => s.docId === id);
+  state.shares = state.shares.filter(s => s.docId !== id);
+  closeModal();
+  toast('Document deleted');
+  try{
+    await userDoc().collection('documents').doc(id).delete();
+    for(const s of removedShares) await userDoc().collection('shares').doc(s.id).delete();
+    if(doc && doc.driveFileId) await driveDelete(doc.driveFileId);
+  } catch(e){ console.error('Failed to remove document from storage', e); }
+}
+
+/* ---------- sharing ---------- */
+function openShareModal(docId){ state.modal='share'; state.shareDocId=docId; state.lastGeneratedShareId=null; pushAppHistoryState(); render(); }
+async function generateShare(docId){
+  const token = Array.from(crypto.getRandomValues(new Uint8Array(9))).map(b=>b.toString(36)).join('').slice(0,14);
+  const expiresAt = new Date(Date.now()+48*3600*1000).toISOString();
+  const share = {id: 'share_'+Date.now(), docId, token, expiresAt, revoked:false};
+  state.shares.unshift(share);
+  // Drive the "here's your link" box off state instead of writing straight into #shareResult:
+  // renderModal() below does a full innerHTML rebuild of the modal, which would otherwise wipe
+  // out anything written directly into that node a moment earlier.
+  state.lastGeneratedShareId = share.id;
+  renderModal();
+  try{ await userDoc().collection('shares').doc(share.id).set(share); } catch(e){ console.error('Failed to save share', e); }
+}
+async function revokeShare(shareId){
+  const s = state.shares.find(s => s.id === shareId);
+  if(s) s.revoked = true;
+  renderModal();
+  toast('Share revoked');
+  if(s){ try{ await userDoc().collection('shares').doc(s.id).set(s); } catch(e){ console.error('Failed to save revoked share', e); } }
+}
+
+/* ---------- Drive reconnect ----------
+   The Drive OAuth grant runs out in ~1hr with no silent refresh available client-side (no
+   backend to hold a refresh token). This mints a fresh one via the same GIS token client used
+   at sign-in — it doesn't touch the Firebase auth session or any already-loaded documents,
+   since identity and Drive access are handled by separate mechanisms. */
+async function reconnectDrive(){
+  try{
+    const tokenResp = await requestDriveAccessToken();
+    state.driveAccessToken = tokenResp.access_token;
+    state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
+    toast('Reconnected to Google Drive');
+    render();
+  } catch(e){
+    console.error('Reconnect failed', e);
+    toast('Could not reconnect — please try again.');
+  }
+}
+
+/* ---------- category management ---------- */
+function openAddCategoryModal(){ state.modal = 'addCategory'; pushAppHistoryState(); render(); }
+async function saveNewCategory(){
+  const iconKey = document.getElementById('newCatIcon').value.trim() || 'doc';
+  const label = document.getElementById('newCatLabel').value.trim();
+  const errEl = document.getElementById('newCatErr');
+  const btn = document.getElementById('saveNewCatBtn');
+  if(!label){ errEl.textContent='Enter a category name.'; errEl.style.display='block'; return; }
+  errEl.style.display = 'none';
+  btn.disabled = true; btn.textContent = 'Creating…';
+  try{
+    const id = 'cat_' + Date.now();
+    const driveFolderId = await driveCreateFolder(label, state.vaultFolderId);
+    const order = state.categories.length;
+    await userDoc().collection('categories').doc(id).set({label, icon: iconKey, driveFolderId, order});
+    state.categories.push({id, label, icon: iconKey, driveFolderId, order});
+    closeModal();
+    toast('Category created');
+  } catch(e){
+    console.error('Create category failed', e);
+    errEl.textContent = friendlyCloudError(e);
+    errEl.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Create category';
+  }
+}
+
+function openEditCategoryModal(id){ state.modal = 'editCategory'; state.editCategoryId = id; pushAppHistoryState(); render(); }
+async function saveRenamedCategory(){
+  const cat = state.categories.find(c => c.id === state.editCategoryId);
+  if(!cat) return;
+  const iconKey = document.getElementById('editCatIcon').value.trim() || cat.icon;
+  const label = document.getElementById('editCatLabel').value.trim();
+  const errEl = document.getElementById('editCatErr');
+  const btn = document.getElementById('saveEditCatBtn');
+  if(!label){ errEl.textContent='Enter a category name.'; errEl.style.display='block'; return; }
+  errEl.style.display = 'none';
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try{
+    if(label !== cat.label){
+      // Best-effort — keeps the Drive folder's own name matching the category label so
+      // browsing Drive directly still makes sense; not critical if this one call fails.
+      try{
+        await driveFetch(`https://www.googleapis.com/drive/v3/files/${cat.driveFolderId}`, {
+          method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name: label})
+        });
+      } catch(renameErr){ console.error('Could not rename the matching Drive folder', renameErr); }
+    }
+    await userDoc().collection('categories').doc(cat.id).update({label, icon: iconKey});
+    cat.label = label; cat.icon = iconKey;
+    closeModal();
+    toast('Category updated');
+  } catch(e){
+    console.error('Rename category failed', e);
+    errEl.textContent = friendlyCloudError(e);
+    errEl.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Save changes';
+  }
+}
+
+async function deleteCategory(id){
+  const cat = state.categories.find(c => c.id === id);
+  if(!cat) return;
+  if(state.categories.length <= 1){ toast('You need at least one category.'); return; }
+  const inUse = state.documents.filter(d => d.category === id).length;
+  if(inUse > 0){ toast(`Can't delete "${cat.label}" — ${inUse} document${inUse===1?'':'s'} still use it. Move or delete them first.`); return; }
+  try{
+    await userDoc().collection('categories').doc(id).delete();
+    try{ await driveDelete(cat.driveFolderId); } catch(e){ console.error('Could not delete the now-empty Drive folder', e); }
+    state.categories = state.categories.filter(c => c.id !== id);
+    render();
+    toast('Category deleted');
+  } catch(e){
+    console.error('Delete category failed', e);
+    toast(friendlyCloudError(e));
+  }
+}
+
+/* ---------- sync from Drive ----------
+   Picks up files added straight into a category's Drive subfolder outside the app: the
+   subfolder a file was found in becomes its category, its filename (minus extension) becomes
+   its title, and OCR runs on image files so it's searchable — same as adding through the app,
+   just triggered manually here instead of automatically on every load. */
+function blobToDataUrl(blob){
+  return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = reject; r.readAsDataURL(blob); });
+}
+
+async function runSyncFromDrive(){
+  const btn = document.getElementById('syncDriveBtn');
+  if(btn){ btn.disabled = true; btn.textContent = 'Syncing…'; }
+  let importedCount = 0;
+  try{
+    const knownIds = new Set(state.documents.map(d => d.driveFileId));
+    for(const cat of state.categories){
+      const q = encodeURIComponent(`'${cat.driveFolderId}' in parents and trashed=false`);
+      const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,size)`);
+      const json = await res.json();
+      for(const f of (json.files || [])){
+        if(knownIds.has(f.id)) continue;
+        let ocrText = '';
+        if(f.mimeType && f.mimeType.startsWith('image/')){
+          try{
+            const contentRes = await driveFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`);
+            const blob = await contentRes.blob();
+            const dataUrl = await blobToDataUrl(blob);
+            ocrText = await runOcr(dataUrl);
+          } catch(ocrErr){ console.error('Could not OCR a synced file', ocrErr); }
+        }
+        const title = f.name.replace(/\.[^.]+$/, '') || f.name;
+        const doc = {
+          id: 'doc_sync_' + Date.now() + '_' + importedCount,
+          title, category: cat.id, expiry: null,
+          driveFileId: f.id, mimeType: f.mimeType || 'application/octet-stream', size: +(f.size || 0),
+          ocrText, addedAt: new Date().toISOString(), archived: false
+        };
+        await persistDocument(doc);
+        state.documents.unshift(doc);
+        knownIds.add(f.id);
+        importedCount++;
+      }
+    }
+    toast(importedCount ? `Imported ${importedCount} file${importedCount===1?'':'s'} from Drive` : 'Nothing new to import');
+    render();
+  } catch(e){
+    console.error('Sync from Drive failed', e);
+    toast(friendlyCloudError(e));
+    if(btn){ btn.disabled = false; btn.textContent = 'Sync now'; }
+  }
+}
+
+/* ---------- export ---------- */
+function exportDocumentListCsv(){
+  const rows = [['Title','Category','Expiry','Added','Archived','Drive link']];
+  state.documents.forEach(d => {
+    rows.push([d.title, categoryFor(d.category).label, d.expiry || '', formatDate(d.addedAt), d.archived ? 'Yes' : 'No', `https://drive.google.com/file/d/${d.driveFileId}/view`]);
+  });
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], {type: 'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'vault-documents.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  toast('Exported document list');
+}
+
+/* ---------- sign out / delete account ---------- */
+function resetToLoggedOutState(){
+  Object.assign(state, {
+    screen: 'login', user: null, driveAccessToken: null, driveTokenExpiresAt: null,
+    vaultFolderId: null, categories: [], documents: [], shares: [], modal: null,
+    searchQuery: '', showArchived: false, collapsedCats: {}, openActionMenu: null
+  });
+  // A hard reset like this can happen mid-navigation (e.g. idle timeout while deep in Settings)
+  // — flatten our own depth/guard bookkeeping to match; the caller re-arms the guard for the
+  // fresh login screen right after this.
+  appHistoryDepth = 0;
+  guardArmed = false;
+}
+function signOutUser(){
+  auth.signOut().catch(e => console.error('Sign out error', e));
+  resetToLoggedOutState();
+  render();
+  armExitGuardIfIdle();
+  toast('Signed out');
+}
+
+function openDeleteAccountModal(){ state.modal = 'deleteAccount'; pushAppHistoryState(); render(); }
+async function deleteEverything(){
+  const btn = document.getElementById('confirmDeleteAccountBtn');
+  const errEl = document.getElementById('deleteAccountErr');
+  if(btn){ btn.disabled = true; btn.textContent = 'Deleting…'; }
+  try{
+    for(const colName of ['documents','shares','categories']){
+      const snap = await userDoc().collection(colName).get();
+      const batch = db.batch();
+      snap.docs.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+    await userDoc().collection('meta').doc('vault').delete();
+    if(state.vaultFolderId){
+      try{ await driveDelete(state.vaultFolderId); } catch(e){ console.error('Could not delete the Drive Vault folder', e); }
+    }
+    await auth.currentUser.delete();
+    toast('Account and vault deleted');
+    resetToLoggedOutState();
+    render();
+    armExitGuardIfIdle();
+  } catch(e){
+    console.error('Delete account failed', e);
+    if(e && e.code === 'auth/requires-recent-login'){
+      if(errEl){ errEl.textContent = 'For your security, Google requires a recent sign-in before deleting your account. Sign out, sign back in, then try deleting again right away.'; errEl.style.display = 'block'; }
+    } else if(errEl){
+      errEl.textContent = friendlyCloudError(e);
+      errEl.style.display = 'block';
+    }
+    if(btn){ btn.disabled = false; btn.textContent = 'Permanently delete everything'; }
+  }
+}
+
+// Firebase persists the sign-in session by default, but the app never checked for it on load —
+// every fresh page open showed the login screen regardless of a still-valid session, which reads
+// to the user as "the app keeps logging me out." Restore silently here: if Firebase still has the
+// session, reacquire the Drive token the same silent way the Sign-in button does, and only fall
+// back to asking for a fresh sign-in if that silent reacquisition itself fails.
+auth.onAuthStateChanged(async (user) => {
+  if(!user || state.user) return;
+  try{
+    const tokenResp = await requestDriveAccessToken();
+    state.user = {name: user.displayName, email: user.email, uid: user.uid, photoURL: user.photoURL};
+    state.driveAccessToken = tokenResp.access_token;
+    state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
+    await loadUserData();
+    state.screen = 'vault';
+    render();
+    armExitGuardIfIdle();
+  } catch(e){
+    console.warn('Could not silently restore the signed-in session — showing the sign-in screen.', e);
+  }
+});
+
+render();
+armExitGuardIfIdle();
+</script>
+</body>
+</html>
