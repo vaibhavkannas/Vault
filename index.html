@@ -2050,7 +2050,12 @@ async function deleteEverything(){
 // to the user as "the app keeps logging me out." Restore silently here: if Firebase still has the
 // session, reacquire the Drive token the same silent way the Sign-in button does, and only fall
 // back to asking for a fresh sign-in if that silent reacquisition itself fails.
-auth.onAuthStateChanged(async (user) => {
+auth.getRedirectResult().catch(e => {
+  console.error('Redirect sign-in did not complete', e);
+  const errEl = document.getElementById('loginErr');
+  if(errEl){ errEl.textContent = 'Sign-in was not completed — please try again.'; errEl.style.display = 'block'; }
+});
+  auth.onAuthStateChanged(async (user) => {
   if(!user || state.user) return;
   state.user = {name: user.displayName, email: user.email, uid: user.uid, photoURL: user.photoURL};
   try{
