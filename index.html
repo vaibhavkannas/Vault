@@ -837,33 +837,21 @@ function renderLogin(app){
       <div class="demo-note">Your documents are stored as regular files in your own Google Drive, under a "Vault" folder, and organized by category. This app can only see the files and folders it creates there.</div>
     </div>
   `;
-  document.getElementById('googleBtn').onclick = async () => {
+  document.getElementById('googleBtn').onclick = () => {
     const btn = document.getElementById('googleBtn');
     const errEl = document.getElementById('loginErr');
-    const originalLabel = btn.innerHTML;
     errEl.style.display = 'none';
     btn.disabled = true;
-    btn.textContent = 'Signing in…';
-    try{
-      const provider = new firebase.auth.GoogleAuthProvider();
-      const result = await auth.signInWithPopup(provider);
-      state.user = {name: result.user.displayName, email: result.user.email, uid: result.user.uid, photoURL: result.user.photoURL};
-      const tokenResp = await requestDriveAccessToken();
-      state.driveAccessToken = tokenResp.access_token;
-      state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
-      btn.textContent = 'Setting up your vault…';
-      await loadUserData();
-      state.screen = 'vault';
-      render();
-    } catch(e){
-      console.error('Sign-in failed', e);
+    btn.textContent = 'Redirecting to Google…';
+    const provider = new firebase.auth.GoogleAuthProvider();
+    auth.signInWithRedirect(provider).catch(e => {
+      console.error('Could not start redirect sign-in', e);
       btn.disabled = false;
-      btn.innerHTML = originalLabel;
+      btn.textContent = 'Sign in with Google';
       errEl.textContent = 'Sign-in failed — please try again.';
       errEl.style.display = 'block';
-    }
+    });
   };
-  renderModal();
 }
 
 // Shown when Firebase still has the identity (so we know who's signed in) but the silent Drive
