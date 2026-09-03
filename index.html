@@ -20,6 +20,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-functions-compat.js"></script>
 <script src="https://accounts.google.com/gsi/client"></script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap">
 <style>
@@ -270,43 +271,81 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
+const driveAuthFn = firebase.functions().httpsCallable('driveAuth');
 
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('sw.js').catch(e => console.error('Service worker registration failed', e));
 }
 
-// Firebase Auth (above) only handles identity — who's signed in. The Drive access token is
-// fetched separately via Google Identity Services' own token client, NOT via Firebase's
-// signInWithPopup credential: that credential path depends on a storage-relay iframe between
-// this origin and the authDomain, which needs third-party storage access that modern Chrome
-// (and any org-managed browser policy) increasingly blocks by default — when blocked, sign-in
-// still succeeds but GoogleAuthProvider.credentialFromResult() silently comes back null. GIS's
-// token client doesn't have that dependency.
+// Firebase Auth (above) only handles identity — who's signed in. Drive *access* is a fully
+// separate concern, deliberately decoupled from Firebase's own signInWithPopup credential (that
+// path depends on a storage-relay iframe between this origin and the authDomain, which needs
+// third-party storage access that modern Chrome — and any org-managed browser policy —
+// increasingly blocks by default; when blocked, sign-in still succeeds but
+// GoogleAuthProvider.credentialFromResult() silently comes back null).
+//
+// Drive access tokens are short-lived (~1hr) by Google's own design for a public/browser OAuth
+// client — no refresh token is ever handed to client-side JS. True persistence (surviving the app
+// being closed for days, with zero re-prompting) needs a refresh token, and a refresh token can
+// only be requested and stored safely server-side — hence the `driveAuth` Cloud Function above,
+// which holds it and mints fresh access tokens on request. The two functions below are the only
+// two ways the client ever gets a Drive access token now:
+//   mintDriveAccessToken()   — every app open, and a periodic background refresh: asks the
+//                              function to turn the stored refresh token into a fresh access
+//                              token. No Google UI at all; this is what makes reopening the app
+//                              after days closed just work.
+//   grantDriveAccessOneTime() — the one-time (or after a revoke) flow: pops Google's consent
+//                              screen via GIS's authorization-CODE client (not the old
+//                              implicit-token client — a code, not a token, is what the function
+//                              needs to exchange for a refresh token), then hands that code to
+//                              the function to store.
 const GOOGLE_OAUTH_CLIENT_ID = '713625816347-61h6pgrra3ec7639kq3o8v3vdfpgmsjb.apps.googleusercontent.com';
-let gisTokenClient = null;
-// silent=true (default) asks for a token with zero UI — works only when there's already a valid
-// grant and no third-party-storage restriction blocking it. silent=false lets GIS show whatever
-// popup it actually needs (a real user gesture, e.g. a button click, must be on the call stack
-// for the popup to survive the browser's popup blocker).
-function requestDriveAccessToken(silent){
-  if(silent === undefined) silent = true;
+
+async function mintDriveAccessToken(){
+  const result = await driveAuthFn({mode: 'mint'});
+  return result.data; // {accessToken, expiresIn}
+}
+
+let gisCodeClient = null;
+function grantDriveAccessOneTime(){
   return new Promise((resolve, reject) => {
-    if(!gisTokenClient){
-      gisTokenClient = google.accounts.oauth2.initTokenClient({
+    if(!gisCodeClient){
+      gisCodeClient = google.accounts.oauth2.initCodeClient({
         client_id: GOOGLE_OAUTH_CLIENT_ID,
         // drive.file: read/write only the files and folders this app creates.
         // drive.metadata.readonly: read-only access to account-wide storage quota, for the
         // Settings storage display — this app still can't see the *content* of other files.
         scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.metadata.readonly',
-        callback: () => {} // overwritten per-call below, immediately before requestAccessToken()
+        ux_mode: 'popup',
+        access_type: 'offline', // ask Google to actually issue a refresh token, not just an access token
+        prompt: 'consent',      // Google only issues a NEW refresh token when consent is freshly shown
+        callback: () => {} // overwritten per-call below, immediately before requestCode()
       });
     }
-    gisTokenClient.callback = (resp) => {
+    gisCodeClient.callback = (resp) => {
       if(resp.error) reject(new Error(resp.error));
-      else resolve(resp);
+      else resolve(resp.code);
     };
-    gisTokenClient.requestAccessToken(silent ? {prompt: ''} : {});
+    gisCodeClient.error_callback = (err) => reject(new Error((err && err.type) || 'popup_failed'));
+    gisCodeClient.requestCode();
+  }).then(async (code) => {
+    const result = await driveAuthFn({mode: 'exchange', code});
+    return result.data; // {accessToken, expiresIn}
   });
+}
+
+// Try the silent path first — a stored refresh token can still be good even after signing back
+// in as the same Google account post-sign-out, saving a second consent popup on top of Firebase's
+// own sign-in. Only fall back to the one-time consent flow when the function says there's
+// nothing to mint from (never provisioned yet, or the grant was revoked).
+async function acquireDriveAccess(){
+  try{
+    return await mintDriveAccessToken();
+  } catch(e){
+    const reason = e && e.details && e.details.reason;
+    if(reason === 'NO_GRANT' || reason === 'GRANT_REVOKED') return await grantDriveAccessOneTime();
+    throw e;
+  }
 }
 
 const DEFAULT_CATEGORIES = [
@@ -321,7 +360,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY-MM-DD HH:MM (24h, no seconds).
-const APP_VERSION = '2026-09-03 18:27';
+const APP_VERSION = '2026-09-03 19:03';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -906,9 +945,9 @@ function renderLogin(app){
       try{
         const result = await auth.signInWithPopup(provider);
         state.user = {name: result.user.displayName, email: result.user.email, uid: result.user.uid, photoURL: result.user.photoURL};
-        const tokenResp = await requestDriveAccessToken();
-        state.driveAccessToken = tokenResp.access_token;
-        state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
+        const tokenResp = await acquireDriveAccess();
+        state.driveAccessToken = tokenResp.accessToken;
+        state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
         btn.textContent = 'Setting up your vault…';
         await loadUserData();
         state.screen = 'vault';
@@ -943,17 +982,17 @@ function renderLogin(app){
   renderModal();
 }
 
-// Shown when Firebase still has the identity (so we know who's signed in) but the silent Drive
-// token reacquisition failed — most likely because it needed to show real UI and there was no
-// user gesture on the call stack for a popup to survive on (an automatic on-load check isn't a
-// click). A single tap here IS a real gesture, so the same request that failed silently goes
-// through normally, without a full sign-in / account-picker round trip.
+// Shown when Firebase still has the identity (so we know who's signed in) but there's no usable
+// Drive grant on file — either this account has never granted Drive access before, or the grant
+// was revoked (e.g. from myaccount.google.com/permissions). This is now the *only* remaining
+// "please reconnect" screen in the app: everyday reopens mint a fresh access token from the
+// stored refresh token silently, with no screen like this involved at all.
 function renderReconnect(app){
   app.innerHTML = `
     <div class="login-screen">
       <div class="seal">${brandMarkSvg(50)}</div>
       <h1>Welcome back</h1>
-      <p>Signed in as <strong>${escapeHtml(state.user.email)}</strong>. Reconnect to Google Drive to pick up where you left off — this won't ask you to choose an account again.</p>
+      <p>Signed in as <strong>${escapeHtml(state.user.email)}</strong>. Grant Drive access to pick up where you left off — same Google account, just a one-time permissions confirmation.</p>
       <button class="primary" id="reconnectContinueBtn">Continue</button>
       <div class="error-text" id="reconnectErr" style="display:none;"></div>
       <button class="ghost" id="reconnectSignOutBtn">Not you? Sign out</button>
@@ -970,9 +1009,9 @@ async function completeReconnect(){
   btn.disabled = true;
   btn.textContent = 'Connecting…';
   try{
-    const tokenResp = await requestDriveAccessToken(false);
-    state.driveAccessToken = tokenResp.access_token;
-    state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
+    const tokenResp = await grantDriveAccessOneTime();
+    state.driveAccessToken = tokenResp.accessToken;
+    state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
     btn.textContent = 'Loading your vault…';
     await loadUserData();
     state.screen = 'vault';
@@ -1927,15 +1966,17 @@ async function revokeShare(shareId){
 }
 
 /* ---------- Drive reconnect ----------
-   The Drive OAuth grant runs out in ~1hr with no silent refresh available client-side (no
-   backend to hold a refresh token). This mints a fresh one via the same GIS token client used
-   at sign-in — it doesn't touch the Firebase auth session or any already-loaded documents,
-   since identity and Drive access are handled by separate mechanisms. */
+   Shown as a banner in the vault header when the current access token has expired mid-session.
+   Should be rare now — the background refresh timer and the mint-on-every-load path normally
+   keep this from ever being needed — but if it is, this mints a fresh token from the stored
+   refresh token (or, on the rarer NO_GRANT/GRANT_REVOKED case, falls back to the one-time
+   consent popup, still within this same click's gesture). Doesn't touch the Firebase auth
+   session or any already-loaded documents, since identity and Drive access are separate. */
 async function reconnectDrive(){
   try{
-    const tokenResp = await requestDriveAccessToken();
-    state.driveAccessToken = tokenResp.access_token;
-    state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
+    const tokenResp = await acquireDriveAccess();
+    state.driveAccessToken = tokenResp.accessToken;
+    state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
     toast('Reconnected to Google Drive');
     render();
   } catch(e){
@@ -2167,9 +2208,9 @@ auth.getRedirectResult().catch(e => {
 });
 // authFlowInProgress guards against a race this listener is otherwise exposed to: it fires on
 // every Firebase auth change, and nothing stops two changes (e.g. the redirect-return firing
-// alongside a later reconnect attempt) from being processed concurrently, both racing to set
-// state.user and both calling requestDriveAccessToken() — which share one GIS token client and
-// its single callback property, so overlapping calls cross-wire each other's popups.
+// alongside a later reconnect attempt) from being processed concurrently — both racing to set
+// state.user, and if both ended up needing the one-time consent popup at once, cross-wiring each
+// other's popup via the shared gisCodeClient callback.
 auth.onAuthStateChanged(async (user) => {
   if(!user){
     // Definitively no session to restore — stop showing the loading splash and show the real
@@ -2182,15 +2223,18 @@ auth.onAuthStateChanged(async (user) => {
   authFlowInProgress = true;
   state.user = {name: user.displayName, email: user.email, uid: user.uid, photoURL: user.photoURL};
   try{
-    const tokenResp = await requestDriveAccessToken(true);
-    state.driveAccessToken = tokenResp.access_token;
-    state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
+    // mintDriveAccessToken() alone (not acquireDriveAccess()) — a cold open should never pop a
+    // consent screen unprompted; NO_GRANT/GRANT_REVOKED routes to the "Welcome back" screen
+    // instead, where the user's own tap is what makes the popup a real, gesture-backed one.
+    const tokenResp = await mintDriveAccessToken();
+    state.driveAccessToken = tokenResp.accessToken;
+    state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
     await loadUserData();
     state.screen = 'vault';
     render();
     armExitGuardIfIdle();
   } catch(e){
-    console.warn('Could not silently restore Drive access — asking for a one-tap reconnect instead.', e);
+    console.warn('Could not mint a Drive access token — asking for a one-tap reconnect instead.', e);
     state.screen = 'reconnect';
     render();
     armExitGuardIfIdle();
@@ -2200,20 +2244,20 @@ auth.onAuthStateChanged(async (user) => {
 });
 
 // Proactively refreshes the Drive token a few minutes before it expires, so an active session
-// doesn't hit a dead end mid-action — same silent request used everywhere else. If it fails (e.g.
-// the browser blocks the third-party storage a silent grant depends on), the existing "reconnect"
-// banner in the vault header still catches it the moment something actually needs the token.
+// doesn't hit a dead end mid-action. mintDriveAccessToken() itself is cheap to call often — the
+// Cloud Function returns its cached access token directly when one is still fresh, only actually
+// round-tripping to Google when a real refresh is due — so this doesn't need its own expiry check
+// before calling it.
 setInterval(async () => {
-  if(!state.user || !state.driveAccessToken || !state.driveTokenExpiresAt) return;
-  if(state.driveTokenExpiresAt - Date.now() > 5*60*1000) return;
+  if(!state.user || !state.driveAccessToken) return;
   try{
-    const tokenResp = await requestDriveAccessToken(true);
-    state.driveAccessToken = tokenResp.access_token;
-    state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
+    const tokenResp = await mintDriveAccessToken();
+    state.driveAccessToken = tokenResp.accessToken;
+    state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
   } catch(e){
     console.warn('Background Drive token refresh failed — falling back to the manual reconnect banner.', e);
   }
-}, 60*1000);
+}, 5*60*1000);
 
 render();
 armExitGuardIfIdle();

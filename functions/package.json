@@ -1,0 +1,10 @@
+{
+  "name": "vault-drive-auth",
+  "description": "Cloud Function backing persistent Google Drive access for Vault",
+  "main": "index.js",
+  "engines": { "node": "20" },
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "firebase-functions": "^5.0.0"
+  }
+}
