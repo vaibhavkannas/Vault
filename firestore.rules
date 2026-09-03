@@ -1,0 +1,17 @@
+// NOT VERIFIED against your actual live rules yet — I don't have them. This file shows ONLY the
+// new block that needs to be ADDED to your existing rules; it is NOT a complete ruleset and must
+// NOT be pasted over what's already in the Firebase Console, or you'd delete every rule the app
+// already depends on (users/{uid}/documents, /categories, /shares, /meta).
+//
+// Before publishing: paste your current live rules to Claude so it can confirm nothing broader
+// already exposes this path — specifically, a catch-all like `match /{document=**} { allow read,
+// write: if request.auth != null; }` anywhere else in the file would silently override the `if
+// false` below, since Firestore allows a request if ANY matching rule block says yes.
+//
+// driveTokens/{uid} holds each user's Google Drive refresh token, written only by the driveAuth
+// Cloud Function via the Admin SDK (which bypasses these rules entirely via its own IAM identity,
+// not by anything granted here) — this block exists specifically to make sure no client, ever,
+// under any circumstance, can read or write it directly.
+match /driveTokens/{uid} {
+  allow read, write: if false;
+}
