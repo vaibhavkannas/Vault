@@ -49,8 +49,8 @@
   body{margin:0;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;}
   /* Baseline tap feedback for every button so nothing feels inert — more specific :active rules
      elsewhere (e.g. button.primary's scale(0.98)) simply override this by CSS specificity. */
-  button, .doc-icon, .icon-pick-btn, .cat-toggle{transition:transform 0.1s ease;}
-  button:active, .doc-icon:active, .icon-pick-btn:active, .cat-toggle:active{transform:scale(0.94);}
+  button, .doc-icon, .icon-pick-btn, .cat-toggle, .renewal-card{transition:transform 0.1s ease;}
+  button:active, .doc-icon:active, .icon-pick-btn:active, .cat-toggle:active, .renewal-card:active{transform:scale(0.96);}
   @media (prefers-reduced-motion: reduce){
     *{animation-duration:0.001ms !important; animation-iteration-count:1 !important; transition-duration:0.001ms !important;}
   }
@@ -103,7 +103,7 @@
   .reminder-card .rdays{font-size:11.5px;color:var(--ink-soft);white-space:nowrap;}
   .renewal-strip{display:flex;gap:9px;overflow-x:auto;margin:0 0 20px;scrollbar-width:none;}
   .renewal-strip::-webkit-scrollbar{display:none;}
-  .renewal-card{flex:0 0 auto;min-width:148px;max-width:190px;background:var(--success-bg);border-radius:16px;padding:11px 13px;}
+  .renewal-card{flex:0 0 auto;min-width:148px;max-width:190px;background:var(--success-bg);border-radius:16px;padding:11px 13px;cursor:pointer;}
   .renewal-card.urgent{background:var(--danger-bg);}
   .renewal-title{font-size:13px;font-weight:500;color:var(--ink);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .renewal-days{font-size:11.5px;font-weight:500;color:var(--success);}
@@ -828,6 +828,17 @@ function render(){
   renderVault(app);
 }
 
+// True when running as an installed PWA (Android "Add to Home Screen" / iOS "Add to Home Screen"),
+// not a regular browser tab. signInWithRedirect depends on a full page navigation away and back
+// correctly landing in the SAME running instance with its pending-redirect state intact — inside
+// an installed app's own window that round trip is much more likely to drop the result (the user
+// picks an account fine, but the app never sees it come back), unlike in a regular browser tab
+// where it's popups that are unreliable instead. Route each context to whichever mechanism is
+// actually reliable there rather than using one mechanism everywhere.
+function isStandalonePwa(){
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+
 function renderLogin(app){
   app.innerHTML = `
     <div class="login-screen">
@@ -839,23 +850,56 @@ function renderLogin(app){
         Sign in with Google
       </button>
       <div class="error-text" id="loginErr" style="display:none;"></div>
+      ${isStandalonePwa() ? `<div class="demo-note">Signing in from the installed app but stuck? Open this site in your regular browser and sign in there once — the installed app will pick up the same sign-in automatically the next time you open it.</div>` : ''}
       <div class="demo-note">Your documents are stored as regular files in your own Google Drive, under a "Vault" folder, and organized by category. This app can only see the files and folders it creates there.</div>
     </div>
   `;
-  document.getElementById('googleBtn').onclick = () => {
+  document.getElementById('googleBtn').onclick = async () => {
     const btn = document.getElementById('googleBtn');
     const errEl = document.getElementById('loginErr');
     errEl.style.display = 'none';
     btn.disabled = true;
-    btn.textContent = 'Redirecting to Google…';
     const provider = new firebase.auth.GoogleAuthProvider();
-    // Redirect instead of a popup: on mobile browsers a popup opened from a click is routinely
-    // blocked or behaves inconsistently (this is what caused sign-in to visibly run through the
-    // whole two-account-picker dance more than once) — a redirect can't be popup-blocked, since
-    // it navigates the page itself rather than opening a second window. The page fully reloads
-    // when Google sends the user back; auth.onAuthStateChanged below (not this handler) is what
-    // picks the result up and finishes signing in, since this handler's own JS context is gone
-    // the moment the redirect navigates away.
+
+    if(isStandalonePwa()){
+      // Installed-app context: signInWithRedirect's cross-navigation round trip (leave the app,
+      // come back) is much more likely to drop its pending-redirect state here than in a regular
+      // browser tab — the account picker completes fine, but the app never sees the result come
+      // back. A popup keeps everything in this same running instance instead, sidestepping that
+      // round trip entirely. The mobile-browser popup-blocking concern that ruled popups out
+      // below doesn't apply the same way inside an installed app's own single window.
+      if(authFlowInProgress) return;
+      authFlowInProgress = true;
+      btn.textContent = 'Signing in…';
+      try{
+        const result = await auth.signInWithPopup(provider);
+        state.user = {name: result.user.displayName, email: result.user.email, uid: result.user.uid, photoURL: result.user.photoURL};
+        const tokenResp = await requestDriveAccessToken();
+        state.driveAccessToken = tokenResp.access_token;
+        state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
+        btn.textContent = 'Setting up your vault…';
+        await loadUserData();
+        state.screen = 'vault';
+        render();
+      } catch(e){
+        console.error('Sign-in failed', e);
+        btn.disabled = false;
+        btn.textContent = 'Sign in with Google';
+        errEl.textContent = 'Sign-in failed — please try again.';
+        errEl.style.display = 'block';
+      } finally {
+        authFlowInProgress = false;
+      }
+      return;
+    }
+
+    btn.textContent = 'Redirecting to Google…';
+    // Redirect instead of a popup: on a regular mobile browser tab a popup opened from a click is
+    // routinely blocked or behaves inconsistently — a redirect can't be popup-blocked, since it
+    // navigates the page itself rather than opening a second window. The page fully reloads when
+    // Google sends the user back; auth.onAuthStateChanged below (not this handler) is what picks
+    // the result up and finishes signing in, since this handler's own JS context is gone the
+    // moment the redirect navigates away.
     auth.signInWithRedirect(provider).catch(e => {
       console.error('Could not start redirect sign-in', e);
       btn.disabled = false;
@@ -1071,7 +1115,7 @@ function renderVault(app){
         <div class="section-title">Renewals</div>
         <div class="renewal-strip">
           ${upcoming.map(d => `
-            <div class="renewal-card ${d.days<=7?'urgent':''}">
+            <div class="renewal-card ${d.days<=7?'urgent':''}" data-renewal-doc="${d.id}" role="button" tabindex="0">
               <div class="renewal-title">${escapeHtml(d.title)}</div>
               <div class="renewal-days">${d.days<0?'Expired':d.days===0?'Due today':d.days+' day'+(d.days===1?'':'s')+' left'}</div>
             </div>
@@ -1141,6 +1185,14 @@ function renderVault(app){
     const toggle = () => { const c = el.getAttribute('data-cat'); state.collapsedCats[c] = !state.collapsedCats[c]; render(); };
     el.onclick = toggle;
     el.onkeydown = (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); toggle(); } };
+  });
+
+  // Renewal cards were purely informational — a highlighted "3 days left" with nothing to do
+  // about it. Tapping one now opens that document directly, same as tapping its card icon below.
+  document.querySelectorAll('[data-renewal-doc]').forEach(el => {
+    const open = () => viewDocument(el.getAttribute('data-renewal-doc'));
+    el.onclick = open;
+    el.onkeydown = (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } };
   });
 
   filtered.forEach(d => {
