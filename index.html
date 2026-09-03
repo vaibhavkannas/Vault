@@ -842,35 +842,27 @@ function renderLogin(app){
       <div class="demo-note">Your documents are stored as regular files in your own Google Drive, under a "Vault" folder, and organized by category. This app can only see the files and folders it creates there.</div>
     </div>
   `;
-  document.getElementById('googleBtn').onclick = async () => {
-    if(authFlowInProgress) return;
-    authFlowInProgress = true;
+  document.getElementById('googleBtn').onclick = () => {
     const btn = document.getElementById('googleBtn');
     const errEl = document.getElementById('loginErr');
-    const originalLabel = btn.innerHTML;
     errEl.style.display = 'none';
     btn.disabled = true;
-    btn.textContent = 'Signing in…';
-    try{
-      const provider = new firebase.auth.GoogleAuthProvider();
-      const result = await auth.signInWithPopup(provider);
-      state.user = {name: result.user.displayName, email: result.user.email, uid: result.user.uid, photoURL: result.user.photoURL};
-      const tokenResp = await requestDriveAccessToken();
-      state.driveAccessToken = tokenResp.access_token;
-      state.driveTokenExpiresAt = Date.now() + (tokenResp.expires_in ? tokenResp.expires_in*1000 : 55*60*1000);
-      btn.textContent = 'Setting up your vault…';
-      await loadUserData();
-      state.screen = 'vault';
-      render();
-    } catch(e){
-      console.error('Sign-in failed', e);
+    btn.textContent = 'Redirecting to Google…';
+    const provider = new firebase.auth.GoogleAuthProvider();
+    // Redirect instead of a popup: on mobile browsers a popup opened from a click is routinely
+    // blocked or behaves inconsistently (this is what caused sign-in to visibly run through the
+    // whole two-account-picker dance more than once) — a redirect can't be popup-blocked, since
+    // it navigates the page itself rather than opening a second window. The page fully reloads
+    // when Google sends the user back; auth.onAuthStateChanged below (not this handler) is what
+    // picks the result up and finishes signing in, since this handler's own JS context is gone
+    // the moment the redirect navigates away.
+    auth.signInWithRedirect(provider).catch(e => {
+      console.error('Could not start redirect sign-in', e);
       btn.disabled = false;
-      btn.innerHTML = originalLabel;
+      btn.textContent = 'Sign in with Google';
       errEl.textContent = 'Sign-in failed — please try again.';
       errEl.style.display = 'block';
-    } finally {
-      authFlowInProgress = false;
-    }
+    });
   };
   renderModal();
 }
@@ -2072,13 +2064,22 @@ async function deleteEverything(){
 // session, reacquire the Drive token the same silent way the Sign-in button does, and only fall
 // back to asking for a fresh sign-in if that silent reacquisition itself fails.
 //
-// authFlowInProgress guards against a real race: this listener fires on EVERY Firebase auth
-// change, including right after a fresh manual sign-in succeeds — and Firebase does not guarantee
-// it fires before or after signInWithPopup's own promise resolves. Without the guard, a manual
-// sign-in and this restore path could run concurrently, both calling requestDriveAccessToken()
-// at once; since both share one GIS token client and its single callback property, the two Google
-// popups end up cross-wired with each other — sign-in visibly running through the whole dance
-// twice and asking to pick an account repeatedly.
+// This also picks up the result of the redirect-based sign-in above: the click handler only
+// starts the redirect and then loses its JS context to the navigation, so onAuthStateChanged
+// firing after Google sends the user back is what actually finishes signing in, exactly the same
+// code path as a silent restore. getRedirectResult() itself is only used for its error case here
+// (a failed/cancelled redirect) — a successful one is picked up by onAuthStateChanged below, same
+// as any other sign-in.
+auth.getRedirectResult().catch(e => {
+  console.error('Redirect sign-in did not complete', e);
+  const errEl = document.getElementById('loginErr');
+  if(errEl){ errEl.textContent = 'Sign-in was not completed — please try again.'; errEl.style.display = 'block'; }
+});
+// authFlowInProgress guards against a race this listener is otherwise exposed to: it fires on
+// every Firebase auth change, and nothing stops two changes (e.g. the redirect-return firing
+// alongside a later reconnect attempt) from being processed concurrently, both racing to set
+// state.user and both calling requestDriveAccessToken() — which share one GIS token client and
+// its single callback property, so overlapping calls cross-wire each other's popups.
 auth.onAuthStateChanged(async (user) => {
   if(!user || state.user || authFlowInProgress) return;
   authFlowInProgress = true;
