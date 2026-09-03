@@ -377,7 +377,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY-MM-DD HH:MM (24h, no seconds).
-const APP_VERSION = '2026-09-03 20:45';
+const APP_VERSION = '2026-09-03 20:58';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -892,13 +892,11 @@ function render(){
   renderVault(app);
 }
 
-// Shown only for the brief moment before Firebase has answered "is anyone signed in" — which
-// covers both a returning user's session restoring and, especially, the reload that happens right
-// after a redirect-based Google sign-in completes. Without this, that reload's first paint was the
-// full interactive login screen (its own "Sign in with Google" button included) reappearing right
-// after the user had just finished picking their account — reasonably read as "did that not work?"
-// even though it was already succeeding in the background. A neutral loading state can't be
-// misread that way.
+// Shown only for the brief moment before Firebase has answered "is anyone signed in" on a fresh
+// page load. Without this, that moment's first paint was the full interactive login screen (its
+// own "Sign in with Google" button included) flashing before a returning user's session silently
+// restored — reasonably read as "did I get signed out?" even though nothing was actually wrong.
+// A neutral loading state can't be misread that way.
 function renderChecking(app){
   app.innerHTML = `
     <div class="login-screen">
@@ -910,12 +908,8 @@ function renderChecking(app){
 }
 
 // True when running as an installed PWA (Android "Add to Home Screen" / iOS "Add to Home Screen"),
-// not a regular browser tab. signInWithRedirect depends on a full page navigation away and back
-// correctly landing in the SAME running instance with its pending-redirect state intact — inside
-// an installed app's own window that round trip is much more likely to drop the result (the user
-// picks an account fine, but the app never sees it come back), unlike in a regular browser tab
-// where it's popups that are unreliable instead. Route each context to whichever mechanism is
-// actually reliable there rather than using one mechanism everywhere.
+// not a regular browser tab. Used only to show a more specific hint if sign-in gets stuck there
+// (see the demo-note below) — the sign-in flow itself (signInWithPopup) is the same either way.
 function isStandalonePwa(){
   return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 }
@@ -936,12 +930,6 @@ function renderLogin(app){
       <div class="version-tag">v${APP_VERSION}</div>
     </div>
   `;
-  if(pendingSignInError){
-    const errEl = document.getElementById('loginErr');
-    errEl.textContent = pendingSignInError;
-    errEl.style.display = 'block';
-    pendingSignInError = null;
-  }
   document.getElementById('googleBtn').onclick = async () => {
     const btn = document.getElementById('googleBtn');
     const errEl = document.getElementById('loginErr');
@@ -949,52 +937,37 @@ function renderLogin(app){
     btn.disabled = true;
     const provider = new firebase.auth.GoogleAuthProvider();
 
-    if(isStandalonePwa()){
-      // Installed-app context: signInWithRedirect's cross-navigation round trip (leave the app,
-      // come back) is much more likely to drop its pending-redirect state here than in a regular
-      // browser tab — the account picker completes fine, but the app never sees the result come
-      // back. A popup keeps everything in this same running instance instead, sidestepping that
-      // round trip entirely. The mobile-browser popup-blocking concern that ruled popups out
-      // below doesn't apply the same way inside an installed app's own single window.
-      if(authFlowInProgress) return;
-      authFlowInProgress = true;
-      btn.textContent = 'Signing in…';
-      try{
-        const result = await auth.signInWithPopup(provider);
-        state.user = {name: result.user.displayName, email: result.user.email, uid: result.user.uid, photoURL: result.user.photoURL};
-        const tokenResp = await acquireDriveAccess();
-        state.driveAccessToken = tokenResp.accessToken;
-        state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
-        btn.textContent = 'Setting up your vault…';
-        await loadUserData();
-        state.screen = 'vault';
-        render();
-      } catch(e){
-        console.error('Sign-in failed', e);
-        btn.disabled = false;
-        btn.textContent = 'Sign in with Google';
-        errEl.textContent = 'Sign-in failed — please try again.';
-        errEl.style.display = 'block';
-      } finally {
-        authFlowInProgress = false;
-      }
-      return;
-    }
-
-    btn.textContent = 'Redirecting to Google…';
-    // Redirect instead of a popup: on a regular mobile browser tab a popup opened from a click is
-    // routinely blocked or behaves inconsistently — a redirect can't be popup-blocked, since it
-    // navigates the page itself rather than opening a second window. The page fully reloads when
-    // Google sends the user back; auth.onAuthStateChanged below (not this handler) is what picks
-    // the result up and finishes signing in, since this handler's own JS context is gone the
-    // moment the redirect navigates away.
-    auth.signInWithRedirect(provider).catch(e => {
-      console.error('Could not start redirect sign-in', e);
+    // Popup, not redirect: a redirect depends on state (which account is mid-sign-in) surviving
+    // a full page navigation away to Google and back, via storage on this origin — and that
+    // round trip turned out to be unreliable in practice for a brand-new sign-in (confirmed:
+    // already-persisted sessions restored fine, since that path never leaves the page at all,
+    // but a fresh interactive sign-in via redirect silently landed back on this same login screen
+    // instead of completing). A popup keeps everything in this one continuous script execution
+    // instead, with nothing to lose across a navigation — and it's already proven reliable here,
+    // since it's what the Drive-consent step (grantDriveAccessOneTime) has used successfully the
+    // whole time.
+    if(authFlowInProgress) return;
+    authFlowInProgress = true;
+    btn.textContent = 'Signing in…';
+    try{
+      const result = await auth.signInWithPopup(provider);
+      state.user = {name: result.user.displayName, email: result.user.email, uid: result.user.uid, photoURL: result.user.photoURL};
+      const tokenResp = await acquireDriveAccess();
+      state.driveAccessToken = tokenResp.accessToken;
+      state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
+      btn.textContent = 'Setting up your vault…';
+      await loadUserData();
+      state.screen = 'vault';
+      render();
+    } catch(e){
+      console.error('Sign-in failed', e);
       btn.disabled = false;
       btn.textContent = 'Sign in with Google';
       errEl.textContent = 'Sign-in failed — please try again.';
       errEl.style.display = 'block';
-    });
+    } finally {
+      authFlowInProgress = false;
+    }
   };
   renderModal();
 }
@@ -2207,27 +2180,11 @@ async function deleteEverything(){
 // session, reacquire the Drive token the same silent way the Sign-in button does, and only fall
 // back to asking for a fresh sign-in if that silent reacquisition itself fails.
 //
-// This also picks up the result of the redirect-based sign-in above: the click handler only
-// starts the redirect and then loses its JS context to the navigation, so onAuthStateChanged
-// firing after Google sends the user back is what actually finishes signing in, exactly the same
-// code path as a silent restore. getRedirectResult() itself is only used for its error case here
-// (a failed/cancelled redirect) — a successful one is picked up by onAuthStateChanged below, same
-// as any other sign-in.
-// A failed/cancelled redirect can't touch the DOM directly here — the page could still be showing
-// the "checking" splash (state.screen defaults to 'checking' precisely so the real login screen,
-// with its own #loginErr element, doesn't exist yet). Stash the message and let renderLogin() pick
-// it up whenever it actually renders; also re-render immediately in case that's already happened.
-let pendingSignInError = null;
-auth.getRedirectResult().catch(e => {
-  console.error('Redirect sign-in did not complete', e);
-  pendingSignInError = 'Sign-in was not completed — please try again.';
-  if(state.screen === 'login') render();
-});
 // authFlowInProgress guards against a race this listener is otherwise exposed to: it fires on
-// every Firebase auth change, and nothing stops two changes (e.g. the redirect-return firing
-// alongside a later reconnect attempt) from being processed concurrently — both racing to set
-// state.user, and if both ended up needing the one-time consent popup at once, cross-wiring each
-// other's popup via the shared gisCodeClient callback.
+// every Firebase auth change, and nothing stops two changes (e.g. this restore firing alongside a
+// later reconnect attempt) from being processed concurrently — both racing to set state.user, and
+// if both ended up needing the one-time consent popup at once, cross-wiring each other's popup via
+// the shared gisCodeClient callback.
 auth.onAuthStateChanged(async (user) => {
   if(!user){
     // Definitively no session to restore — stop showing the loading splash and show the real
