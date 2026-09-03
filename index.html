@@ -387,7 +387,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.03 · 22:45';
+const APP_VERSION = '2026.09.03 · 23:20';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -594,10 +594,20 @@ function goBackOneLayer(){
 // nothing else open) needs its own protection: many browsers/WebViews (notably Android) close
 // the page entirely once its history stack is exhausted, which is what "closes the whole app
 // from the main screen" was. Fix: keep one extra "guard" entry pushed whenever idle at root; the
-// moment it gets popped, ask for confirmation instead of letting the exhaustion happen, and
-// re-arm immediately so the confirmation dialog itself is protected the same way.
+// moment it gets popped, warn instead of letting the exhaustion happen, and re-arm immediately so
+// the warning itself is protected the same way.
+//
+// The warning is a toast, not a blocking dialog: press Back once and a toast says so; press Back
+// again within EXIT_CONFIRM_WINDOW_MS and that second press IS the confirmation — no tap
+// required, matching the "press Back again to exit" pattern most Android users already know. A
+// modal dialog was tried first, but its buttons added a failure point of their own (a tap that
+// silently did less than expected reads to a user as "nothing happened") on top of the guard
+// itself; this needs only the one signal the platform already delivers naturally — a second Back
+// press — so there's one fewer thing that can go visibly wrong.
 let guardArmed = false;
 let allowingExit = false;
+let lastExitWarningAt = 0;
+const EXIT_CONFIRM_WINDOW_MS = 2500;
 function armExitGuardIfIdle(){
   if(!guardArmed && !state.modal && !state.showArchived && state.screen !== 'settings'){
     if(safePushHistoryState({seq: currentHistorySeq() + 1, guard: true})) guardArmed = true;
@@ -607,43 +617,49 @@ window.addEventListener('popstate', () => {
   if(allowingExit){ allowingExit = false; return; } // already agreed to leave — let this one through
   if(guardArmed){
     guardArmed = false;
-    // Re-arm the trap FIRST, before spending any time on render() — pushState is effectively
+    if(Date.now() - lastExitWarningAt < EXIT_CONFIRM_WINDOW_MS){
+      // Second Back press within the window: this itself IS the confirmation. Jump back the FULL
+      // distance to the true entry that existed before we ever touched history — read fresh from
+      // the current entry's own seq (currentHistorySeq() above), so it's always exactly right
+      // regardless of how we got here. history.go() silently does nothing if the offset
+      // overshoots, so this can't navigate past where our own entries actually start. A plain web
+      // page has no API to force-close its own tab/window, so an actual close from here is the
+      // platform's own back-button/WebView behavior taking over once history is exhausted — on
+      // Android specifically, exactly the "exhausted history closes the app" behavior this whole
+      // feature exists to gate behind a warning, now deliberately allowed through. If the
+      // platform doesn't actually close here (desktop browsers never do), landing on the true
+      // original entry leaves nothing further of ours to pop, so any following Back press is the
+      // browser's own, un-intercepted "leave the page" — fine, since the user already confirmed.
+      allowingExit = true;
+      const seq = currentHistorySeq();
+      if(seq > 0) history.go(-seq);
+      return;
+    }
+    // Re-arm the trap FIRST, before spending any time on the toast — pushState is effectively
     // instant, so this keeps the window where "no trap exists yet" as close to zero as possible.
-    // A second rapid Back press landing inside that window (rather than after re-arming) is the
-    // one way this could still let the app close instead of showing the dialog again.
+    lastExitWarningAt = Date.now();
     if(safePushHistoryState({seq: currentHistorySeq() + 1, guard: true})) guardArmed = true;
-    state.modal = 'exitConfirm';
-    render();
+    toast('Press Back again to close Vault');
     return;
   }
   clearTopLayerState();
   render();
   armExitGuardIfIdle();
 });
-function cancelExitConfirm(){
-  state.modal = null;
-  render();
-}
-function confirmExitApp(){
-  // Jump back the FULL distance to the true entry that existed before we ever touched history —
-  // read fresh from the current entry's own seq (see currentHistorySeq() above), so it's always
-  // exactly right regardless of how we got here, unlike a separately-tracked depth count that
-  // could over/undershoot. history.go() silently does nothing if the offset overshoots, so this
-  // can't navigate past where our own entries actually start. A plain web page has no API to
-  // force-close its own tab/window (window.close() only works on windows opened by script), so an
-  // actual close from here is the platform's own back-button/WebView behavior taking over once
-  // its history is exhausted — which, on Android specifically, is exactly the "exhausted history
-  // closes the app" behavior this whole feature exists to gate behind a confirmation, now
-  // deliberately allowed through. If the platform doesn't actually close here (desktop browsers
-  // never do), landing on the true original entry leaves nothing further of ours to pop, so any
-  // following Back press is the browser's own, un-intercepted "leave the page" — which is fine,
-  // since the user already explicitly confirmed they want to leave.
-  allowingExit = true;
-  state.modal = null;
-  render();
-  const seq = currentHistorySeq();
-  if(seq > 0) history.go(-seq);
-}
+// Defensive hedge, not a confirmed fix: reported symptom was Back closing the app with no warning
+// at all on a genuinely fresh load/sign-in, before any other tap — but only once something else
+// had been tapped first did the warning reliably appear. The one difference between those two
+// moments is whether a real user gesture had occurred yet, and some Android WebView/browser
+// combinations are known to not always honor a history entry pushed before any gesture the same
+// way for hardware-Back purposes as one pushed after one — which the boot-time arm above always
+// is. Force one fresh guard entry the moment the very first real interaction happens, regardless
+// of what our own bookkeeping already believes (armExitGuardIfIdle's own !guardArmed check would
+// otherwise skip it here, since nothing else invalidates guardArmed between boot and this).
+document.addEventListener('pointerdown', () => {
+  if(!state.modal && !state.showArchived && state.screen !== 'settings' && state.screen !== 'checking'){
+    if(safePushHistoryState({seq: currentHistorySeq() + 1, guard: true})) guardArmed = true;
+  }
+}, {once: true, capture: true});
 
 /* ---------- theme ---------- */
 function currentTheme(){
@@ -1498,20 +1514,6 @@ function renderModal(){
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('downloadFromViewBtn').onclick = () => downloadDocument(doc.id);
-  }
-
-  if(state.modal === 'exitConfirm'){
-    overlay.innerHTML = `
-      <div class="modal-sheet">
-        <h3>Leave Vault?</h3>
-        <p class="sub">Your documents stay exactly as they are in your Drive — this just closes the app.</p>
-        <button class="danger-solid" id="confirmExitBtn">Yes, close the app</button>
-        <button class="ghost" id="cancelExitBtn">Stay</button>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    document.getElementById('confirmExitBtn').onclick = confirmExitApp;
-    document.getElementById('cancelExitBtn').onclick = cancelExitConfirm;
   }
 
   if(state.modal === 'camera'){
