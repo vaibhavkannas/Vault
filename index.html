@@ -63,6 +63,8 @@
   .login-screen{padding:56px 28px 40px;text-align:center;}
   .seal{width:92px;height:92px;margin:0 auto 24px;border-radius:28%;background:var(--brass);display:flex;align-items:center;justify-content:center;box-shadow:var(--elevation-2);}
   .login-screen h1{font-weight:400;font-size:28px;margin:0 0 8px;}
+  .checking-spinner{width:26px;height:26px;margin:20px auto 0;border:3px solid var(--surface-container);border-top-color:var(--brass);border-radius:50%;animation:spin 0.8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
   .login-screen p{color:var(--ink-soft);font-size:14px;line-height:1.55;margin:0 auto 30px;max-width:320px;}
   .google-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:12px 16px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius-full);font-size:14px;font-weight:500;color:var(--ink);cursor:pointer;box-shadow:var(--elevation-1);}
   .google-btn:active{transform:scale(0.98);}
@@ -402,7 +404,7 @@ function wireIconPicker(inputId){
 let authFlowInProgress = false;
 
 const state = {
-  screen: 'login', // 'login' | 'vault'
+  screen: 'checking', // 'checking' | 'login' | 'reconnect' | 'vault' | 'settings'
   user: null,           // {name, email, uid, photoURL}
   driveAccessToken: null,     // OAuth token for Drive API calls; separate from the Firebase auth session
   driveTokenExpiresAt: null,  // ms epoch; Google doesn't silently refresh this client-side (no backend)
@@ -822,10 +824,28 @@ async function runOcr(dataUrl, onProgress){
 /* ---------- render root ---------- */
 function render(){
   const app = document.getElementById('app');
+  if(state.screen === 'checking') return renderChecking(app);
   if(state.screen === 'login') return renderLogin(app);
   if(state.screen === 'reconnect') return renderReconnect(app);
   if(state.screen === 'settings') return renderSettings(app);
   renderVault(app);
+}
+
+// Shown only for the brief moment before Firebase has answered "is anyone signed in" — which
+// covers both a returning user's session restoring and, especially, the reload that happens right
+// after a redirect-based Google sign-in completes. Without this, that reload's first paint was the
+// full interactive login screen (its own "Sign in with Google" button included) reappearing right
+// after the user had just finished picking their account — reasonably read as "did that not work?"
+// even though it was already succeeding in the background. A neutral loading state can't be
+// misread that way.
+function renderChecking(app){
+  app.innerHTML = `
+    <div class="login-screen">
+      <div class="seal">${brandMarkSvg(50)}</div>
+      <h1>Vault</h1>
+      <div class="checking-spinner" aria-hidden="true"></div>
+    </div>
+  `;
 }
 
 // True when running as an installed PWA (Android "Add to Home Screen" / iOS "Add to Home Screen"),
@@ -854,6 +874,12 @@ function renderLogin(app){
       <div class="demo-note">Your documents are stored as regular files in your own Google Drive, under a "Vault" folder, and organized by category. This app can only see the files and folders it creates there.</div>
     </div>
   `;
+  if(pendingSignInError){
+    const errEl = document.getElementById('loginErr');
+    errEl.textContent = pendingSignInError;
+    errEl.style.display = 'block';
+    pendingSignInError = null;
+  }
   document.getElementById('googleBtn').onclick = async () => {
     const btn = document.getElementById('googleBtn');
     const errEl = document.getElementById('loginErr');
@@ -2122,10 +2148,15 @@ async function deleteEverything(){
 // code path as a silent restore. getRedirectResult() itself is only used for its error case here
 // (a failed/cancelled redirect) — a successful one is picked up by onAuthStateChanged below, same
 // as any other sign-in.
+// A failed/cancelled redirect can't touch the DOM directly here — the page could still be showing
+// the "checking" splash (state.screen defaults to 'checking' precisely so the real login screen,
+// with its own #loginErr element, doesn't exist yet). Stash the message and let renderLogin() pick
+// it up whenever it actually renders; also re-render immediately in case that's already happened.
+let pendingSignInError = null;
 auth.getRedirectResult().catch(e => {
   console.error('Redirect sign-in did not complete', e);
-  const errEl = document.getElementById('loginErr');
-  if(errEl){ errEl.textContent = 'Sign-in was not completed — please try again.'; errEl.style.display = 'block'; }
+  pendingSignInError = 'Sign-in was not completed — please try again.';
+  if(state.screen === 'login') render();
 });
 // authFlowInProgress guards against a race this listener is otherwise exposed to: it fires on
 // every Firebase auth change, and nothing stops two changes (e.g. the redirect-return firing
@@ -2133,7 +2164,14 @@ auth.getRedirectResult().catch(e => {
 // state.user and both calling requestDriveAccessToken() — which share one GIS token client and
 // its single callback property, so overlapping calls cross-wire each other's popups.
 auth.onAuthStateChanged(async (user) => {
-  if(!user || state.user || authFlowInProgress) return;
+  if(!user){
+    // Definitively no session to restore — stop showing the loading splash and show the real
+    // sign-in screen. Skip the redundant re-render if we're already showing it (e.g. this fires
+    // again after an explicit sign-out, which already set state.screen = 'login' itself).
+    if(state.screen === 'checking'){ state.screen = 'login'; render(); armExitGuardIfIdle(); }
+    return;
+  }
+  if(state.user || authFlowInProgress) return;
   authFlowInProgress = true;
   state.user = {name: user.displayName, email: user.email, uid: user.uid, photoURL: user.photoURL};
   try{
