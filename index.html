@@ -64,7 +64,7 @@
   .login-screen h1{font-weight:400;font-size:28px;margin:0 0 8px;}
   .checking-spinner{width:26px;height:26px;margin:20px auto 0;border:3px solid var(--surface-container);border-top-color:var(--brass);border-radius:50%;animation:spin 0.8s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
-  .version-tag{text-align:center;font-size:10.5px;color:var(--ink-soft);opacity:0.6;margin-top:16px;font-variant-numeric:tabular-nums;}
+  .version-tag{text-align:center;font-size:10px;color:var(--ink-soft);opacity:0.55;margin-top:16px;font-variant-numeric:tabular-nums;letter-spacing:0.04em;text-transform:uppercase;}
   .login-screen p{color:var(--ink-soft);font-size:14px;line-height:1.55;margin:0 auto 30px;max-width:320px;}
   .google-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:12px 16px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius-full);font-size:14px;font-weight:500;color:var(--ink);cursor:pointer;box-shadow:var(--elevation-1);}
   .google-btn:active{transform:scale(0.98);}
@@ -376,8 +376,8 @@ const DEFAULT_CATEGORIES = [
 const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps nagging in "Renewals coming up"
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
-// — shown on the login and vault screens. Format: YYYY-MM-DD HH:MM (24h, no seconds).
-const APP_VERSION = '2026-09-03 20:58';
+// — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
+const APP_VERSION = '2026.09.03 · 21:02';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -927,7 +927,7 @@ function renderLogin(app){
       <div class="error-text" id="loginErr" style="display:none;"></div>
       ${isStandalonePwa() ? `<div class="demo-note">Signing in from the installed app but stuck? Open this site in your regular browser and sign in there once — the installed app will pick up the same sign-in automatically the next time you open it.</div>` : ''}
       <div class="demo-note">Your documents are stored as regular files in your own Google Drive, under a "Vault" folder, and organized by category. This app can only see the files and folders it creates there.</div>
-      <div class="version-tag">v${APP_VERSION}</div>
+      <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
   `;
   document.getElementById('googleBtn').onclick = async () => {
@@ -1198,7 +1198,7 @@ function renderVault(app){
         </div>
         ${state.collapsedCats[cat] ? '' : `<div class="doc-card-grid">${grouped[cat].map(renderDocCard).join('')}</div>`}
       `; }).join('')}
-      <div class="version-tag">v${APP_VERSION}</div>
+      <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
     ${!state.showArchived ? `
       <div class="fab">
