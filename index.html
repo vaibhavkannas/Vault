@@ -19,9 +19,7 @@
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-functions-compat.js"></script>
-<script src="https://accounts.google.com/gsi/client"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script><script src="https://accounts.google.com/gsi/client"></script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap">
 <style>
   :root{
@@ -271,7 +269,6 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
-const driveAuthFn = firebase.functions().httpsCallable('driveAuth');
 
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('sw.js').catch(e => console.error('Service worker registration failed', e));
@@ -287,23 +284,46 @@ if('serviceWorker' in navigator){
 // Drive access tokens are short-lived (~1hr) by Google's own design for a public/browser OAuth
 // client — no refresh token is ever handed to client-side JS. True persistence (surviving the app
 // being closed for days, with zero re-prompting) needs a refresh token, and a refresh token can
-// only be requested and stored safely server-side — hence the `driveAuth` Cloud Function above,
-// which holds it and mints fresh access tokens on request. The two functions below are the only
-// two ways the client ever gets a Drive access token now:
+// only be requested and stored safely server-side — hence the Apps Script Web App behind
+// APPS_SCRIPT_URL (see apps-script/Code.gs), which holds it and mints fresh access tokens on
+// request. The two functions below are the only two ways the client ever gets a Drive access
+// token now:
 //   mintDriveAccessToken()   — every app open, and a periodic background refresh: asks the
-//                              function to turn the stored refresh token into a fresh access
+//                              backend to turn the stored refresh token into a fresh access
 //                              token. No Google UI at all; this is what makes reopening the app
 //                              after days closed just work.
 //   grantDriveAccessOneTime() — the one-time (or after a revoke) flow: pops Google's consent
 //                              screen via GIS's authorization-CODE client (not the old
-//                              implicit-token client — a code, not a token, is what the function
+//                              implicit-token client — a code, not a token, is what the backend
 //                              needs to exchange for a refresh token), then hands that code to
-//                              the function to store.
+//                              the backend to store.
 const GOOGLE_OAUTH_CLIENT_ID = '713625816347-61h6pgrra3ec7639kq3o8v3vdfpgmsjb.apps.googleusercontent.com';
+const APPS_SCRIPT_URL = 'PENDING_DEPLOYMENT'; // filled in once apps-script/Code.gs is deployed as a Web App
+
+// Apps Script Web Apps don't speak the Firebase callable-function protocol, so this is a plain
+// fetch — sent as text/plain (not application/json) specifically to stay a CORS "simple request"
+// and skip a preflight OPTIONS call Apps Script has no handler for; the ID token travels inside
+// the JSON body instead of an Authorization header for the same reason. Apps Script always
+// responds 200 for a completed execution regardless of outcome, so success/failure is signaled by
+// an `error` field in the body, not the HTTP status.
+async function callDriveAuth(payload){
+  const idToken = await auth.currentUser.getIdToken();
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    headers: {'Content-Type': 'text/plain;charset=utf-8'},
+    body: JSON.stringify(Object.assign({idToken}, payload))
+  });
+  const data = await res.json();
+  if(data.error){
+    const err = new Error(data.message || data.error);
+    err.details = {reason: data.reason};
+    throw err;
+  }
+  return data; // {accessToken, expiresIn}
+}
 
 async function mintDriveAccessToken(){
-  const result = await driveAuthFn({mode: 'mint'});
-  return result.data; // {accessToken, expiresIn}
+  return callDriveAuth({mode: 'mint'});
 }
 
 let gisCodeClient = null;
@@ -328,10 +348,7 @@ function grantDriveAccessOneTime(){
     };
     gisCodeClient.error_callback = (err) => reject(new Error((err && err.type) || 'popup_failed'));
     gisCodeClient.requestCode();
-  }).then(async (code) => {
-    const result = await driveAuthFn({mode: 'exchange', code});
-    return result.data; // {accessToken, expiresIn}
-  });
+  }).then(code => callDriveAuth({mode: 'exchange', code}));
 }
 
 // Try the silent path first — a stored refresh token can still be good even after signing back
@@ -360,7 +377,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY-MM-DD HH:MM (24h, no seconds).
-const APP_VERSION = '2026-09-03 19:03';
+const APP_VERSION = '2026-09-03 20:00';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
