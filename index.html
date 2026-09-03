@@ -17,9 +17,11 @@
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script><script src="https://accounts.google.com/gsi/client"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://accounts.google.com/gsi/client"></script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap">
 <style>
   :root{
@@ -153,6 +155,8 @@
   @keyframes sheetSlideUp{from{transform:translateY(28px);opacity:0;}to{transform:translateY(0);opacity:1;}}
   .modal-sheet h3{font-weight:400;font-size:20px;margin:0 0 4px;}
   .modal-sheet .sub{font-size:12.5px;color:var(--ink-soft);margin:0 0 18px;}
+  .pdf-pages{display:flex;flex-direction:column;align-items:center;gap:10px;}
+  .pdf-page-canvas{max-width:100%;border-radius:8px;box-shadow:var(--elevation-1);}
   label.field-label{font-size:12px;font-weight:500;color:var(--ink-soft);display:block;margin-bottom:6px;}
   .modal-close{display:flex;justify-content:flex-end;margin-bottom:6px;}
   .modal-close button{background:none;border:none;font-size:20px;color:var(--ink-soft);cursor:pointer;padding:6px;border-radius:50%;}
@@ -257,6 +261,12 @@
    there's no backend to serve a document to someone who isn't
    signed into this account.
    ============================================================ */
+
+// PDF.js renders PDF pages onto <canvas> itself rather than relying on any browser's native PDF
+// plugin — the whole reason it replaced "open in a new tab" for viewing: that depended on each
+// browser's own PDF handling, which turned out to vary (some browsers just downloaded the file
+// instead of previewing it). Rendering with canvas behaves identically everywhere.
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyC9zVPWgTekPiDUDn1YcLDInHBFRRUgW9w",
@@ -377,7 +387,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.03 · 21:02';
+const APP_VERSION = '2026.09.03 · 21:10';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1848,12 +1858,9 @@ async function saveEditedDocument(){
 // instead of run through Tesseract. The modal shell renders immediately (via pushAppHistoryState
 // + render below); the fetch result fills in #viewFileContent once it resolves.
 //
-// PDFs are the one exception: an embedded <embed>/<iframe> PDF is unreliable on mobile browsers
-// (most have no built-in plugin for a page-region viewer, only for a full-page/tab one), so a PDF
-// is handed to the browser's own full-tab viewer instead — the one approach that behaves the same
-// on desktop and mobile. That tab has to be opened synchronously, in the same click, or popup
-// blockers kill it — mimeType is already known from state.documents, so this doesn't need to wait
-// on the fetch below.
+// PDFs render via PDF.js onto <canvas>, same as images render via <img> — both end up as plain
+// pixels inside this same modal, so viewing behaves identically for every document type instead
+// of depending on whatever PDF handling (or lack of it) the browser happens to have.
 async function viewDocument(id){
   const doc = state.documents.find(d => d.id === id);
   if(!doc) return;
@@ -1861,33 +1868,56 @@ async function viewDocument(id){
   state.viewDocId = id;
   pushAppHistoryState();
   render();
-  const isPdf = doc.mimeType === 'application/pdf';
-  const pdfTab = isPdf ? window.open('', '_blank') : null;
-  if(pdfTab){
-    pdfTab.document.write(`<title>${escapeHtml(doc.title)}</title><body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;font-family:sans-serif;color:#5f6368;background:#fff;">Loading ${escapeHtml(doc.title)}…</body>`);
-  }
   try{
     const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
     const blob = await res.blob();
     // Closed/navigated away before the fetch resolved — nothing to fill in, and no stale blob
     // URL to leave dangling.
-    if(state.modal !== 'viewFile' || state.viewDocId !== id){ if(pdfTab) pdfTab.close(); return; }
+    if(state.modal !== 'viewFile' || state.viewDocId !== id) return;
     const url = URL.createObjectURL(blob);
     state.viewObjectUrl = url;
     const contentEl = document.getElementById('viewFileContent');
     if(!contentEl) return;
-    if(isPdf){
-      if(pdfTab) pdfTab.location.href = url;
-      contentEl.innerHTML = `<p class="search-hint">Opened in a new tab — your browser's own PDF viewer handles this more reliably than showing it inline here.</p>`;
+    if(doc.mimeType === 'application/pdf'){
+      await renderPdfInto(contentEl, blob, id);
     } else {
       contentEl.innerHTML = `<img src="${url}" alt="${escapeHtml(doc.title)}" style="max-width:100%;border-radius:8px;display:block;margin:0 auto;">`;
     }
   } catch(e){
     console.error('View failed', e);
-    if(pdfTab) pdfTab.close();
     const contentEl = document.getElementById('viewFileContent');
     if(contentEl) contentEl.innerHTML = `<p class="error-text">${escapeHtml(friendlyCloudError(e))}</p>`;
   }
+}
+
+async function renderPdfInto(contentEl, blob, id){
+  contentEl.innerHTML = `<div class="checking-spinner" aria-hidden="true" style="margin:24px auto;"></div>`;
+  const arrayBuffer = await blob.arrayBuffer();
+  // Bailed out or moved to a different document while the PDF was loading/rendering.
+  if(state.modal !== 'viewFile' || state.viewDocId !== id) return;
+  const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
+  const wrap = document.createElement('div');
+  wrap.className = 'pdf-pages';
+  const targetWidth = Math.min(contentEl.clientWidth || 320, 480);
+  const dpr = window.devicePixelRatio || 1;
+  for(let pageNum = 1; pageNum <= pdf.numPages; pageNum++){
+    if(state.modal !== 'viewFile' || state.viewDocId !== id) return;
+    const page = await pdf.getPage(pageNum);
+    const baseViewport = page.getViewport({scale: 1});
+    const scale = targetWidth / baseViewport.width;
+    const viewport = page.getViewport({scale: scale * dpr});
+    const canvas = document.createElement('canvas');
+    canvas.className = 'pdf-page-canvas';
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    canvas.style.width = targetWidth + 'px';
+    canvas.style.height = (viewport.height / dpr) + 'px';
+    await page.render({canvasContext: canvas.getContext('2d'), viewport}).promise;
+    wrap.appendChild(canvas);
+  }
+  if(state.modal !== 'viewFile' || state.viewDocId !== id) return;
+  contentEl.innerHTML = '';
+  contentEl.appendChild(wrap);
 }
 
 async function downloadDocument(id){
