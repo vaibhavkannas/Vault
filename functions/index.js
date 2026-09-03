@@ -17,15 +17,16 @@ const {setGlobalOptions} = require('firebase-functions/v2');
 const admin = require('firebase-admin');
 admin.initializeApp();
 
-// Bounds worst-case cost/abuse blast radius for near-zero effort — this app has exactly one
-// legitimate caller.
-setGlobalOptions({maxInstances: 5});
+// Bounds worst-case cost/abuse blast radius for near-zero effort. Open to any Google account (by
+// design — see below), so this is the only real cap on cost from a burst of traffic, legitimate
+// or not.
+setGlobalOptions({maxInstances: 10});
 
-// Firebase Auth itself has no allowlist — any Google account can sign into the app. This is the
-// one place that matters most to restrict, since this function is what actually spends your
-// Google API quota and touches your Firestore. Fill in the Google account you actually use to
-// sign into Vault before deploying.
-const OWNER_EMAIL = 'YOUR_EMAIL@gmail.com';
+// No owner allowlist, deliberately: anyone who signs in gets their own isolated driveTokens/{uid}
+// doc and their own Drive grant — never anyone else's. Each signed-in user only ever touches their
+// own data, so opening this up doesn't create a cross-user data risk, only a shared-quota one
+// (this function's calls all still run under this one Cloud project's billing and this one OAuth
+// client's rate limits, regardless of who's calling).
 
 // Same OAuth client Vault already uses for Drive access (see GOOGLE_OAUTH_CLIENT_ID in index.html)
 // — this function only newly uses a capability (the authorization-code flow) that client already
@@ -43,9 +44,6 @@ const REFRESH_SKEW_MS = 2 * 60 * 1000;
 
 exports.driveAuth = onCall(async (request) => {
   if(!request.auth) throw new HttpsError('unauthenticated', 'Sign in first.');
-  if(request.auth.token.email !== OWNER_EMAIL){
-    throw new HttpsError('permission-denied', 'This account is not authorized.');
-  }
   const uid = request.auth.uid;
   const tokenDoc = admin.firestore().collection('driveTokens').doc(uid);
 
