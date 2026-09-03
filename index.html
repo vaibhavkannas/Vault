@@ -387,7 +387,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.03 · 21:10';
+const APP_VERSION = '2026.09.03 · 22:05';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -520,17 +520,31 @@ function toast(msg){
    that never touches history — it just exits the site from any screen. Every "deeper" view
    (Settings, the archived-documents view, any open modal) pushes one history entry; Back (or
    an in-app back control, routed through goBackOneLayer so both paths stay in sync) pops
-   exactly one layer via popstate before ever reaching the browser's own "leave the page" step. */
-let appHistoryDepth = 0;
+   exactly one layer via popstate before ever reaching the browser's own "leave the page" step.
+
+   Deliberately tracked with booleans, not a numeric depth counter. An earlier version tried to
+   mirror the browser's own history-stack depth with a hand-incremented/decremented integer, and
+   it could drift from reality: signing out reset that counter to 0 without the real stack
+   shrinking to match (a sign-out mid-Settings, or any sign-out while the guard was armed, left
+   real entries behind that the counter no longer knew about), and a single popstate can represent
+   a multi-step history.go() jump anyway, so "decrement by 1 per popstate" was never guaranteed to
+   match what actually happened. That drift is exactly what let repeated Back presses eventually
+   exhaust the real history stack despite the guard — and this file's own Android WebViews close
+   (or relaunch/reload) the page once history is genuinely exhausted, which re-runs Firebase's
+   auth bootstrap from scratch and is the one path that could ever land Back on the login screen.
+   Nothing below needs to know how deep the stack is, only whether a guard entry currently sits on
+   top of it — so there's nothing left to fall out of sync. */
+let hasPushedHistory = false;
 // Chromium throws a SecurityError on pushState when the document's origin is the opaque "null"
 // origin — which is exactly what a page opened via file:// gets (deployed https:// pages are
 // unaffected). Guard every call so a blocked History API degrades cleanly instead of leaving
-// appHistoryDepth/guardArmed claiming a trap exists that was never actually pushed — that desync
-// is what let Back exit immediately with zero interception. Only commit the bookkeeping once the
-// push has actually succeeded.
+// guardArmed claiming a trap exists that was never actually pushed — that desync is what let
+// Back exit immediately with zero interception. Only commit the bookkeeping once the push has
+// actually succeeded.
 function safePushHistoryState(data){
   try{
     history.pushState(data, '', location.href);
+    hasPushedHistory = true;
     return true;
   } catch(e){
     console.warn('History API pushState blocked (likely a file:// origin) — the back-button exit guard cannot run in this environment; it will work once deployed to a real https:// origin.', e);
@@ -543,7 +557,7 @@ function pushAppHistoryState(){
   // was just consumed" (that was the bug: guardArmed stayed stale/true from the very first arm,
   // so Back from Settings/Archive incorrectly triggered the exit-confirmation).
   guardArmed = false;
-  if(safePushHistoryState({vaultDepth: appHistoryDepth + 1})) appHistoryDepth++;
+  safePushHistoryState({});
 }
 function clearTopLayerState(){
   if(state.modal){
@@ -559,11 +573,11 @@ function clearTopLayerState(){
   }
 }
 function goBackOneLayer(){
-  if(appHistoryDepth > 0){
+  if(hasPushedHistory){
     history.back(); // popstate below does the actual state cleanup + render
   } else {
-    // Nothing was pushed for this layer (shouldn't normally happen) — clear it directly rather
-    // than risk history.back() navigating away from the site entirely.
+    // Nothing was ever pushed (shouldn't normally happen) — clear it directly rather than risk
+    // history.back() navigating away from the site entirely.
     clearTopLayerState();
     render();
     armExitGuardIfIdle();
@@ -577,28 +591,21 @@ function goBackOneLayer(){
 // moment it gets popped, ask for confirmation instead of letting the exhaustion happen, and
 // re-arm immediately so the confirmation dialog itself is protected the same way.
 let guardArmed = false;
-let exitConfirmed = false;
+let allowingExit = false;
 function armExitGuardIfIdle(){
   if(!guardArmed && !state.modal && !state.showArchived && state.screen !== 'settings'){
-    if(safePushHistoryState({vaultDepth: appHistoryDepth + 1, guard: true})){
-      appHistoryDepth++;
-      guardArmed = true;
-    }
+    if(safePushHistoryState({guard: true})) guardArmed = true;
   }
 }
 window.addEventListener('popstate', () => {
-  if(appHistoryDepth > 0) appHistoryDepth--;
+  if(allowingExit){ allowingExit = false; return; } // already agreed to leave — let this one through
   if(guardArmed){
     guardArmed = false;
-    if(exitConfirmed){ exitConfirmed = false; return; } // already agreed to leave — let this one through
     // Re-arm the trap FIRST, before spending any time on render() — pushState is effectively
     // instant, so this keeps the window where "no trap exists yet" as close to zero as possible.
     // A second rapid Back press landing inside that window (rather than after re-arming) is the
     // one way this could still let the app close instead of showing the dialog again.
-    if(safePushHistoryState({vaultDepth: appHistoryDepth + 1, guard: true})){
-      appHistoryDepth++;
-      guardArmed = true;
-    }
+    if(safePushHistoryState({guard: true})) guardArmed = true;
     state.modal = 'exitConfirm';
     render();
     return;
@@ -612,19 +619,21 @@ function cancelExitConfirm(){
   render();
 }
 function confirmExitApp(){
-  exitConfirmed = true;
+  // Pop exactly the one guard entry we know is on top of the real stack right now — never a
+  // computed multi-level jump. A fixed single step can't overshoot (history.go() silently does
+  // nothing if the offset overshoots) or undershoot (leaving unguarded real entries behind), the
+  // way a jump computed from a possibly-stale depth count could. A plain web page has no API to
+  // force-close its own tab/window (window.close() only works on windows opened by script), so an
+  // actual close from here is the platform's own back-button/WebView behavior taking over once
+  // its history is exhausted — which, on Android specifically, is exactly the "exhausted history
+  // closes the app" behavior this whole feature exists to gate behind a confirmation, now
+  // deliberately allowed through for this one pop. If the platform doesn't actually close here
+  // (desktop browsers never do), the very next Back press lands in the plain branch above and
+  // re-arms immediately, so nothing is left permanently unguarded.
+  allowingExit = true;
   state.modal = null;
   render();
-  // Back past every one of our own pushed entries (however many piled up from repeated
-  // Back-while-the-dialog-was-showing re-arms) to the true entry that existed before we ever
-  // touched history — using the tracked depth rather than a fixed guess, since history.go()
-  // silently does nothing at all if the offset overshoots past what's actually there. Landing
-  // here exhausts our page's own history; a plain web page has no API to force-close its own
-  // tab/window (window.close() only works on windows opened by script), so an actual close from
-  // here on is the platform's own back-button/WebView behavior taking over — which, on Android
-  // specifically, is exactly the "exhausted history closes the app" behavior this whole feature
-  // exists to gate behind a confirmation, now deliberately allowed through.
-  if(appHistoryDepth > 0) history.go(-appHistoryDepth);
+  if(hasPushedHistory) history.back();
 }
 
 /* ---------- theme ---------- */
@@ -969,6 +978,7 @@ function renderLogin(app){
       await loadUserData();
       state.screen = 'vault';
       render();
+      armExitGuardIfIdle();
     } catch(e){
       console.error('Sign-in failed', e);
       btn.disabled = false;
@@ -1016,6 +1026,7 @@ async function completeReconnect(){
     await loadUserData();
     state.screen = 'vault';
     render();
+    armExitGuardIfIdle();
   } catch(e){
     console.error('Reconnect failed', e);
     btn.disabled = false;
@@ -2157,11 +2168,12 @@ function resetToLoggedOutState(){
     vaultFolderId: null, categories: [], documents: [], shares: [], modal: null,
     searchQuery: '', showArchived: false, collapsedCats: {}, openActionMenu: null
   });
-  // A hard reset like this can happen mid-navigation (e.g. sign-out while deep in Settings) —
-  // flatten our own depth/guard bookkeeping to match; the caller re-arms the guard for the fresh
-  // login screen right after this.
-  appHistoryDepth = 0;
-  guardArmed = false;
+  // Deliberately not touching history/guard bookkeeping here: an earlier version force-reset a
+  // depth counter to 0, which lied whenever the guard was actually still armed (an idle sign-out
+  // leaves a real, still-there guard entry on top of the stack) — that lie was the root cause
+  // behind Back eventually being able to exhaust the real stack. guardArmed already reflects
+  // reality accurately at all times now, so leaving it alone and letting the caller's
+  // armExitGuardIfIdle() react to the real, current state is what keeps it correct.
 }
 function signOutUser(){
   auth.signOut().catch(e => console.error('Sign out error', e));
