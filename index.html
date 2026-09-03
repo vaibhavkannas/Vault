@@ -396,6 +396,11 @@ function wireIconPicker(inputId){
   });
 }
 
+// True while either the manual Sign-in click or the automatic on-load session-restore is actively
+// working through the sign-in / Drive-token dance — see the onAuthStateChanged listener below for
+// why this guard against the two racing is needed.
+let authFlowInProgress = false;
+
 const state = {
   screen: 'login', // 'login' | 'vault'
   user: null,           // {name, email, uid, photoURL}
@@ -838,6 +843,8 @@ function renderLogin(app){
     </div>
   `;
   document.getElementById('googleBtn').onclick = async () => {
+    if(authFlowInProgress) return;
+    authFlowInProgress = true;
     const btn = document.getElementById('googleBtn');
     const errEl = document.getElementById('loginErr');
     const originalLabel = btn.innerHTML;
@@ -861,6 +868,8 @@ function renderLogin(app){
       btn.innerHTML = originalLabel;
       errEl.textContent = 'Sign-in failed — please try again.';
       errEl.style.display = 'block';
+    } finally {
+      authFlowInProgress = false;
     }
   };
   renderModal();
@@ -2062,8 +2071,17 @@ async function deleteEverything(){
 // to the user as "the app keeps logging me out." Restore silently here: if Firebase still has the
 // session, reacquire the Drive token the same silent way the Sign-in button does, and only fall
 // back to asking for a fresh sign-in if that silent reacquisition itself fails.
+//
+// authFlowInProgress guards against a real race: this listener fires on EVERY Firebase auth
+// change, including right after a fresh manual sign-in succeeds — and Firebase does not guarantee
+// it fires before or after signInWithPopup's own promise resolves. Without the guard, a manual
+// sign-in and this restore path could run concurrently, both calling requestDriveAccessToken()
+// at once; since both share one GIS token client and its single callback property, the two Google
+// popups end up cross-wired with each other — sign-in visibly running through the whole dance
+// twice and asking to pick an account repeatedly.
 auth.onAuthStateChanged(async (user) => {
-  if(!user || state.user) return;
+  if(!user || state.user || authFlowInProgress) return;
+  authFlowInProgress = true;
   state.user = {name: user.displayName, email: user.email, uid: user.uid, photoURL: user.photoURL};
   try{
     const tokenResp = await requestDriveAccessToken(true);
@@ -2078,6 +2096,8 @@ auth.onAuthStateChanged(async (user) => {
     state.screen = 'reconnect';
     render();
     armExitGuardIfIdle();
+  } finally {
+    authFlowInProgress = false;
   }
 });
 
