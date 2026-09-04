@@ -55,9 +55,16 @@
      handler below entirely, no matter what it does. overscroll-behavior-x is the browser's own
      documented opt-out for exactly that gesture, applied where Chrome looks for it (the
      scrolling root, which is <html> unless something else scrolls instead). A hardware/software
-     Back button still reaches popstate normally either way — this only suppresses the swipe. */
-  html{overscroll-behavior-x: none;}
-  body{margin:0;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;overscroll-behavior-x:none;}
+     Back button still reaches popstate normally either way — this only suppresses the swipe.
+
+     overscroll-behavior-y is the same idea for the vertical axis: without it, dragging down from
+     the top of the document viewer's own pull-to-dismiss gesture (see enableSwipeToDismiss) also
+     triggers Chrome's native pull-to-refresh underneath the modal — the browser watches the page's
+     own scroll position for that gesture regardless of what overlay is drawn on top, so a modal
+     being open doesn't suppress it on its own. Dragging further reloads the whole tab instead of
+     the modal closing. This is the documented opt-out for that, same mechanism as the X-axis one. */
+  html{overscroll-behavior: none;}
+  body{margin:0;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;overscroll-behavior:none;}
   /* Baseline tap feedback for every button so nothing feels inert — more specific :active rules
      elsewhere (e.g. button.primary's scale(0.98)) simply override this by CSS specificity. */
   button, .doc-icon, .icon-pick-btn, .cat-toggle, .renewal-card{transition:transform 0.1s ease;}
@@ -405,7 +412,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 16:13';
+const APP_VERSION = '2026.09.04 · 16:37';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
