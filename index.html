@@ -248,6 +248,8 @@
   .progress-fill{height:100%;background:var(--brass);transition:width 0.2s ease;}
   .suggest-note{font-size:11.5px;color:var(--success);margin:-8px 0 12px;}
   .field-hint{font-size:11.5px;color:var(--ink-soft);margin:-8px 0 12px;line-height:1.4;}
+  .changelog-list{margin:0 0 20px;padding-left:20px;font-size:13.5px;color:var(--ink);line-height:1.6;}
+  .changelog-list li{margin-bottom:8px;}
 
   /* Dark mode: system preference by default, data-theme attribute forces either way.
      Values follow Material 3's dark color roles — surfaces stay near-black rather than
@@ -468,7 +470,7 @@ const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry';
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 20:37';
+const APP_VERSION = '2026.09.04 · 21:35';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -571,6 +573,8 @@ const state = {
   editCategoryId: null,
   viewDocId: null,
   renewDocId: null,
+  pendingChangelogItems: null, // set by maybeShowChangelog() right before showing the 'changelog' modal
+  vaultWasAlreadyProvisioned: false, // set in loadUserData(); read by maybeShowChangelog()
   viewObjectUrl: null, // tracks the current in-app viewer's blob URL so it can be revoked on close
   lastGeneratedShareId: null, // drives the "here's your link" box after Generate — see generateShare()
   searchQuery: '',
@@ -655,7 +659,7 @@ function clearTopLayerState(){
     stopCamera();
     if(state.viewObjectUrl){ URL.revokeObjectURL(state.viewObjectUrl); state.viewObjectUrl = null; }
     state.modal = null; state.shareDocId = null; state.editDocId = null; state.deleteDocId = null;
-    state.editCategoryId = null; state.viewDocId = null; state.renewDocId = null; state.lastGeneratedShareId = null; state.capturedPages = [];
+    state.editCategoryId = null; state.viewDocId = null; state.renewDocId = null; state.pendingChangelogItems = null; state.lastGeneratedShareId = null; state.capturedPages = [];
     pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false;
   } else if(state.showArchived){
     state.showArchived = false; state.searchQuery = '';
@@ -731,6 +735,57 @@ window.addEventListener('popstate', () => {
   render();
   armExitGuardIfIdle();
 });
+
+// User-facing "what's new" — shown once, the first time someone who's used Vault before opens it
+// after a push that actually changed something visible. Append a new entry (newest first) whenever
+// a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
+// should read like something you'd tell a friend, not a commit message.
+const CHANGELOG = [
+  {
+    version: '2026.09.04 · 20:37',
+    items: [
+      'Pull-down-to-dismiss on the document viewer is far more reliable, with a dedicated grab handle at the top.',
+      'Search now finds matches inside collapsed categories automatically, and has a clear (×) button.',
+      "Documents you haven't renewed yet keep showing up in your daily reminders for as long as they're overdue, not just on a few specific days.",
+      'When you archive an expired document, you can now link it to whatever replaced it.',
+      'Reminder schedule is customizable per document, and shown when adding a document too, not just editing.',
+      'Settings redesigned with proper on/off switches and a simpler Security section.',
+      "Dark mode: the document viewer no longer blends into the background, and colors are easier on the eyes.",
+      'Sign-in and reopening the app are both faster.'
+    ]
+  }
+];
+let changelogCheckedThisSession = false;
+// Called after every path that lands on the vault screen (sign-in, silent session restore,
+// reconnect, offline open) — safe to call more than once per session, since the guard below makes
+// every call after the first a no-op.
+function maybeShowChangelog(){
+  if(changelogCheckedThisSession) return;
+  changelogCheckedThisSession = true;
+  try{
+    // A vault provisioned for the very first time on this exact call has nothing to catch up on —
+    // whatever they're seeing right now IS their baseline. Record silently and move on, rather than
+    // showing a new sign-up a list of changes to a version of the app they never used.
+    if(!state.vaultWasAlreadyProvisioned){
+      localStorage.setItem('vault-last-seen-version', APP_VERSION);
+      return;
+    }
+    const lastSeen = localStorage.getItem('vault-last-seen-version');
+    if(lastSeen === APP_VERSION) return;
+    // No recorded version at all on this device isn't necessarily a brand-new install (this feature
+    // didn't exist before a certain point — plenty of already-provisioned accounts will hit this on
+    // their first open after it ships) — treat it the same as "show everything currently on file",
+    // rather than assuming it means nothing changed.
+    const items = CHANGELOG.filter(e => !lastSeen || e.version > lastSeen).flatMap(e => e.items);
+    localStorage.setItem('vault-last-seen-version', APP_VERSION);
+    if(!items.length) return;
+    state.pendingChangelogItems = items;
+    state.modal = 'changelog';
+    pushAppHistoryState();
+    renderModal();
+  } catch(e){ console.error('Changelog check failed', e); }
+}
+
 // Defensive hedge: reported symptom was Back closing the app with no warning at all on a
 // genuinely fresh load/sign-in, before any other tap — but only once something else had been
 // tapped first did the warning reliably appear. The one difference between those two moments is
@@ -1309,6 +1364,9 @@ async function loadUserData(){
     // vault and skip folder/category creation entirely.
     const metaSnap = await userDoc().collection('meta').doc('vault').get();
     const alreadyProvisioned = metaSnap.exists && metaSnap.data().vaultFolderId;
+    // Read by maybeShowChangelog() — a vault provisioned for the first time on this exact call has
+    // no "since you last used Vault" to speak of, whatever's on screen now is its whole history.
+    state.vaultWasAlreadyProvisioned = !!alreadyProvisioned;
     if(alreadyProvisioned){
       state.vaultFolderId = metaSnap.data().vaultFolderId;
     } else {
@@ -1644,6 +1702,7 @@ function renderLogin(app){
       state.screen = 'vault';
       render();
       armExitGuardIfIdle();
+      maybeShowChangelog();
     } catch(e){
       console.error('Sign-in failed', e);
       btn.disabled = false;
@@ -1694,6 +1753,7 @@ async function completeReconnect(){
     state.screen = 'vault';
     render();
     armExitGuardIfIdle();
+    maybeShowChangelog();
   } catch(e){
     console.error('Reconnect failed', e);
     btn.disabled = false;
@@ -2431,6 +2491,22 @@ function renderModal(){
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('cancelDelBtn').onclick = closeModal;
     document.getElementById('confirmDelBtn').onclick = confirmDeleteDocument;
+  }
+
+  if(state.modal === 'changelog'){
+    const items = state.pendingChangelogItems || [];
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>What's new</h3>
+        <p class="sub">Since you last opened Vault:</p>
+        <ul class="changelog-list">${items.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+        <button class="primary" id="dismissChangelogBtn">Got it</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('dismissChangelogBtn').onclick = closeModal;
   }
 
   if(state.modal === 'renewExpired'){
@@ -3472,6 +3548,7 @@ async function enterOfflineVault(){
   state.screen = 'vault';
   render();
   armExitGuardIfIdle();
+  maybeShowChangelog();
 }
 
 // Firebase persists the sign-in session by default, but the app never checked for it on load —
@@ -3508,6 +3585,7 @@ auth.onAuthStateChanged(async (user) => {
     state.screen = 'vault';
     render();
     armExitGuardIfIdle();
+    maybeShowChangelog();
   } catch(e){
     // NO_GRANT/GRANT_REVOKED is a real permissions problem only a fresh consent popup can fix —
     // genuinely nothing to do with connectivity. Anything else here (a network error reaching the
