@@ -114,7 +114,9 @@
 
   .vault{padding:8px 16px 86px;}
   .search-bar{position:relative;margin-bottom:14px;}
-  .search-bar input{margin-bottom:0;padding-left:44px;background:var(--surface-container);border-radius:var(--radius-full);box-shadow:var(--elevation-1);}
+  .search-bar input{margin-bottom:0;padding-left:44px;padding-right:40px;background:var(--surface-container);border-radius:var(--radius-full);box-shadow:var(--elevation-1);}
+  .search-clear{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;width:30px;height:30px;border:none;border-radius:50%;background:none;color:var(--ink-soft);cursor:pointer;}
+  .search-clear:hover{color:var(--ink);}
   .search-bar .sicon{position:absolute;left:15px;top:50%;transform:translateY(-50%);display:flex;color:var(--ink-soft);}
   .search-hint{font-size:11.5px;color:var(--ink-soft);margin:6px 2px 0;}
 
@@ -136,11 +138,11 @@
   .renewal-strip-wrap{position:relative;margin:0 0 20px;}
   .renewal-strip{display:flex;gap:9px;overflow-x:auto;margin:0;scrollbar-width:none;}
   .renewal-strip::-webkit-scrollbar{display:none;}
-  /* Only 2 renewal cards fit in view on a typical phone width with nothing hinting there's more to
-     scroll — this fades the right edge into the page background, the same "more content" cue Gmail
-     and Photos use for horizontally-scrolling chip/card rows. Only shown when there's enough cards
-     that scrolling is actually needed (see the upcoming.length > 2 gate around the markup). */
-  .renewal-strip-wrap::after{content:'';position:absolute;top:0;right:0;bottom:0;width:32px;background:linear-gradient(to right, transparent, var(--paper));pointer-events:none;}
+  /* Fades the right edge into the page background — the same "more content" cue Gmail and Photos
+     use for horizontally-scrolling chip/card rows — but ONLY when the strip actually overflows.
+     has-overflow is set after render by measuring scrollWidth vs clientWidth (see renderVault),
+     since a card-count guess can't account for actual title lengths or the viewport it's on. */
+  .renewal-strip-wrap.has-overflow::after{content:'';position:absolute;top:0;right:0;bottom:0;width:32px;background:linear-gradient(to right, transparent, var(--paper));pointer-events:none;}
   .renewal-card{flex:0 0 auto;min-width:148px;max-width:190px;background:var(--success-bg);border-radius:16px;padding:11px 13px;cursor:pointer;}
   .renewal-card.urgent{background:var(--danger-bg);}
   .renewal-title{font-size:13px;font-weight:500;color:var(--ink);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -168,6 +170,18 @@
   svg.icon{flex:none;display:block;}
   .icon-btn.danger{color:var(--danger);border-color:var(--danger-bg);}
   .icon-btn:disabled{opacity:0.5;cursor:default;}
+  /* A checkbox styled as a track+thumb switch — the checkbox itself stays present but invisible
+     (opacity:0, full-size, on top) so it keeps native keyboard/screen-reader semantics; only its
+     visual is replaced by the two sibling spans. */
+  .switch{position:relative;display:inline-block;width:42px;height:24px;flex:none;}
+  .switch input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;z-index:1;}
+  .switch-track{position:absolute;inset:0;background:var(--line);border-radius:999px;transition:background 0.15s ease;}
+  .switch-thumb{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:var(--elevation-1);transition:transform 0.15s ease;}
+  .switch input:checked ~ .switch-track{background:var(--brass);}
+  .switch input:checked ~ .switch-track .switch-thumb{transform:translateX(18px);}
+  .switch input:disabled ~ .switch-track{opacity:0.5;}
+  .switch input:disabled{cursor:default;}
+  .switch input:focus-visible ~ .switch-track{outline:2px solid var(--brass);outline-offset:2px;}
   .icon-only-btn{background:none;border:none;font-size:20px;cursor:pointer;color:var(--ink);padding:8px;line-height:1;border-radius:50%;display:flex;align-items:center;justify-content:center;}
   .icon-only-btn:hover{background:var(--surface-container);}
   .icon-only-btn.small{width:40px;height:40px;padding:0;}
@@ -185,11 +199,15 @@
 
   .fab{position:fixed;max-width:480px;margin:0 auto;left:0;right:0;bottom:0;display:flex;justify-content:flex-end;align-items:center;gap:12px;padding:16px 20px;pointer-events:none;}
   .fab button{pointer-events:all;}
-  .fab .primary{width:auto;padding:16px 22px;border-radius:16px;box-shadow:var(--elevation-2);display:flex;align-items:center;gap:8px;}
+  .fab .primary{width:auto;height:56px;padding:0 22px;border-radius:16px;box-shadow:var(--elevation-2);display:flex;align-items:center;gap:8px;}
   .fab .camera-fab{width:56px;height:56px;flex:none;background:var(--primary-container);color:var(--on-primary-container);border:none;border-radius:16px;box-shadow:var(--elevation-2);display:flex;align-items:center;justify-content:center;}
 
   .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:flex-end;justify-content:center;z-index:50;animation:overlayFadeIn 0.2s ease;}
-  .modal-sheet{width:100%;max-width:480px;background:var(--paper);border-radius:28px 28px 0 0;padding:22px 20px 28px;max-height:88vh;overflow-y:auto;animation:sheetSlideUp 0.24s cubic-bezier(0.05,0.7,0.1,1);}
+  /* --paper-2 rather than --paper: in light mode they're identical (both white), but in dark mode
+     --paper is the page's own background — using it here too was exactly why the sheet visually
+     merged into the page behind it, with only the backdrop dimming (and not much else) marking
+     where one ends and the other begins. */
+  .modal-sheet{width:100%;max-width:480px;background:var(--paper-2);border-radius:28px 28px 0 0;padding:22px 20px 28px;max-height:88vh;overflow-y:auto;animation:sheetSlideUp 0.24s cubic-bezier(0.05,0.7,0.1,1);}
   @keyframes overlayFadeIn{from{opacity:0;}to{opacity:1;}}
   @keyframes sheetSlideUp{from{transform:translateY(28px);opacity:0;}to{transform:translateY(0);opacity:1;}}
   .modal-sheet h3{font-weight:400;font-size:20px;margin:0 0 4px;}
@@ -229,6 +247,7 @@
   .progress-track{height:4px;background:var(--surface-container);border-radius:4px;overflow:hidden;margin-bottom:6px;}
   .progress-fill{height:100%;background:var(--brass);transition:width 0.2s ease;}
   .suggest-note{font-size:11.5px;color:var(--success);margin:-8px 0 12px;}
+  .field-hint{font-size:11.5px;color:var(--ink-soft);margin:-8px 0 12px;line-height:1.4;}
 
   /* Dark mode: system preference by default, data-theme attribute forces either way.
      Values follow Material 3's dark color roles — surfaces stay near-black rather than
@@ -236,18 +255,18 @@
      containers stay dark with light text on them, matching Google's own dark-mode apps. */
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
-      --ink:#e3e3e3; --ink-soft:#c4c7c5; --paper:#131314; --paper-2:#1e1f20;
-      --brass:#a8c7fa; --brass-dark:#d3e3fd;
-      --line:#444746; --danger:#f2b8b5; --danger-bg:#601410; --success:#6dd58c; --success-bg:#0f5223;
-      --surface-container:#282a2c; --primary-container:#0842a0; --on-primary-container:#d3e3fd;
+      --ink:#e8e9ea; --ink-soft:#c4c7c5; --paper:#111214; --paper-2:#1f2124;
+      --brass:#8ab4f8; --brass-dark:#d3e3fd;
+      --line:#48494c; --danger:#f2b8b5; --danger-bg:#601410; --success:#6dd58c; --success-bg:#0f5223;
+      --surface-container:#2c2e32; --primary-container:#0b3a86; --on-primary-container:#d3e3fd;
       --elevation-1:0 1px 3px rgba(0,0,0,0.5); --elevation-2:0 2px 8px rgba(0,0,0,0.6);
     }
   }
   :root[data-theme="dark"]{
-    --ink:#e3e3e3; --ink-soft:#c4c7c5; --paper:#131314; --paper-2:#1e1f20;
-    --brass:#a8c7fa; --brass-dark:#d3e3fd;
-    --line:#444746; --danger:#f2b8b5; --danger-bg:#601410; --success:#6dd58c; --success-bg:#0f5223;
-    --surface-container:#282a2c; --primary-container:#0842a0; --on-primary-container:#d3e3fd;
+    --ink:#e8e9ea; --ink-soft:#c4c7c5; --paper:#111214; --paper-2:#1f2124;
+    --brass:#8ab4f8; --brass-dark:#d3e3fd;
+    --line:#48494c; --danger:#f2b8b5; --danger-bg:#601410; --success:#6dd58c; --success-bg:#0f5223;
+    --surface-container:#2c2e32; --primary-container:#0b3a86; --on-primary-container:#d3e3fd;
     --elevation-1:0 1px 3px rgba(0,0,0,0.5); --elevation-2:0 2px 8px rgba(0,0,0,0.6);
   }
 
@@ -441,10 +460,15 @@ const DEFAULT_CATEGORIES = [
   {id:'other', label:'Other', icon:'doc'}
 ];
 const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps nagging in "Renewals coming up"
+// Display-only mirror of DIGEST_MILESTONE_DAYS in apps-script/Code.gs (the backend digest job is
+// what actually applies it) — shown to the user in the Add/Edit forms so "leave blank for the
+// default schedule" means something concrete instead of asking them to trust an invisible default.
+// Keep in sync by hand if that array ever changes.
+const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry';
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 20:01';
+const APP_VERSION = '2026.09.04 · 20:37';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1284,14 +1308,26 @@ async function loadUserData(){
     // canary, no vaultFolderId), which would otherwise be mistaken for an already-provisioned
     // vault and skip folder/category creation entirely.
     const metaSnap = await userDoc().collection('meta').doc('vault').get();
-    if(metaSnap.exists && metaSnap.data().vaultFolderId){
+    const alreadyProvisioned = metaSnap.exists && metaSnap.data().vaultFolderId;
+    if(alreadyProvisioned){
       state.vaultFolderId = metaSnap.data().vaultFolderId;
-      const catsSnap = await userDoc().collection('categories').orderBy('order').get();
-      state.categories = catsSnap.docs.map(d => ({id:d.id, ...d.data()}));
     } else {
+      // Needs state.driveAccessToken already set (it creates Drive folders) — the one read below
+      // that can't run alongside the others, since it's the only one Drive-dependent at all.
       await provisionVault();
     }
-    const docsSnap = await userDoc().collection('documents').orderBy('addedAt', 'desc').get();
+    // documents/shares/reminderSettings never depended on any of the above finishing, or on each
+    // other — only categories does, and only when already provisioned (otherwise provisionVault()
+    // just set state.categories itself, above). Firing all of these together rather than one
+    // after another turns "wait for the sum of every round trip" into "wait for whichever one
+    // Firestore answers last" — the single biggest thing slowing down every sign-in and reopen.
+    const [catsSnap, docsSnap, sharesSnap, reminderSnap] = await Promise.all([
+      alreadyProvisioned ? userDoc().collection('categories').orderBy('order').get() : Promise.resolve(null),
+      userDoc().collection('documents').orderBy('addedAt', 'desc').get(),
+      userDoc().collection('shares').get(),
+      userDoc().collection('meta').doc('reminderSettings').get()
+    ]);
+    if(catsSnap) state.categories = catsSnap.docs.map(d => ({id:d.id, ...d.data()}));
     // Same reasoning: a document written under the old encrypted schema has no plain `title`/
     // `driveFileId` fields this version relies on. Skip anything that doesn't look like the
     // current shape instead of crashing the render on undefined fields.
@@ -1300,9 +1336,7 @@ async function loadUserData(){
       if(!ok) console.warn('Skipping document with an outdated/incompatible shape', d.id);
       return ok;
     });
-    const sharesSnap = await userDoc().collection('shares').get();
     state.shares = sharesSnap.docs.map(d => ({id: d.id, ...d.data()}));
-    const reminderSnap = await userDoc().collection('meta').doc('reminderSettings').get();
     state.reminderSettings = reminderSnap.exists ? reminderSnap.data() : {emailDigestEnabled: false, pushEnabled: false};
     syncPushSubscriptionIfNeeded(); // fire-and-forget — never delays the vault's own load
   } catch(e){
@@ -1506,6 +1540,7 @@ function renderChecking(app){
       <div class="seal">${brandMarkSvg(50)}</div>
       <h1>Vault</h1>
       <div class="checking-spinner" aria-hidden="true"></div>
+      <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
   `;
 }
@@ -1518,10 +1553,11 @@ function renderLocked(app){
       <h1>Vault Locked</h1>
       <p>${hasBio ? 'Verifying with biometric unlock…' : 'Enter your PIN to continue.'}</p>
       ${hasBio ? `<button class="google-btn" id="bioUnlockBtn">${icon('shield',20)} Unlock with biometric</button>` : ''}
-      <input type="password" inputmode="numeric" pattern="[0-9]*" id="lockPinInput" placeholder="PIN" maxlength="8" style="text-align:center;font-size:22px;letter-spacing:8px;width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);margin-top:10px;background:var(--paper);color:var(--ink);" />
+      <input type="password" inputmode="numeric" pattern="[0-9]*" id="lockPinInput" placeholder="PIN" maxlength="8" style="text-align:center;font-size:22px;letter-spacing:8px;width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);margin-top:10px;background:var(--surface-container);color:var(--ink);" />
       <div class="error-text" id="lockErr" style="display:none;"></div>
       <button class="primary" id="lockUnlockBtn">Unlock</button>
       <button class="ghost" id="lockSignOutBtn">Not you? Sign out</button>
+      <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
   `;
   const pinInput = document.getElementById('lockPinInput');
@@ -1635,6 +1671,7 @@ function renderReconnect(app){
       <button class="primary" id="reconnectContinueBtn">Continue</button>
       <div class="error-text" id="reconnectErr" style="display:none;"></div>
       <button class="ghost" id="reconnectSignOutBtn">Not you? Sign out</button>
+      <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
   `;
   document.getElementById('reconnectContinueBtn').onclick = completeReconnect;
@@ -1700,31 +1737,32 @@ function renderSettings(app){
 
       <div class="settings-section">
         <h4>Security</h4>
+        <div class="settings-row">
+          <span>App lock — require a PIN or biometric to open Vault, even while signed in</span>
+          ${switchHtml('appLockSwitch', isAppLockEnabled(), false, 'App lock')}
+        </div>
         ${isAppLockEnabled() ? `
-          <div class="settings-row"><span>App lock is on${hasBiometricUnlockConfigured() ? ' · biometric unlock set up' : ''}</span></div>
-          <div class="settings-row"><span>Require a PIN or biometric to open Vault</span><button class="icon-btn" id="changeLockPinBtn">Change PIN</button></div>
-          ${hasBiometricUnlockConfigured() ? `<div class="settings-row"><span>Biometric unlock</span><button class="icon-btn danger" id="turnOffBioBtn">Turn off</button></div>` : ''}
-          <div class="settings-row"><span>Turn off app lock</span><button class="icon-btn danger" id="turnOffLockBtn">Turn off</button></div>
-        ` : `
-          <div class="settings-row"><span>Require a PIN or biometric to open Vault, even while signed in</span><button class="icon-btn" id="setUpLockBtn">Set up</button></div>
-        `}
+          <div class="settings-row"><span>PIN</span><button class="icon-btn" id="changeLockPinBtn">Change</button></div>
+          ${hasBiometricUnlockConfigured() ? `
+            <div class="settings-row">
+              <span>Biometric unlock</span>
+              ${switchHtml('bioUnlockSwitch', true, false, 'Biometric unlock')}
+            </div>
+          ` : ''}
+        ` : ''}
       </div>
 
       <div class="settings-section">
         <h4>Reminders</h4>
         <div class="settings-row">
           <span>Daily email digest of documents expiring soon</span>
-          <button class="icon-btn${isEmailDigestEnabled() ? ' danger' : ''}" id="toggleEmailDigestBtn">${isEmailDigestEnabled() ? 'Turn off' : 'Turn on'}</button>
+          ${switchHtml('emailDigestSwitch', isEmailDigestEnabled(), false, 'Daily email digest')}
         </div>
         <div class="settings-row">
-          <span>Push notifications for documents expiring soon</span>
+          <span>Push notifications for documents expiring soon${isPushDenied() ? ' — blocked in your browser\'s site settings' : ''}</span>
           ${!isPushSupported() ? `
-            <button class="icon-btn" disabled>Not supported</button>
-          ` : isPushDenied() ? `
-            <button class="icon-btn" disabled title="Blocked — enable notifications for Vault in your browser's site settings">Blocked</button>
-          ` : `
-            <button class="icon-btn${isPushEnabled() ? ' danger' : ''}" id="togglePushBtn">${isPushEnabled() ? 'Turn off' : 'Turn on'}</button>
-          `}
+            <span class="field-hint" style="margin:0;">Not supported</span>
+          ` : switchHtml('pushSwitch', isPushEnabled(), isPushDenied(), 'Push notifications')}
         </div>
       </div>
 
@@ -1761,6 +1799,12 @@ function renderSettings(app){
           <button class="danger-solid" id="deleteAccountBtn">Delete account &amp; vault</button>
         </div>
       </div>
+
+      <div class="settings-section">
+        <h4>About</h4>
+        <a class="privacy-link" href="./privacy.html" target="_blank" rel="noopener">Privacy Policy</a>
+        <div class="version-tag">Version ${APP_VERSION}</div>
+      </div>
     </div>
   `;
 
@@ -1789,26 +1833,35 @@ function renderSettings(app){
     btn.onclick = () => { applyTheme(btn.getAttribute('data-theme-choice')); render(); };
   });
 
-  const setUpLockBtn = document.getElementById('setUpLockBtn');
-  if(setUpLockBtn) setUpLockBtn.onclick = openAppLockSetupModal;
   const changeLockPinBtn = document.getElementById('changeLockPinBtn');
   if(changeLockPinBtn) changeLockPinBtn.onclick = openAppLockSetupModal;
-  const turnOffLockBtn = document.getElementById('turnOffLockBtn');
-  if(turnOffLockBtn) turnOffLockBtn.onclick = () => {
-    turnOffAppLock();
-    toast('App lock turned off');
-    render();
+  const appLockSwitch = document.getElementById('appLockSwitch');
+  if(appLockSwitch) appLockSwitch.onchange = (e) => {
+    if(e.target.checked){
+      // Turning on needs a PIN, which needs its own modal — the switch visually flips now, but
+      // render() from that modal's own flow (on save or on cancel) is what settles it to whatever
+      // actually happened, same as any other "this toggle opens a form" control.
+      openAppLockSetupModal();
+    } else {
+      turnOffAppLock();
+      toast('App lock turned off');
+      render();
+    }
   };
-  const turnOffBioBtn = document.getElementById('turnOffBioBtn');
-  if(turnOffBioBtn) turnOffBioBtn.onclick = () => {
+  const bioUnlockSwitch = document.getElementById('bioUnlockSwitch');
+  if(bioUnlockSwitch) bioUnlockSwitch.onchange = () => {
+    // Only ever rendered already-checked (see the settings-row above) — turning biometric ON goes
+    // through the setup modal's own WebAuthn ceremony, not a plain switch flip, so the only real
+    // interaction here is turning it off.
     turnOffBiometricUnlock();
     toast('Biometric unlock turned off');
     render();
   };
 
-  document.getElementById('toggleEmailDigestBtn').onclick = toggleEmailDigest;
-  const togglePushBtn = document.getElementById('togglePushBtn');
-  if(togglePushBtn) togglePushBtn.onclick = togglePushNotifications;
+  const emailDigestSwitch = document.getElementById('emailDigestSwitch');
+  if(emailDigestSwitch) emailDigestSwitch.onchange = toggleEmailDigest;
+  const pushSwitch = document.getElementById('pushSwitch');
+  if(pushSwitch) pushSwitch.onchange = togglePushNotifications;
 
   document.getElementById('addCategoryBtn').onclick = openAddCategoryModal;
   document.querySelectorAll('[data-rename-cat]').forEach(btn => {
@@ -1894,6 +1947,7 @@ function renderVault(app){
       <div class="search-bar">
         <span class="sicon">${icon('search',18)}</span>
         <input type="text" id="searchInput" placeholder="Search titles or text inside documents" value="${escapeHtml(state.searchQuery)}" />
+        ${state.searchQuery ? `<button type="button" class="search-clear" id="searchClearBtn" aria-label="Clear search">×</button>` : ''}
       </div>
       ${state.searchQuery ? `<div class="search-hint">${filtered.length} result${filtered.length===1?'':'s'} for "${escapeHtml(state.searchQuery)}"</div>` : ''}
 
@@ -1904,16 +1958,16 @@ function renderVault(app){
 
       ${!state.searchQuery && !state.showArchived && upcoming.length ? `
         <div class="section-title">Renewals</div>
-        ${upcoming.length > 2 ? '<div class="renewal-strip-wrap">' : ''}
-        <div class="renewal-strip">
-          ${upcoming.map(d => `
-            <div class="renewal-card ${d.days<=7?'urgent':''}" data-renewal-doc="${d.id}" role="button" tabindex="0">
-              <div class="renewal-title">${escapeHtml(d.title)}</div>
-              <div class="renewal-days">${d.days<0?'Expired':d.days===0?'Due today':d.days+' day'+(d.days===1?'':'s')+' left'}</div>
-            </div>
-          `).join('')}
-        </div>
-        ${upcoming.length > 2 ? '</div>' : ''}` : ''}
+        <div class="renewal-strip-wrap">
+          <div class="renewal-strip">
+            ${upcoming.map(d => `
+              <div class="renewal-card ${d.days<=7?'urgent':''}" data-renewal-doc="${d.id}" role="button" tabindex="0">
+                <div class="renewal-title">${escapeHtml(d.title)}</div>
+                <div class="renewal-days">${d.days<0?'Expired':d.days===0?'Due today':d.days+' day'+(d.days===1?'':'s')+' left'}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>` : ''}
 
       ${archivedCount ? `<button class="archive-toggle" id="archiveToggleBtn">${state.showArchived ? `${icon('back',14)} Back to active documents` : `View archived (${archivedCount})`}</button>` : ''}
 
@@ -1923,12 +1977,16 @@ function renderVault(app){
         <div class="empty-state">No documents match "${escapeHtml(state.searchQuery)}".</div>
       ` : catOrder.map(cat => {
         const meta = categoryFor(cat);
+        // A category's remembered collapsed state is ignored while searching — a match hidden
+        // inside a collapsed category defeats the point of searching at all — but never written
+        // back, so clearing the search restores exactly whatever was collapsed before.
+        const isCollapsed = !state.searchQuery && state.collapsedCats[cat];
         return `
         <div class="section-title cat-toggle" data-cat="${cat}" role="button" tabindex="0">
           <span class="cat-title-label">${categoryIconHtml(meta,15)} ${escapeHtml(meta.label)}</span>
-          <span class="cat-count">${grouped[cat].length}<span class="cat-chevron ${state.collapsedCats[cat] ? 'collapsed' : ''}">${icon('chevronDown',15)}</span></span>
+          <span class="cat-count">${grouped[cat].length}<span class="cat-chevron ${isCollapsed ? 'collapsed' : ''}">${icon('chevronDown',15)}</span></span>
         </div>
-        ${state.collapsedCats[cat] ? '' : `<div class="doc-card-grid">${grouped[cat].map(d => renderDocCard(d)).join('')}</div>`}
+        ${isCollapsed ? '' : `<div class="doc-card-grid">${grouped[cat].map(d => renderDocCard(d)).join('')}</div>`}
       `; }).join('')}
       <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
@@ -1939,6 +1997,12 @@ function renderVault(app){
       </div>
     ` : ''}
   `;
+
+  const renewalStripEl = document.querySelector('.renewal-strip');
+  if(renewalStripEl){
+    const wrap = renewalStripEl.parentElement;
+    if(wrap && renewalStripEl.scrollWidth > renewalStripEl.clientWidth + 1) wrap.classList.add('has-overflow');
+  }
 
   document.getElementById('openSettingsBtn').onclick = () => { state.screen = 'settings'; pushAppHistoryState(); render(); };
   const addBtn = document.getElementById('addDocBtn');
@@ -1973,6 +2037,14 @@ function renderVault(app){
       const freshInput = document.getElementById('searchInput');
       if(freshInput){ freshInput.focus(); freshInput.setSelectionRange(freshInput.value.length, freshInput.value.length); }
     }, 150);
+  };
+  const searchClearBtn = document.getElementById('searchClearBtn');
+  if(searchClearBtn) searchClearBtn.onclick = () => {
+    clearTimeout(searchRenderTimer);
+    state.searchQuery = '';
+    render();
+    const freshInput = document.getElementById('searchInput');
+    if(freshInput) freshInput.focus();
   };
 
   document.querySelectorAll('.cat-toggle').forEach(el => {
@@ -2193,7 +2265,12 @@ function enableSwipeToDismiss(sheet, handle){
     // drag back up to cancel: reversing direction always wins now, exactly like Google Photos or
     // Instagram, since deltaY here is the FINAL position at release, not a snapshot from mid-drag.
     if(deltaY > DISMISS_THRESHOLD_PX){
-      const remaining = Math.max(sheet.getBoundingClientRect().height - deltaY, 80);
+      // window.innerHeight rather than the sheet's own measured height — the sheet's bottom edge
+      // already sits at the viewport bottom (the overlay is flex-end aligned), so a full viewport
+      // height of travel is always enough to clear it, and doesn't depend on a getBoundingClientRect
+      // reading staying accurate through the animation (mobile browser chrome show/hide can nudge
+      // the effective viewport mid-gesture).
+      const remaining = Math.max(window.innerHeight - deltaY, 80);
       // Finishes the drag in the same direction rather than cutting the DOM away the instant the
       // threshold is crossed — a fast swipe keeps moving fast off-screen, a slow drag that just
       // cleared the threshold gets a brisk but unhurried finish. velocity is px/ms from the last
@@ -2203,7 +2280,13 @@ function enableSwipeToDismiss(sheet, handle){
       const durationMs = Math.min(EXIT_DURATION_MAX_MS, Math.max(EXIT_DURATION_MIN_MS, remaining / speed));
       sheet.style.transition = `transform ${durationMs}ms cubic-bezier(0.2,0.6,0.3,1)`;
       sheet.style.transform = `translateY(${deltaY + remaining}px)`;
-      if(overlay){ overlay.style.transition = `opacity ${durationMs}ms ease`; overlay.style.opacity = '0'; }
+      // The backdrop is deliberately left at whatever opacity the drag already left it at, rather
+      // than also animating it to fully transparent in parallel — a separate opacity transition
+      // reaching 0 even slightly before the transform reached its own endpoint (different easing
+      // curves settle at different real times despite the same declared duration) exposed the page
+      // underneath through the fully-dimmed backdrop for the last few ms of the slide, before the
+      // sheet had actually cleared it. It now disappears in one step alongside the sheet itself,
+      // when closeModal() removes the whole overlay — by which point the sheet is already gone.
       setTimeout(closeModal, durationMs);
     } else {
       sheet.style.transition = 'transform 0.2s cubic-bezier(0.2,0.8,0.2,1)';
@@ -2220,6 +2303,10 @@ function enableSwipeToDismiss(sheet, handle){
 
 function categoryOptionsHtml(selected){
   return state.categories.map(c => `<option value="${c.id}" ${c.id===selected?'selected':''}>${escapeHtml(c.label)}</option>`).join('');
+}
+
+function switchHtml(id, checked, disabled, ariaLabel){
+  return `<label class="switch"><input type="checkbox" id="${id}" ${checked?'checked':''} ${disabled?'disabled':''} aria-label="${escapeHtml(ariaLabel || '')}"><span class="switch-track"><span class="switch-thumb"></span></span></label>`;
 }
 
 function renderModal(){
@@ -2253,6 +2340,9 @@ function renderModal(){
         <label class="field-label">Expiry date (optional)</label>
         <input type="date" id="docExpiry" />
         <div class="suggest-note" id="expirySuggestNote" style="display:none;"></div>
+        <label class="field-label">Remind me (days before expiry, optional)</label>
+        <input type="text" id="docReminderDays" placeholder="e.g. 90, 30, 7" />
+        <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once it's expired, you'll keep hearing about it until it's archived.</p>
         <div class="error-text" id="addErr" style="display:none;"></div>
         <button class="primary" id="saveDocBtn">Save document</button>
       </div>
@@ -2314,7 +2404,8 @@ function renderModal(){
         <label class="field-label">Expiry date (optional)</label>
         <input type="date" id="editExpiry" value="${doc.expiry || ''}" />
         <label class="field-label">Remind me (days before expiry, optional)</label>
-        <input type="text" id="editReminderDays" placeholder="e.g. 90, 30, 7 — leave blank for the default schedule" value="${(doc.reminderDays || []).join(', ')}" />
+        <input type="text" id="editReminderDays" placeholder="e.g. 90, 30, 7" value="${(doc.reminderDays || []).join(', ')}" />
+        <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once it's expired, you'll keep hearing about it until it's archived.</p>
         <div class="error-text" id="editErr" style="display:none;"></div>
         <button class="primary" id="saveEditBtn">Save changes</button>
       </div>
@@ -2387,6 +2478,7 @@ function renderModal(){
   if(state.modal === 'camera'){
     overlay.innerHTML = `
       <div class="modal-sheet">
+        <div class="sheet-handle" id="cameraHandle" aria-hidden="true"></div>
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>Capture a document</h3>
         <p class="sub">Capture one page at a time. Multiple pages combine into a single PDF.</p>
@@ -2402,13 +2494,16 @@ function renderModal(){
         `).join('')}</div>` : ''}
         <div class="progress-row" id="ocrProgress" style="display:none;"></div>
         <label class="field-label">Document title</label>
-        <input type="text" id="camTitle" placeholder="e.g. Electricity bill" />
+        <input type="text" id="camTitle" placeholder="e.g. Electricity bill" value="${escapeHtml(pendingCamTitle)}" />
         <label class="field-label">Category</label>
         <select id="camCategory">${categoryOptionsHtml(pendingCamCategory)}</select>
         <div class="suggest-note" id="camCategorySuggestNote" style="display:none;"></div>
         <label class="field-label">Expiry date (optional)</label>
-        <input type="date" id="camExpiry" />
+        <input type="date" id="camExpiry" value="${pendingCamExpiry}" />
         <div class="suggest-note" id="camExpirySuggestNote" style="display:none;"></div>
+        <label class="field-label">Remind me (days before expiry, optional)</label>
+        <input type="text" id="camReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml(pendingCamReminderDaysText)}" />
+        <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once it's expired, you'll keep hearing about it until it's archived.</p>
         <div class="error-text" id="camErr" style="display:none;"></div>
         <button class="primary" id="saveCamBtn" ${state.capturedPages.length && !pendingOcrRunning ? '' : 'disabled'}>Save ${state.capturedPages.length>1 ? 'as PDF' : ''} (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
       </div>
@@ -2424,6 +2519,7 @@ function renderModal(){
     overlay.querySelectorAll('[data-remove-page]').forEach(btn => {
       btn.onclick = () => removeCapturedPage(+btn.getAttribute('data-remove-page'));
     });
+    enableSwipeToDismiss(overlay.querySelector('.modal-sheet'), document.getElementById('cameraHandle'));
     startCamera();
   }
 
@@ -2631,6 +2727,7 @@ async function saveDocument(){
   const title = document.getElementById('docTitle').value.trim();
   const category = document.getElementById('docCategory').value;
   const expiry = document.getElementById('docExpiry').value;
+  const reminderDays = parseReminderDaysInput(document.getElementById('docReminderDays').value);
   const errEl = document.getElementById('addErr');
   const saveBtn = document.getElementById('saveDocBtn');
 
@@ -2641,7 +2738,7 @@ async function saveDocument(){
   saveBtn.textContent = 'Saving…';
 
   try{
-    await finalizeAndStoreDocument({title, category, expiry, blob: pendingFile, mimeType: pendingFile.type, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
+    await finalizeAndStoreDocument({title, category, expiry, reminderDays, blob: pendingFile, mimeType: pendingFile.type, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
     closeModal();
     toast(pendingOcrText ? 'Saved and indexed' : 'Saved');
   } catch(e){
@@ -2655,13 +2752,13 @@ async function saveDocument(){
   }
 }
 
-async function finalizeAndStoreDocument({title, category, expiry, blob, mimeType, ocrText, onUploadProgress}){
+async function finalizeAndStoreDocument({title, category, expiry, reminderDays, blob, mimeType, ocrText, onUploadProgress}){
   const cat = categoryFor(category);
   const id = 'doc_' + Date.now();
   const filename = safeFilename(title, mimeType);
   const driveFileId = await driveUpload(blob, filename, mimeType, cat.driveFolderId, onUploadProgress);
   const doc = {
-    id, title, category: cat.id, expiry: expiry || null,
+    id, title, category: cat.id, expiry: expiry || null, reminderDays: reminderDays || null,
     driveFileId, mimeType, size: blob.size || 0,
     ocrText: ocrText || '',
     addedAt: new Date().toISOString(),
@@ -2687,11 +2784,25 @@ function readFileAsDataURL(file){
 /* ---------- camera capture ---------- */
 let pendingPageOcrTexts = []; // per-page OCR text, parallel to state.capturedPages — lets removing
                                // a page also cleanly drop just that page's text from pendingOcrText
-// Every capturePage() call rebuilds this modal's whole innerHTML (to show the new thumbnail),
-// which would otherwise silently reset the category <select> back to its default each time — this
-// tracks whatever's currently chosen (by suggestion or by hand) so the template below can restore
-// it across that rebuild instead of losing it.
+// Every capturePage()/removeCapturedPage() call rebuilds this modal's whole innerHTML (to show the
+// new thumbnail, or reflect a removed page), which would otherwise silently reset every text field
+// back to its default each time — not just the category <select> this was originally written for.
+// These track whatever's currently in each field (typed by hand or filled by a suggestion) so the
+// template below can restore them across that rebuild; snapshotCamFormFields() reads the live DOM
+// right before each renderModal() call, so anything typed since the last capture is preserved too,
+// not just what a suggestion already wrote in.
+let pendingCamTitle = '';
 let pendingCamCategory = null;
+let pendingCamExpiry = '';
+let pendingCamReminderDaysText = '';
+function snapshotCamFormFields(){
+  const t = document.getElementById('camTitle'), c = document.getElementById('camCategory'),
+        e = document.getElementById('camExpiry'), r = document.getElementById('camReminderDays');
+  if(t) pendingCamTitle = t.value;
+  if(c) pendingCamCategory = c.value;
+  if(e) pendingCamExpiry = e.value;
+  if(r) pendingCamReminderDaysText = r.value;
+}
 async function startCamera(){
   const video = document.getElementById('cameraVideo');
   if(state.cameraStream){
@@ -2719,11 +2830,12 @@ async function startCamera(){
 function stopCamera(){
   if(state.cameraStream){ state.cameraStream.getTracks().forEach(t=>t.stop()); state.cameraStream = null; }
 }
-function openCameraModal(){ state.modal = 'camera'; state.capturedPages = []; pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingCamCategory = null; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+function openCameraModal(){ state.modal = 'camera'; state.capturedPages = []; pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingCamTitle = ''; pendingCamCategory = null; pendingCamExpiry = ''; pendingCamReminderDaysText = ''; pendingOcrRunning = false; pushAppHistoryState(); render(); }
 
 async function capturePage(){
   const video = document.getElementById('cameraVideo');
   if(!video || !video.videoWidth) return;
+  snapshotCamFormFields();
   const canvas = document.createElement('canvas');
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
@@ -2745,17 +2857,16 @@ async function capturePage(){
   pendingOcrText = pendingPageOcrTexts.join('\n').trim();
   applyExpirySuggestionIfEmpty('camExpiry', 'camExpirySuggestNote', pendingOcrText);
   applyCategorySuggestionIfUntouched('camCategory', 'camCategorySuggestNote', pendingOcrText);
-  // Capture whatever's now selected — freshly suggested or already hand-picked — so the next
-  // capturePage() call's own renderModal() (see the top of this function) restores it instead of
-  // silently resetting the dropdown back to its default.
-  const camCategoryEl = document.getElementById('camCategory');
-  if(camCategoryEl) pendingCamCategory = camCategoryEl.value;
+  // Re-snapshot — a suggestion above may have just written into the expiry/category fields
+  // directly, so this picks that up too, ready for the next capturePage()'s own renderModal().
+  snapshotCamFormFields();
   pendingOcrRunning = false;
   const saveBtn = document.getElementById('saveCamBtn');
   if(saveBtn) saveBtn.disabled = false;
 }
 
 function removeCapturedPage(index){
+  snapshotCamFormFields();
   state.capturedPages.splice(index, 1);
   pendingPageOcrTexts.splice(index, 1);
   pendingOcrText = pendingPageOcrTexts.join('\n').trim();
@@ -2766,6 +2877,7 @@ async function saveCameraDocument(){
   const title = document.getElementById('camTitle').value.trim();
   const category = document.getElementById('camCategory').value;
   const expiry = document.getElementById('camExpiry').value;
+  const reminderDays = parseReminderDaysInput(document.getElementById('camReminderDays').value);
   const errEl = document.getElementById('camErr');
   const saveBtn = document.getElementById('saveCamBtn');
 
@@ -2795,7 +2907,7 @@ async function saveCameraDocument(){
       mimeType = 'application/pdf';
     }
 
-    await finalizeAndStoreDocument({title, category, expiry, blob, mimeType, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
+    await finalizeAndStoreDocument({title, category, expiry, reminderDays, blob, mimeType, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
     stopCamera();
     closeModal();
     toast('Captured and saved');
