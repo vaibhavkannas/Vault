@@ -405,7 +405,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 16:02';
+const APP_VERSION = '2026.09.04 · 16:06';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1967,6 +1967,71 @@ function closeModal(){
   goBackOneLayer();
 }
 
+// Pull-down-to-dismiss for the document viewer: dragging down while already scrolled to the very
+// top of the sheet drags the sheet itself down instead of doing nothing (or rubber-banding), and
+// releasing past a threshold closes it — the same gesture Google Photos/Instagram use for a
+// full-content viewer, as an additional way to close beyond the X button and the outside-tap
+// added earlier. Scoped to just this one modal (via the caller only invoking it for viewFile) —
+// dragging from the top of an add/edit form, for instance, should just scroll, not risk dismissing
+// unsaved input.
+function enableSwipeToDismiss(sheet){
+  let startY = 0, dragging = false, pointerId = null;
+  const DISMISS_THRESHOLD_PX = 90;
+
+  sheet.addEventListener('pointerdown', (e) => {
+    if(e.pointerType === 'mouse' && e.button !== 0) return;
+    startY = e.clientY;
+    pointerId = e.pointerId;
+    dragging = false;
+  });
+
+  sheet.addEventListener('pointermove', (e) => {
+    if(pointerId === null || e.pointerId !== pointerId) return;
+    const deltaY = e.clientY - startY;
+    // Only a downward drag while there's nothing left to scroll up to counts as a dismiss
+    // attempt — anything else (scrolled down into the content, or dragging upward) is ordinary
+    // scrolling and must be left alone.
+    if(sheet.scrollTop > 0 || deltaY <= 0){
+      if(dragging){
+        // The user scrolled back up mid-drag — snap back immediately rather than leaving the
+        // sheet stranded part-way off-screen.
+        dragging = false;
+        sheet.style.touchAction = '';
+        sheet.style.transition = 'transform 0.15s ease';
+        sheet.style.transform = '';
+      }
+      return;
+    }
+    if(!dragging){
+      dragging = true;
+      sheet.setPointerCapture(pointerId);
+      // Suppresses the browser's own scroll/rubber-band handling for the rest of this gesture, so
+      // it doesn't fight the transform-driven drag below.
+      sheet.style.touchAction = 'none';
+    }
+    sheet.style.transition = 'none';
+    sheet.style.transform = `translateY(${deltaY}px)`;
+  });
+
+  const endDrag = (e) => {
+    if(pointerId === null || e.pointerId !== pointerId) return;
+    const deltaY = e.clientY - startY;
+    const wasDragging = dragging;
+    dragging = false;
+    pointerId = null;
+    sheet.style.touchAction = '';
+    if(!wasDragging) return;
+    if(deltaY > DISMISS_THRESHOLD_PX){
+      closeModal();
+    } else {
+      sheet.style.transition = 'transform 0.2s cubic-bezier(0.2,0.8,0.2,1)';
+      sheet.style.transform = '';
+    }
+  };
+  sheet.addEventListener('pointerup', endDrag);
+  sheet.addEventListener('pointercancel', endDrag);
+}
+
 function categoryOptionsHtml(selected){
   return state.categories.map(c => `<option value="${c.id}" ${c.id===selected?'selected':''}>${escapeHtml(c.label)}</option>`).join('');
 }
@@ -2098,6 +2163,7 @@ function renderModal(){
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('downloadFromViewBtn').onclick = () => downloadDocument(doc.id);
+    enableSwipeToDismiss(overlay.querySelector('.modal-sheet'));
   }
 
   if(state.modal === 'camera'){
