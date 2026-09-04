@@ -79,6 +79,10 @@
   .brand-name{font-size:22px;font-weight:400;letter-spacing:0;}
 
   .login-screen{padding:56px 28px 40px;text-align:center;}
+  /* The app-lock screen (renderLocked) adds this on top of the base rule above so it's always the
+     topmost, unavoidable layer regardless of what else is in the document — a defense-in-depth
+     backstop alongside renderLocked()'s own modal teardown, not a substitute for it. */
+  .login-screen.login-screen--locked{position:fixed;inset:0;z-index:1000;background:var(--paper);overflow-y:auto;margin:0;}
   .seal{width:92px;height:92px;margin:0 auto 24px;border-radius:28%;background:var(--brass);display:flex;align-items:center;justify-content:center;box-shadow:var(--elevation-2);}
   .login-screen h1{font-weight:400;font-size:28px;margin:0 0 8px;}
   .checking-spinner{width:26px;height:26px;margin:20px auto 0;border:3px solid var(--surface-container);border-top-color:var(--brass);border-radius:50%;animation:spin 0.8s linear infinite;}
@@ -101,6 +105,10 @@
   button.danger-solid:active{transform:scale(0.98);}
   button.danger-solid:disabled{opacity:0.5;}
   button.ghost{width:100%;padding:12px 16px;background:transparent;color:var(--brass);border:1px solid var(--line);border-radius:var(--radius-full);font-size:13.5px;font-weight:500;cursor:pointer;margin-top:8px;}
+  /* svg.icon is display:block (below), which otherwise breaks an icon+text ghost button onto two
+     stacked lines instead of one centered row — every other icon+text control in this app already
+     sets its own flex/gap for this reason (.archive-toggle, .action-menu button, .fab .primary). */
+  button.ghost.ghost-icon{display:flex;align-items:center;justify-content:center;gap:6px;}
   .error-text{color:var(--danger);font-size:12.5px;text-align:left;margin:-6px 0 12px;}
 
   .vault{padding:8px 16px 86px;}
@@ -124,8 +132,14 @@
   .reminder-card.urgent{background:var(--danger-bg);}
   .reminder-card .rtitle{font-weight:500;flex:1;color:var(--ink);}
   .reminder-card .rdays{font-size:11.5px;color:var(--ink-soft);white-space:nowrap;}
-  .renewal-strip{display:flex;gap:9px;overflow-x:auto;margin:0 0 20px;scrollbar-width:none;}
+  .renewal-strip-wrap{position:relative;margin:0 0 20px;}
+  .renewal-strip{display:flex;gap:9px;overflow-x:auto;margin:0;scrollbar-width:none;}
   .renewal-strip::-webkit-scrollbar{display:none;}
+  /* Only 2 renewal cards fit in view on a typical phone width with nothing hinting there's more to
+     scroll — this fades the right edge into the page background, the same "more content" cue Gmail
+     and Photos use for horizontally-scrolling chip/card rows. Only shown when there's enough cards
+     that scrolling is actually needed (see the upcoming.length > 2 gate around the markup). */
+  .renewal-strip-wrap::after{content:'';position:absolute;top:0;right:0;bottom:0;width:32px;background:linear-gradient(to right, transparent, var(--paper));pointer-events:none;}
   .renewal-card{flex:0 0 auto;min-width:148px;max-width:190px;background:var(--success-bg);border-radius:16px;padding:11px 13px;cursor:pointer;}
   .renewal-card.urgent{background:var(--danger-bg);}
   .renewal-title{font-size:13px;font-weight:500;color:var(--ink);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -412,7 +426,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 16:54';
+const APP_VERSION = '2026.09.04 · 17:22';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -808,7 +822,11 @@ document.addEventListener('visibilitychange', () => {
   } else if(document.visibilityState === 'visible'){
     if(appLockHiddenAt && (Date.now() - appLockHiddenAt) > APP_LOCK_GRACE_MS) appLockUnlockedThisLoad = false;
     appLockHiddenAt = null;
-    if(state.screen === 'vault') render();
+    // Settings can have its own sensitive modals open (Change PIN, Delete Account, App-Lock setup)
+    // and needs the same re-verify gate as the vault — omitting it here used to mean the lock never
+    // engaged at all if the app was backgrounded while on Settings, since nothing else re-renders on
+    // its own when the tab becomes visible again.
+    if(state.screen === 'vault' || state.screen === 'settings') render();
   }
 });
 
@@ -1396,10 +1414,24 @@ function render(){
   if(state.screen === 'checking') return renderChecking(app);
   if(state.screen === 'login') return renderLogin(app);
   if(state.screen === 'reconnect') return renderReconnect(app);
-  // The lock screen intercepts the vault specifically (not Settings — turning the lock off has to
-  // stay reachable) rather than being its own state.screen value, so it needs no history-layer
-  // bookkeeping of its own: it's a gate on rendering, not a place the user deliberately navigates.
-  if(state.screen === 'vault' && isAppLockDue()) return renderLocked(app);
+  // The lock screen intercepts any signed-in screen — vault AND Settings, which can itself have
+  // sensitive modals open (Change PIN, Delete Account, App-Lock setup) — rather than being its own
+  // state.screen value, so it needs no history-layer bookkeeping of its own: it's a gate on
+  // rendering, not a place the user deliberately navigates. Turning the lock off is still reachable
+  // once unlocked — re-verifying doesn't block that, it just requires it first, same as the vault.
+  if((state.screen === 'vault' || state.screen === 'settings') && isAppLockDue()){
+    // A modal (e.g. the document viewer) left open when the lock engages must be torn down here,
+    // not just logically closed — its DOM node is appended directly to <body> (position:fixed,
+    // painted above everything) and would otherwise keep floating on top of the lock screen with
+    // live handlers still wired up (including a "Download" button that re-fetches the real file),
+    // letting anyone who picks up the device skip the PIN/biometric gate entirely just by tapping
+    // outside it. renderLocked() itself is only ever reached through this one line, so clearing and
+    // removing it here — before the lock screen renders for the very first time — covers every
+    // path into the locked state, not just a later re-render.
+    if(state.modal) clearTopLayerState();
+    renderModal();
+    return renderLocked(app);
+  }
   if(state.screen === 'settings') return renderSettings(app);
   renderVault(app);
 }
@@ -1422,7 +1454,7 @@ function renderChecking(app){
 function renderLocked(app){
   const hasBio = hasBiometricUnlockConfigured();
   app.innerHTML = `
-    <div class="login-screen">
+    <div class="login-screen login-screen--locked">
       <div class="seal">${brandMarkSvg(50)}</div>
       <h1>Vault Locked</h1>
       <p>${hasBio ? 'Verifying with biometric unlock…' : 'Enter your PIN to continue.'}</p>
@@ -1810,6 +1842,7 @@ function renderVault(app){
 
       ${!state.searchQuery && !state.showArchived && upcoming.length ? `
         <div class="section-title">Renewals</div>
+        ${upcoming.length > 2 ? '<div class="renewal-strip-wrap">' : ''}
         <div class="renewal-strip">
           ${upcoming.map(d => `
             <div class="renewal-card ${d.days<=7?'urgent':''}" data-renewal-doc="${d.id}" role="button" tabindex="0">
@@ -1817,7 +1850,8 @@ function renderVault(app){
               <div class="renewal-days">${d.days<0?'Expired':d.days===0?'Due today':d.days+' day'+(d.days===1?'':'s')+' left'}</div>
             </div>
           `).join('')}
-        </div>` : ''}
+        </div>
+        ${upcoming.length > 2 ? '</div>' : ''}` : ''}
 
       ${archivedCount ? `<button class="archive-toggle" id="archiveToggleBtn">${state.showArchived ? `${icon('back',14)} Back to active documents` : `View archived (${archivedCount})`}</button>` : ''}
 
@@ -1893,17 +1927,24 @@ function renderVault(app){
     el.onkeydown = (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } };
   });
 
-  filtered.forEach(d => {
-    const v = document.getElementById('view-'+d.id), s = document.getElementById('share-'+d.id),
-          m = document.getElementById('menu-'+d.id), ic = document.getElementById('docicon-'+d.id),
-          t = document.getElementById('doctitle-'+d.id);
-    if(v) v.onclick = () => viewDocument(d.id);
-    if(s) s.onclick = () => openShareModal(d.id);
-    if(ic) ic.onclick = () => viewDocument(d.id);
-    if(t) t.onclick = () => viewDocument(d.id);
-    if(m) m.onclick = (e) => {
+  // A pinned document's card renders twice — once in the Pinned section, once again in its own
+  // category section — so wiring by id (getElementById only ever finds the first match in document
+  // order) silently left the second copy dead. querySelectorAll wires every matching element
+  // regardless of how many times a given doc's card appears on the page.
+  document.querySelectorAll('[data-open-doc]').forEach(el => {
+    el.onclick = () => viewDocument(el.getAttribute('data-open-doc'));
+  });
+  document.querySelectorAll('[data-view-doc]').forEach(el => {
+    el.onclick = () => viewDocument(el.getAttribute('data-view-doc'));
+  });
+  document.querySelectorAll('[data-share-doc]').forEach(el => {
+    el.onclick = () => openShareModal(el.getAttribute('data-share-doc'));
+  });
+  document.querySelectorAll('[data-menu-toggle]').forEach(el => {
+    el.onclick = (e) => {
       e.stopPropagation();
-      state.openActionMenu = state.openActionMenu === d.id ? null : d.id;
+      const id = el.getAttribute('data-menu-toggle');
+      state.openActionMenu = state.openActionMenu === id ? null : id;
       render();
     };
   });
@@ -1954,17 +1995,17 @@ function renderDocCard(d, opts){
   const menuOpen = state.openActionMenu === d.id;
   return `
     <div class="doc-card ${d.archived ? 'is-archived' : ''}">
-      <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" id="docicon-${d.id}" role="button" aria-label="View ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
+      <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" data-open-doc="${d.id}" role="button" aria-label="View ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
       <div class="doc-body">
-        <p class="doc-title" id="doctitle-${d.id}" role="button">${escapeHtml(d.title)}${state.offlineDocIds.has(d.id) ? `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>` : ''}</p>
+        <p class="doc-title" data-open-doc="${d.id}" role="button">${escapeHtml(d.title)}${state.offlineDocIds.has(d.id) ? `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>` : ''}</p>
         <p class="doc-meta">${opts.showCategory ? `${escapeHtml(meta.label)} · ` : ''}Added ${formatDate(d.addedAt)}${activeShares.length ? ' · shared with '+activeShares.length : ''}${d.archived ? ' · archived' : ''}</p>
         ${d.snippet ? `<p class="doc-snippet">${d.snippet}</p>` : ''}
         ${expiryBadge}
         <div class="doc-actions">
-          <button class="chip-btn" id="view-${d.id}">View</button>
-          <button class="chip-btn secondary" id="share-${d.id}">Share</button>
+          <button class="chip-btn" data-view-doc="${d.id}">View</button>
+          <button class="chip-btn secondary" data-share-doc="${d.id}">Share</button>
           <div class="action-menu-wrap">
-            <button class="icon-only-btn small" id="menu-${d.id}" aria-label="More actions" aria-haspopup="true" aria-expanded="${menuOpen}">${icon('more',18)}</button>
+            <button class="icon-only-btn small" data-menu-toggle="${d.id}" aria-label="More actions" aria-haspopup="true" aria-expanded="${menuOpen}">${icon('more',18)}</button>
             ${menuOpen ? `
               <div class="action-menu" id="actionMenu-${d.id}">
                 <button data-menu-action="pin" data-doc="${d.id}">${icon('star',15)} ${d.pinned ? 'Unpin' : 'Pin to top'}</button>
@@ -2003,11 +2044,9 @@ function closeModal(){
 // unsaved input.
 function enableSwipeToDismiss(sheet){
   let startY = 0, dragging = false, pointerId = null, lastY = 0, lastT = 0, velocity = 0;
-  const DISMISS_THRESHOLD_PX = 70;
-  // A fast short flick reads as "dismiss" in every native app this pattern is borrowed from —
-  // requiring the full pixel threshold on every gesture makes a quick swipe feel unresponsive.
-  const DISMISS_VELOCITY_PX_MS = 0.5;
+  const DISMISS_THRESHOLD_PX = 90;
   const FADE_DISTANCE_PX = 300; // backdrop reaches its floor opacity after this much drag
+  const EXIT_DURATION_MIN_MS = 120, EXIT_DURATION_MAX_MS = 260;
 
   sheet.addEventListener('pointerdown', (e) => {
     if(e.pointerType === 'mouse' && e.button !== 0) return;
@@ -2056,12 +2095,27 @@ function enableSwipeToDismiss(sheet){
     pointerId = null;
     sheet.style.touchAction = '';
     if(!wasDragging) return;
-    if(deltaY > DISMISS_THRESHOLD_PX || velocity > DISMISS_VELOCITY_PX_MS){
-      closeModal();
+    const overlay = sheet.parentElement;
+    // Only where the finger actually ended up decides whether to dismiss — never speed on its own.
+    // A quick flick used to close the sheet outright even when the very next thing the user did was
+    // drag back up to cancel: reversing direction always wins now, exactly like Google Photos or
+    // Instagram, since deltaY here is the FINAL position at release, not a snapshot from mid-drag.
+    if(deltaY > DISMISS_THRESHOLD_PX){
+      const remaining = Math.max(sheet.getBoundingClientRect().height - deltaY, 80);
+      // Finishes the drag in the same direction rather than cutting the DOM away the instant the
+      // threshold is crossed — a fast swipe keeps moving fast off-screen, a slow drag that just
+      // cleared the threshold gets a brisk but unhurried finish. velocity is px/ms from the last
+      // tracked move; the 0.6 floor keeps a barely-past-threshold, nearly-stationary release from
+      // producing a sluggish animation.
+      const speed = Math.max(velocity, 0.6);
+      const durationMs = Math.min(EXIT_DURATION_MAX_MS, Math.max(EXIT_DURATION_MIN_MS, remaining / speed));
+      sheet.style.transition = `transform ${durationMs}ms cubic-bezier(0.2,0.6,0.3,1)`;
+      sheet.style.transform = `translateY(${deltaY + remaining}px)`;
+      if(overlay){ overlay.style.transition = `opacity ${durationMs}ms ease`; overlay.style.opacity = '0'; }
+      setTimeout(closeModal, durationMs);
     } else {
       sheet.style.transition = 'transform 0.2s cubic-bezier(0.2,0.8,0.2,1)';
       sheet.style.transform = '';
-      const overlay = sheet.parentElement;
       if(overlay){
         overlay.style.transition = 'opacity 0.2s ease';
         overlay.style.opacity = '';
@@ -2310,7 +2364,7 @@ function renderModal(){
         <div class="error-text" id="lockSetupErr" style="display:none;"></div>
         <button class="primary" id="saveLockPinBtn">${alreadyEnabled ? 'Update PIN' : 'Turn on app lock'}</button>
         <div id="bioSetupSection" style="display:none;margin-top:14px;">
-          <button class="ghost" id="setupBioBtn">${icon('shield',16)} Also set up biometric unlock</button>
+          <button class="ghost ghost-icon" id="setupBioBtn">${icon('shield',16)} Also set up biometric unlock</button>
         </div>
       </div>
     `;
@@ -2498,7 +2552,14 @@ async function startCamera(){
     return;
   }
   try{
-    state.cameraStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    // The camera modal (or the whole app, via the app-lock teardown) can close while this permission
+    // prompt is still pending — unlike every other async modal-content loader here (viewDocument,
+    // renderPdfInto), this one used to skip re-checking relevance after its await, so a stream
+    // granted after the fact was stored and left running with nothing left to ever call
+    // stopCamera() on it, live behind whatever's on screen now (including a locked device).
+    if(state.modal !== 'camera'){ stream.getTracks().forEach(t => t.stop()); return; }
+    state.cameraStream = stream;
     if(video) video.srcObject = state.cameraStream;
   } catch(e){
     const err = document.getElementById('camErr');
