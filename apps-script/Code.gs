@@ -219,12 +219,37 @@ function firestoreFieldsToObject(fields){
   return obj;
 }
 
+// Looks up each subscriber's real address via Identity Toolkit's accounts:lookup (batched by
+// localId) rather than trusting the client-writable `email` field stored alongside the
+// subscription doc — any signed-in user can rewrite that field via the Firestore JS SDK (there's
+// no Security Rule constraining it to their own verified address), and this MailApp.sendEmail call
+// below runs as the project owner, so an unverified field here is a way to redirect that send to
+// an arbitrary address.
+function resolveVerifiedEmails(uids){
+  if(!uids.length) return {};
+  const key = PropertiesService.getScriptProperties().getProperty('FIREBASE_WEB_API_KEY');
+  const res = UrlFetchApp.fetch(
+    'https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=' + key,
+    {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {Authorization: 'Bearer ' + ScriptApp.getOAuthToken()},
+      payload: JSON.stringify({localId: uids}),
+      muteHttpExceptions: true
+    }
+  );
+  let body;
+  try{ body = JSON.parse(res.getContentText()); } catch(err){ body = {}; }
+  const map = {};
+  (body.users || []).forEach(function(u){ if(u.email) map[u.localId] = u.email; });
+  return map;
+}
+
 function listEmailDigestSubscribers(){
-  return firestoreListAll('emailDigestSubscribers')
-    .map(function(d){
-      const fields = firestoreFieldsToObject(d.fields);
-      return {uid: d.name.split('/').pop(), email: fields.email};
-    })
+  const uids = firestoreListAll('emailDigestSubscribers').map(function(d){ return d.name.split('/').pop(); });
+  const verified = resolveVerifiedEmails(uids);
+  return uids
+    .map(function(uid){ return {uid: uid, email: verified[uid]}; })
     .filter(function(s){ return !!s.email; });
 }
 

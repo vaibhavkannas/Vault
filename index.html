@@ -2,17 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Vault — your documents, secured</title>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon-180.png">
 <meta name="theme-color" content="#1a73e8">
 <script>
-  // Applied before first paint so there's no flash of the wrong theme on load.
+  // Applied before first paint so there's no flash of the wrong theme (or the wrong OS chrome
+  // color alongside it) on load.
   try{
     const saved = localStorage.getItem('vault-theme');
     if(saved === 'dark' || saved === 'light') document.documentElement.setAttribute('data-theme', saved);
+    const isDark = saved === 'dark' || (saved !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+    document.querySelector('meta[name="theme-color"]').setAttribute('content', isDark ? '#111214' : '#1a73e8');
   } catch(e){}
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -27,6 +30,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap">
 <style>
   :root{
+    color-scheme:light dark;
     --ink:#1f1f1f;
     --ink-soft:#5f6368;
     --paper:#ffffff;
@@ -38,7 +42,7 @@
     --line:#dadce0;
     --danger:#c5221f;
     --danger-bg:#fce8e6;
-    --success:#188038;
+    --success:#157a34;
     --success-bg:#e6f4ea;
     --warning:#8a5a05;
     --warning-bg:#f7edd9;
@@ -202,7 +206,7 @@
 
   .empty-state{text-align:center;padding:40px 20px;color:var(--ink-soft);font-size:13.5px;}
 
-  .fab{position:fixed;max-width:480px;margin:0 auto;left:0;right:0;bottom:0;display:flex;justify-content:flex-end;align-items:center;gap:12px;padding:16px 20px;pointer-events:none;}
+  .fab{position:fixed;max-width:480px;margin:0 auto;left:0;right:0;bottom:0;display:flex;justify-content:flex-end;align-items:center;gap:12px;padding:16px 20px;padding-bottom:max(16px, env(safe-area-inset-bottom));pointer-events:none;}
   .fab button{pointer-events:all;}
   .fab .primary{width:auto;height:56px;padding:0 22px;border-radius:16px;box-shadow:var(--elevation-2);display:flex;align-items:center;gap:8px;}
   .fab .camera-fab{width:56px;height:56px;flex:none;background:var(--primary-container);color:var(--on-primary-container);border:none;border-radius:16px;box-shadow:var(--elevation-2);display:flex;align-items:center;justify-content:center;}
@@ -232,7 +236,7 @@
   .file-drop{border:1.5px dashed var(--line);border-radius:var(--radius-sm);padding:18px;text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;cursor:pointer;background:var(--surface-container);}
   .file-drop.has-file{color:var(--success);background:var(--success-bg);}
 
-  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#333537;color:#f1f1f1;padding:12px 20px;border-radius:8px;font-size:13.5px;z-index:100;opacity:0;transition:opacity 0.25s ease, transform 0.25s ease;pointer-events:none;max-width:88%;text-align:center;box-shadow:var(--elevation-2);}
+  .toast{position:fixed;bottom:max(24px, calc(env(safe-area-inset-bottom) + 8px));left:50%;transform:translateX(-50%);background:#333537;color:#f1f1f1;padding:12px 20px;border-radius:8px;font-size:13.5px;z-index:100;opacity:0;transition:opacity 0.25s ease, transform 0.25s ease;pointer-events:none;max-width:88%;text-align:center;box-shadow:var(--elevation-2);}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(-6px);}
 
   .share-link-box{background:var(--surface-container);border-radius:var(--radius-sm);padding:12px;font-size:12px;word-break:break-all;color:var(--ink-soft);margin-bottom:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
@@ -262,6 +266,7 @@
      containers stay dark with light text on them, matching Google's own dark-mode apps. */
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
+      color-scheme:dark;
       --ink:#e8e9ea; --ink-soft:#c4c7c5; --paper:#111214; --paper-2:#1f2124;
       --brass:#8ab4f8; --brass-dark:#d3e3fd; --on-brass:#0d2c5c; --on-danger:#5c1210;
       --line:#48494c; --danger:#f2b8b5; --danger-bg:#601410; --success:#6dd58c; --success-bg:#0f5223;
@@ -271,12 +276,16 @@
     }
   }
   :root[data-theme="dark"]{
+    color-scheme:dark;
     --ink:#e8e9ea; --ink-soft:#c4c7c5; --paper:#111214; --paper-2:#1f2124;
     --brass:#8ab4f8; --brass-dark:#d3e3fd; --on-brass:#0d2c5c; --on-danger:#5c1210;
     --line:#48494c; --danger:#f2b8b5; --danger-bg:#601410; --success:#6dd58c; --success-bg:#0f5223;
     --warning:#f5cf87; --warning-bg:#4a3510;
     --surface-container:#2c2e32; --primary-container:#0b3a86; --on-primary-container:#d3e3fd;
     --elevation-1:0 1px 3px rgba(0,0,0,0.5); --elevation-2:0 2px 8px rgba(0,0,0,0.6);
+  }
+  :root[data-theme="light"]{
+    color-scheme:light;
   }
 
   /* Settings screen */
@@ -479,11 +488,11 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 // what actually applies it) — shown to the user in the Add/Edit forms so "leave blank for the
 // default schedule" means something concrete instead of asking them to trust an invisible default.
 // Keep in sync by hand if that array ever changes.
-const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry';
+const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry, then 1, 7, and 30 days after';
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 21:57';
+const APP_VERSION = '2026.09.05 · 05:12';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -618,6 +627,8 @@ function categoryFor(id){
 function toast(msg){
   const el = document.createElement('div');
   el.className = 'toast';
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
   el.textContent = msg;
   document.body.appendChild(el);
   requestAnimationFrame(()=> el.classList.add('show'));
@@ -719,7 +730,7 @@ let allowingExit = false;
 let lastExitWarningAt = 0;
 const EXIT_CONFIRM_WINDOW_MS = 2500;
 function armExitGuardIfIdle(){
-  if(!guardArmed && !state.modal && !state.showArchived && state.screen !== 'settings'){
+  if(!guardArmed && !state.modal && !state.showArchived && state.screen !== 'settings' && state.screen !== 'quickref'){
     if(safePushHistoryState({seq: currentHistorySeq() + 1, guard: true})) guardArmed = true;
   }
 }
@@ -762,6 +773,21 @@ window.addEventListener('popstate', () => {
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.05 · 05:12',
+    items: [
+      "Fixed: the Back button from Quick Reference could get stuck and close Vault entirely instead of returning to the main screen.",
+      "Fixed: a few other Back-button dead ends when closing a document, category, or share dialog for something that had just been deleted elsewhere.",
+      "Fixed: the document ⋮ menu could stay open on screen after choosing Remind or Download.",
+      "Fixed: a rare case where the offline banner could get stuck showing even after reconnecting.",
+      "Fixed: deleting a category and then adding a new one could scramble the category order on next open.",
+      "\"Delete account & vault\" now also clears your Quick Reference entries and reminder settings, not just documents.",
+      "Dark mode: the status bar and browser toolbar now match the app's theme instead of staying light blue.",
+      "The app's icon now shows properly when added to an iPhone's home screen.",
+      "The Add-document button and toast messages no longer crowd the very edge of the screen on notched phones.",
+      "Accessibility: dialogs now close with Escape, keyboard Tab stays inside the open dialog, and document cards, toasts, and the theme picker are easier to use with a keyboard or screen reader."
+    ]
+  },
   {
     version: '2026.09.04 · 21:57',
     items: [
@@ -854,7 +880,19 @@ function applyTheme(theme){
   if(theme === 'dark' || theme === 'light') document.documentElement.setAttribute('data-theme', theme);
   else document.documentElement.removeAttribute('data-theme');
   try{ localStorage.setItem('vault-theme', theme); } catch(e){}
+  updateThemeColorMeta(theme);
 }
+// Keeps the browser/OS chrome (status bar, task-switcher header, Safari toolbar) matching whichever
+// palette is actually on screen — applyTheme() only ever toggled the data-theme attribute before,
+// leaving that chrome stuck on the light-mode blue even in dark mode.
+function updateThemeColorMeta(theme){
+  const isDark = theme === 'dark' || (theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if(meta) meta.setAttribute('content', isDark ? '#111214' : '#1a73e8');
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if(currentTheme() === 'system') updateThemeColorMeta('system');
+});
 
 /* ---------- app lock ----------
    An optional, opt-in local gate on top of the already-persistent Google sign-in — the whole
@@ -1156,6 +1194,14 @@ async function syncPushSubscriptionIfNeeded(){
 
 /* ---------- Google Drive ---------- */
 function driveTokenValid(){ return !!(state.driveAccessToken && state.driveTokenExpiresAt && Date.now() < state.driveTokenExpiresAt); }
+// Five call sites (sign-in, reconnect, silent restore, and two background-refresh paths) all
+// commit a fresh Drive token response into state the same way — one helper instead of five copies
+// that could quietly drift apart (e.g. the 55-minute fallback margin getting updated in one place
+// but not the others).
+function applyDriveTokenResponse(tokenResp){
+  state.driveAccessToken = tokenResp.accessToken;
+  state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
+}
 
 // Wraps fetch() with the Drive OAuth token. This token is a client-side popup grant with no
 // refresh token behind it (no backend to hold one) — it expires in ~1hr, at which point every
@@ -1391,12 +1437,21 @@ function clearOfflineCache(){
 // Loads everything for the signed-in account. Called right after sign-in once state.user.uid
 // and a valid Drive token are both ready — provisioning a brand-new account needs Drive access.
 async function loadUserData(){
+  // Captured once, up front: state.user can go null mid-flight (a sign-out racing this same call,
+  // e.g. from the periodic background token-refresh timer) — every read below goes through this
+  // fixed uid, and every write to state at the end re-checks it's still the active session, rather
+  // than trusting the live state.user.uid (via userDoc()) to still mean the same thing by the time
+  // an awaited read comes back.
+  const uid = state.user.uid;
+  const loadDoc = () => db.collection('users').doc(uid);
+  const stillCurrent = () => !!state.user && state.user.uid === uid;
   try{
     // metaSnap.data().vaultFolderId is checked, not just metaSnap.exists — an account from
     // before this cloud-storage redesign has an old-shape meta/vault doc (passphrase salt and
     // canary, no vaultFolderId), which would otherwise be mistaken for an already-provisioned
     // vault and skip folder/category creation entirely.
-    const metaSnap = await userDoc().collection('meta').doc('vault').get();
+    const metaSnap = await loadDoc().collection('meta').doc('vault').get();
+    if(!stillCurrent()) return;
     const alreadyProvisioned = metaSnap.exists && metaSnap.data().vaultFolderId;
     // Read by maybeShowChangelog() — a vault provisioned for the first time on this exact call has
     // no "since you last used Vault" to speak of, whatever's on screen now is its whole history.
@@ -1407,6 +1462,7 @@ async function loadUserData(){
       // Needs state.driveAccessToken already set (it creates Drive folders) — the one read below
       // that can't run alongside the others, since it's the only one Drive-dependent at all.
       await provisionVault();
+      if(!stillCurrent()) return;
     }
     // documents/shares/reminderSettings never depended on any of the above finishing, or on each
     // other — only categories does, and only when already provisioned (otherwise provisionVault()
@@ -1414,12 +1470,13 @@ async function loadUserData(){
     // after another turns "wait for the sum of every round trip" into "wait for whichever one
     // Firestore answers last" — the single biggest thing slowing down every sign-in and reopen.
     const [catsSnap, docsSnap, sharesSnap, reminderSnap, quickRefsSnap] = await Promise.all([
-      alreadyProvisioned ? userDoc().collection('categories').orderBy('order').get() : Promise.resolve(null),
-      userDoc().collection('documents').orderBy('addedAt', 'desc').get(),
-      userDoc().collection('shares').get(),
-      userDoc().collection('meta').doc('reminderSettings').get(),
-      userDoc().collection('quickRefs').orderBy('addedAt', 'desc').get()
+      alreadyProvisioned ? loadDoc().collection('categories').orderBy('order').get() : Promise.resolve(null),
+      loadDoc().collection('documents').orderBy('addedAt', 'desc').get(),
+      loadDoc().collection('shares').get(),
+      loadDoc().collection('meta').doc('reminderSettings').get(),
+      loadDoc().collection('quickRefs').orderBy('addedAt', 'desc').get()
     ]);
+    if(!stillCurrent()) return;
     if(catsSnap) state.categories = catsSnap.docs.map(d => ({id:d.id, ...d.data()}));
     // Same reasoning: a document written under the old encrypted schema has no plain `title`/
     // `driveFileId` fields this version relies on. Skip anything that doesn't look like the
@@ -1435,9 +1492,9 @@ async function loadUserData(){
     syncPushSubscriptionIfNeeded(); // fire-and-forget — never delays the vault's own load
   } catch(e){
     console.error('Could not load vault data from the cloud', e);
-    toast('Could not load your vault — check your connection and try again.');
+    if(stillCurrent()) toast('Could not load your vault — check your connection and try again.');
   }
-  await loadOfflineDocIds();
+  if(stillCurrent()) await loadOfflineDocIds();
 }
 
 // Every category starts collapsed at the start of each vault session (fresh sign-in, reconnect,
@@ -1731,8 +1788,7 @@ function renderLogin(app){
       const result = await auth.signInWithPopup(provider);
       state.user = {name: result.user.displayName, email: result.user.email, uid: result.user.uid, photoURL: result.user.photoURL};
       const tokenResp = await acquireDriveAccess();
-      state.driveAccessToken = tokenResp.accessToken;
-      state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
+      applyDriveTokenResponse(tokenResp);
       btn.textContent = 'Setting up your vault…';
       await loadUserData();
       collapseAllCategories();
@@ -1782,8 +1838,7 @@ async function completeReconnect(){
   btn.textContent = 'Connecting…';
   try{
     const tokenResp = await grantDriveAccessOneTime();
-    state.driveAccessToken = tokenResp.accessToken;
-    state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
+    applyDriveTokenResponse(tokenResp);
     btn.textContent = 'Loading your vault…';
     await loadUserData();
     collapseAllCategories();
@@ -1826,9 +1881,9 @@ function renderSettings(app){
       <div class="settings-section">
         <h4>Appearance</h4>
         <div class="theme-toggle-row">
-          <button data-theme-choice="system" class="${currentTheme()==='system'?'active':''}">System</button>
-          <button data-theme-choice="light" class="${currentTheme()==='light'?'active':''}">Light</button>
-          <button data-theme-choice="dark" class="${currentTheme()==='dark'?'active':''}">Dark</button>
+          <button data-theme-choice="system" class="${currentTheme()==='system'?'active':''}" aria-pressed="${currentTheme()==='system'}">System</button>
+          <button data-theme-choice="light" class="${currentTheme()==='light'?'active':''}" aria-pressed="${currentTheme()==='light'}">Light</button>
+          <button data-theme-choice="dark" class="${currentTheme()==='dark'?'active':''}" aria-pressed="${currentTheme()==='dark'}">Dark</button>
         </div>
       </div>
 
@@ -2309,7 +2364,9 @@ function renderVault(app){
   // order) silently left the second copy dead. querySelectorAll wires every matching element
   // regardless of how many times a given doc's card appears on the page.
   document.querySelectorAll('[data-open-doc]').forEach(el => {
-    el.onclick = () => viewDocument(el.getAttribute('data-open-doc'));
+    const open = () => viewDocument(el.getAttribute('data-open-doc'));
+    el.onclick = open;
+    el.onkeydown = (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } };
   });
   document.querySelectorAll('[data-view-doc]').forEach(el => {
     el.onclick = () => viewDocument(el.getAttribute('data-view-doc'));
@@ -2340,7 +2397,7 @@ function renderVault(app){
       else if(action === 'edit') openEditModal(docId);
       else if(action === 'extractText') extractTextForDocument(docId);
       else if(action === 'archive') toggleArchive(docId);
-      else if(action === 'remind' && doc) window.open(addToCalendarUrl(doc), '_blank');
+      else if(action === 'remind' && doc){ window.open(addToCalendarUrl(doc), '_blank'); render(); }
       else if(action === 'download') downloadDocument(docId);
       else if(action === 'delete') requestDeleteDocument(docId);
     };
@@ -2382,9 +2439,9 @@ function renderDocCard(d, opts){
     : supersedesDoc ? `<p class="doc-link-note">→ Replaces ${escapeHtml(supersedesDoc.title)}</p>` : '';
   return `
     <div class="doc-card ${d.archived ? 'is-archived' : ''}">
-      <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" data-open-doc="${d.id}" role="button" aria-label="View ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
+      <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" data-open-doc="${d.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
       <div class="doc-body">
-        <p class="doc-title" data-open-doc="${d.id}" role="button">${escapeHtml(d.title)}${state.offlineDocIds.has(d.id) ? `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>` : ''}</p>
+        <p class="doc-title" data-open-doc="${d.id}" role="button" tabindex="0">${escapeHtml(d.title)}${state.offlineDocIds.has(d.id) ? `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>` : ''}</p>
         <p class="doc-meta">${opts.showCategory ? `${escapeHtml(meta.label)} · ` : ''}Added ${formatDate(d.addedAt)}${activeShares.length ? ' · shared with '+activeShares.length : ''}${d.archived ? ' · archived' : ''}</p>
         ${d.snippet ? `<p class="doc-snippet">${d.snippet}</p>` : ''}
         ${expiryBadge}
@@ -2425,6 +2482,20 @@ function openAddModal(){ state.modal = 'add'; pendingFile = null; pendingOcrText
 function closeModal(){
   goBackOneLayer();
 }
+// Escape-to-close, plus a focus trap so Tab/Shift+Tab cycle within the open modal instead of
+// escaping into the (aria-hidden) page behind it — neither existed at all before this.
+document.addEventListener('keydown', (e) => {
+  if(!state.modal) return;
+  if(e.key === 'Escape'){ closeModal(); return; }
+  if(e.key !== 'Tab') return;
+  const sheet = document.querySelector('.modal-sheet');
+  if(!sheet) return;
+  const focusable = sheet.querySelectorAll('input, select, textarea, button, [tabindex]:not([tabindex="-1"])');
+  if(!focusable.length) return;
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+  else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+});
 
 // Pull-down-to-dismiss for the document viewer: dragging down while already scrolled to the very
 // top of the sheet drags the sheet itself down instead of doing nothing (or rubber-banding), and
@@ -2555,7 +2626,9 @@ function switchHtml(id, checked, disabled, ariaLabel){
 function renderModal(){
   const existing = document.getElementById('modalOverlay');
   if(existing) existing.remove();
-  if(!state.modal) return;
+  const appEl = document.getElementById('app');
+  if(!state.modal){ if(appEl) appEl.removeAttribute('aria-hidden'); return; }
+  if(appEl) appEl.setAttribute('aria-hidden', 'true');
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -2634,7 +2707,7 @@ function renderModal(){
 
   if(state.modal === 'edit'){
     const doc = state.documents.find(d => d.id === state.editDocId);
-    if(!doc){ state.modal = null; return; }
+    if(!doc){ goBackOneLayer(); return; }
     overlay.innerHTML = `
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
@@ -2645,9 +2718,9 @@ function renderModal(){
         <label class="field-label">Category</label>
         <select id="editCategory">${categoryOptionsHtml(doc.category)}</select>
         <label class="field-label">Expiry date (optional)</label>
-        <input type="date" id="editExpiry" value="${doc.expiry || ''}" />
+        <input type="date" id="editExpiry" value="${escapeHtml(doc.expiry || '')}" />
         <label class="field-label">Remind me (days before expiry, optional)</label>
-        <input type="text" id="editReminderDays" placeholder="e.g. 90, 30, 7" value="${(doc.reminderDays || []).join(', ')}" />
+        <input type="text" id="editReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml((doc.reminderDays || []).join(', '))}" />
         <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once it's expired, you'll keep hearing about it until it's archived.</p>
         <div class="error-text" id="editErr" style="display:none;"></div>
         <button class="primary" id="saveEditBtn">Save changes</button>
@@ -2660,7 +2733,7 @@ function renderModal(){
 
   if(state.modal === 'confirmDelete'){
     const doc = state.documents.find(d => d.id === state.deleteDocId);
-    if(!doc){ state.modal = null; return; }
+    if(!doc){ goBackOneLayer(); return; }
     overlay.innerHTML = `
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
@@ -2713,7 +2786,7 @@ function renderModal(){
 
   if(state.modal === 'confirmDeleteQuickRef'){
     const ref = state.quickRefs.find(r => r.id === state.editQuickRefId);
-    if(!ref){ state.modal = null; return; }
+    if(!ref){ goBackOneLayer(); return; }
     overlay.innerHTML = `
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
@@ -2731,7 +2804,7 @@ function renderModal(){
 
   if(state.modal === 'renewExpired'){
     const doc = state.documents.find(d => d.id === state.renewDocId);
-    if(!doc){ state.modal = null; return; }
+    if(!doc){ goBackOneLayer(); return; }
     const otherActiveDocs = state.documents.filter(d => d.id !== doc.id && !d.archived);
     overlay.innerHTML = `
       <div class="modal-sheet">
@@ -2755,7 +2828,7 @@ function renderModal(){
 
   if(state.modal === 'viewFile'){
     const doc = state.documents.find(d => d.id === state.viewDocId);
-    if(!doc){ state.modal = null; return; }
+    if(!doc){ goBackOneLayer(); return; }
     overlay.innerHTML = `
       <div class="modal-sheet">
         <div class="sheet-handle" id="viewFileHandle" aria-hidden="true"></div>
@@ -2821,7 +2894,7 @@ function renderModal(){
 
   if(state.modal === 'share'){
     const doc = state.documents.find(d => d.id === state.shareDocId);
-    if(!doc){ state.modal = null; state.shareDocId = null; return; }
+    if(!doc){ goBackOneLayer(); return; }
     const activeShares = state.shares.filter(s => s.docId === state.shareDocId);
     const justGenerated = state.shares.find(s => s.id === state.lastGeneratedShareId);
     overlay.innerHTML = `
@@ -2933,7 +3006,7 @@ function renderModal(){
 
   if(state.modal === 'editCategory'){
     const cat = state.categories.find(c => c.id === state.editCategoryId);
-    if(!cat){ state.modal = null; return; }
+    if(!cat){ goBackOneLayer(); return; }
     overlay.innerHTML = `
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
@@ -2973,6 +3046,14 @@ function renderModal(){
     const confirmBtn = document.getElementById('confirmDeleteAccountBtn');
     phraseInput.oninput = () => { confirmBtn.disabled = phraseInput.value.trim() !== 'DELETE'; };
     confirmBtn.onclick = deleteEverything;
+  }
+
+  const sheetEl = overlay.querySelector('.modal-sheet');
+  if(sheetEl){
+    sheetEl.setAttribute('role', 'dialog');
+    sheetEl.setAttribute('aria-modal', 'true');
+    const focusTarget = sheetEl.querySelector('input, select, textarea, button');
+    if(focusTarget) focusTarget.focus();
   }
 }
 
@@ -3342,6 +3423,7 @@ async function renderPdfInto(contentEl, blob, id){
 async function downloadDocument(id){
   const doc = state.documents.find(d => d.id === id);
   if(!doc) return;
+  render();
   try{
     const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
     const blob = await res.blob();
@@ -3485,8 +3567,7 @@ async function revokeShare(shareId){
 async function reconnectDrive(){
   try{
     const tokenResp = await acquireDriveAccess();
-    state.driveAccessToken = tokenResp.accessToken;
-    state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
+    applyDriveTokenResponse(tokenResp);
     if(state.isOfflineMode){
       state.isOfflineMode = false;
       await loadUserData(); // replaces the limited offline-cache list with the real, full one
@@ -3513,7 +3594,7 @@ async function saveNewCategory(){
   try{
     const id = 'cat_' + Date.now();
     const driveFolderId = await driveCreateFolder(label, state.vaultFolderId);
-    const order = state.categories.length;
+    const order = Math.max(-1, ...state.categories.map(c => c.order)) + 1;
     await userDoc().collection('categories').doc(id).set({label, icon: iconKey, driveFolderId, order});
     state.categories.push({id, label, icon: iconKey, driveFolderId, order});
     closeModal();
@@ -3582,10 +3663,6 @@ async function deleteCategory(id){
    subfolder a file was found in becomes its category, its filename (minus extension) becomes
    its title, and OCR runs on image files so it's searchable — same as adding through the app,
    just triggered manually here instead of automatically on every load. */
-function blobToDataUrl(blob){
-  return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = reject; r.readAsDataURL(blob); });
-}
-
 async function runSyncFromDrive(){
   const btn = document.getElementById('syncDriveBtn');
   if(btn){ btn.disabled = true; btn.textContent = 'Syncing…'; }
@@ -3603,7 +3680,7 @@ async function runSyncFromDrive(){
           try{
             const contentRes = await driveFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`);
             const blob = await contentRes.blob();
-            const dataUrl = await blobToDataUrl(blob);
+            const dataUrl = await readFileAsDataURL(blob);
             ocrText = await runOcr(dataUrl);
           } catch(ocrErr){ console.error('Could not OCR a synced file', ocrErr); }
         }
@@ -3635,7 +3712,15 @@ function exportDocumentListCsv(){
   state.documents.forEach(d => {
     rows.push([d.title, categoryFor(d.category).label, d.expiry || '', formatDate(d.addedAt), d.archived ? 'Yes' : 'No', `https://drive.google.com/file/d/${d.driveFileId}/view`]);
   });
-  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  // A cell starting with =, +, -, or @ opens as a live formula in Excel/Sheets — prefix a leading
+  // apostrophe (a spreadsheet's own documented escape) so a synced Drive filename can't smuggle one
+  // in; quote-doubling alone only protects the CSV syntax itself, not what a spreadsheet does with
+  // the resulting cell content.
+  const csv = rows.map(r => r.map(v => {
+    const s = String(v);
+    const safe = /^[=+\-@]/.test(s) ? `'${s}` : s;
+    return `"${safe.replace(/"/g,'""')}"`;
+  }).join(',')).join('\n');
   const blob = new Blob([csv], {type: 'text/csv'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -3702,7 +3787,7 @@ function resetToLoggedOutState(){
   Object.assign(state, {
     screen: 'login', user: null, driveAccessToken: null, driveTokenExpiresAt: null,
     vaultFolderId: null, categories: [], documents: [], shares: [], modal: null,
-    searchQuery: '', showArchived: false, collapsedCats: {}, openActionMenu: null
+    searchQuery: '', showArchived: false, collapsedCats: {}, openActionMenu: null, isOfflineMode: false
   });
   // Deliberately not touching history/guard bookkeeping here: an earlier version force-reset a
   // depth counter to 0, which lied whenever the guard was actually still armed (an idle sign-out
@@ -3725,13 +3810,16 @@ async function deleteEverything(){
   const errEl = document.getElementById('deleteAccountErr');
   if(btn){ btn.disabled = true; btn.textContent = 'Deleting…'; }
   try{
-    for(const colName of ['documents','shares','categories']){
+    for(const colName of ['documents','shares','categories','quickRefs']){
       const snap = await userDoc().collection(colName).get();
       const batch = db.batch();
       snap.docs.forEach(d => batch.delete(d.ref));
       await batch.commit();
     }
     await userDoc().collection('meta').doc('vault').delete();
+    await userDoc().collection('meta').doc('reminderSettings').delete();
+    await db.collection('emailDigestSubscribers').doc(state.user.uid).delete();
+    await db.collection('pushSubscribers').doc(state.user.uid).delete();
     if(state.vaultFolderId){
       try{ await driveDelete(state.vaultFolderId); } catch(e){ console.error('Could not delete the Drive Vault folder', e); }
     }
@@ -3798,8 +3886,7 @@ auth.onAuthStateChanged(async (user) => {
     // consent screen unprompted; NO_GRANT/GRANT_REVOKED routes to the "Welcome back" screen
     // instead, where the user's own tap is what makes the popup a real, gesture-backed one.
     const tokenResp = await mintDriveAccessToken();
-    state.driveAccessToken = tokenResp.accessToken;
-    state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
+    applyDriveTokenResponse(tokenResp);
     await loadUserData();
     collapseAllCategories();
     state.screen = 'vault';
@@ -3839,8 +3926,7 @@ setInterval(async () => {
   if(!state.user) return;
   try{
     const tokenResp = await mintDriveAccessToken();
-    state.driveAccessToken = tokenResp.accessToken;
-    state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
+    applyDriveTokenResponse(tokenResp);
     if(state.isOfflineMode){
       state.isOfflineMode = false;
       await loadUserData(); // replaces the limited offline-cache list with the real, full one

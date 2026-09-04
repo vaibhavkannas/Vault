@@ -47,11 +47,11 @@ self.addEventListener('notificationclick', (event) => {
 // index.html/manifest.json/icon.svg themselves don't need a bump for ordinary content edits:
 // they're fetched network-first below, so the live copy always wins whenever a connection is
 // available — the cached copy is only ever a fallback for when it isn't.
-const CACHE_VERSION = '3';
+const CACHE_VERSION = '4';
 const SHELL_CACHE = 'vault-shell-v' + CACHE_VERSION;
 
 // Same-origin, could change between deploys — always prefer a live fetch.
-const NETWORK_FIRST_REL = ['./index.html', './manifest.json', './icon.svg'];
+const NETWORK_FIRST_REL = ['./index.html', './manifest.json', './icon.svg', './icon-180.png'];
 // External libraries pinned to an exact version in the URL itself — that exact URL's content
 // never changes, so serving the cached copy immediately, before even checking the network, is
 // always safe.
@@ -64,7 +64,13 @@ const CACHE_FIRST_URLS = [
   'https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js',
   'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js',
   'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js',
-  'https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js',
+  'https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js'
+];
+// Not version-pinned — Google can change either of these at any time, so cache-first isn't safe
+// here the way it is for the exact-version-pinned URLs above. Fetched no-cors the same way (see the
+// opaque-response reasoning above), but the network copy is tried first every time and the cache is
+// only a fallback for when it's unavailable.
+const NETWORK_FIRST_OPAQUE_URLS = [
   'https://accounts.google.com/gsi/client',
   'https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap'
 ];
@@ -82,7 +88,7 @@ self.addEventListener('install', (event) => {
       // status 0 (opaque, by design, to avoid leaking cross-origin data) — add() would fail on
       // every one of these even though the fetch itself succeeded. put() has no such check, and
       // the browser can still use a stored opaque response to satisfy a plain <script src> load.
-      ...CACHE_FIRST_URLS.map(u => fetch(new Request(u, {mode: 'no-cors'}))
+      ...[...CACHE_FIRST_URLS, ...NETWORK_FIRST_OPAQUE_URLS].map(u => fetch(new Request(u, {mode: 'no-cors'}))
         .then(res => cache.put(u, res))
         .catch(e => console.warn('Shell pre-cache failed for', u, e)))
     ]))
@@ -114,6 +120,10 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(cacheFirstOpaque(req.url));
     return;
   }
+  if(NETWORK_FIRST_OPAQUE_URLS.includes(req.url)){
+    event.respondWith(networkFirstOpaque(req.url));
+    return;
+  }
   // Everything else — Firestore, Drive, Apps Script, GIS/OAuth, and any other dynamic request —
   // is left alone entirely, same as before this file did any caching at all.
 });
@@ -131,6 +141,13 @@ function networkFirst(req, fallbackKey){
     caches.open(SHELL_CACHE).then(cache => cache.put(req, copy));
     return res;
   }).catch(() => caches.match(req).then(cached => cached || caches.match(fallbackKey)));
+}
+
+function networkFirstOpaque(url){
+  return fetch(new Request(url, {mode: 'no-cors', cache: 'no-store'})).then(res => {
+    caches.open(SHELL_CACHE).then(cache => cache.put(url, res.clone()));
+    return res;
+  }).catch(() => caches.match(url));
 }
 
 function cacheFirstOpaque(url){
