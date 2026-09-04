@@ -399,7 +399,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 09:08';
+const APP_VERSION = '2026.09.04 · 09:35';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -509,7 +509,8 @@ const state = {
   cameraStream: null,
   capturedPages: [],  // dataURLs from camera, before combining
   openActionMenu: null, // doc id whose card's ⋮ overflow menu is currently open, or null
-  offlineDocIds: new Set() // doc ids with a file blob cached in IndexedDB for offline viewing
+  offlineDocIds: new Set(), // doc ids with a file blob cached in IndexedDB for offline viewing
+  isOfflineMode: false // true when the vault opened with no Drive/Firestore connection at all
 };
 
 function categoryFor(id){
@@ -823,30 +824,40 @@ async function provisionVault(){
 }
 
 /* ---------- offline document cache ----------
-   Keeps a copy of a document's file blob in IndexedDB the moment it's successfully viewed, so
-   opening it again later works even with no connection. Deliberately scoped to file content only,
-   not the document list itself — the list still comes from Firestore, which this app doesn't
-   configure for offline persistence, so a fully-offline cold load isn't in scope here. */
+   Keeps a copy of a document's file blob AND its metadata (title, category, etc.) in IndexedDB
+   the moment it's successfully viewed, so both opening it again and simply seeing it in the list
+   work with no connection — including a fully-offline cold load (app closed and reopened with no
+   connection at all), not just a connection drop mid-session. The two are stored in separate
+   object stores so listing cached documents doesn't have to load every file's bytes to do it. */
 const OFFLINE_DB_NAME = 'vault-offline-cache';
 const OFFLINE_STORE = 'files';
+const OFFLINE_META_STORE = 'metadata';
 function openOfflineDb(){
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(OFFLINE_DB_NAME, 1);
-    req.onupgradeneeded = () => { req.result.createObjectStore(OFFLINE_STORE); };
+    const req = indexedDB.open(OFFLINE_DB_NAME, 2);
+    req.onupgradeneeded = (e) => {
+      const dbInstance = req.result;
+      if(!dbInstance.objectStoreNames.contains(OFFLINE_STORE)) dbInstance.createObjectStore(OFFLINE_STORE);
+      if(!dbInstance.objectStoreNames.contains(OFFLINE_META_STORE)) dbInstance.createObjectStore(OFFLINE_META_STORE);
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
-async function cacheDocumentOffline(id, blob, mimeType){
+// doc is the full document record (title, category, expiry, driveFileId, mimeType, ...) — stored
+// as-is (it never contains the file bytes themselves) so an offline cold load has enough to both
+// list and open it.
+async function cacheDocumentOffline(doc, blob){
   try{
     const db = await openOfflineDb();
     await new Promise((resolve, reject) => {
-      const tx = db.transaction(OFFLINE_STORE, 'readwrite');
-      tx.objectStore(OFFLINE_STORE).put({blob, mimeType}, id);
+      const tx = db.transaction([OFFLINE_STORE, OFFLINE_META_STORE], 'readwrite');
+      tx.objectStore(OFFLINE_STORE).put({blob, mimeType: doc.mimeType}, doc.id);
+      tx.objectStore(OFFLINE_META_STORE).put(doc, doc.id);
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
     });
-    state.offlineDocIds.add(id);
+    state.offlineDocIds.add(doc.id);
   } catch(e){ console.warn('Could not cache document for offline viewing', e); }
 }
 async function getOfflineDocument(id){
@@ -864,8 +875,9 @@ async function removeOfflineDocument(id){
   try{
     const db = await openOfflineDb();
     await new Promise((resolve, reject) => {
-      const tx = db.transaction(OFFLINE_STORE, 'readwrite');
+      const tx = db.transaction([OFFLINE_STORE, OFFLINE_META_STORE], 'readwrite');
       tx.objectStore(OFFLINE_STORE).delete(id);
+      tx.objectStore(OFFLINE_META_STORE).delete(id);
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
     });
@@ -886,6 +898,21 @@ async function loadOfflineDocIds(){
     console.warn('Could not list offline-cached documents', e);
     state.offlineDocIds = new Set();
   }
+}
+// Used when the vault can't be loaded from Firestore at all (no connection) — reconstructs
+// state.documents from whatever's been cached so far, so a fully-offline open still shows
+// something instead of an empty vault.
+async function loadOfflineDocumentList(){
+  try{
+    const db = await openOfflineDb();
+    const docs = await new Promise((resolve, reject) => {
+      const req = db.transaction(OFFLINE_META_STORE, 'readonly').objectStore(OFFLINE_META_STORE).getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    docs.sort((a, b) => (b.addedAt||'').localeCompare(a.addedAt||''));
+    return docs;
+  } catch(e){ console.warn('Could not load the offline document list', e); return []; }
 }
 function clearOfflineCache(){
   state.offlineDocIds = new Set();
@@ -1281,7 +1308,13 @@ function renderVault(app){
 
   const grouped = {};
   filtered.forEach(d => { (grouped[d.category] = grouped[d.category] || []).push(d); });
-  const catOrder = state.categories.map(c=>c.id).filter(c => grouped[c] && grouped[c].length);
+  const knownCatOrder = state.categories.map(c=>c.id).filter(c => grouped[c] && grouped[c].length);
+  // Categories aren't part of the offline cache (see the offline document cache section above) —
+  // in offline mode state.categories is empty, which would otherwise silently drop every document
+  // from view here even though `grouped` has them. Anything left over renders under whatever
+  // categoryFor()'s own fallback resolves to, rather than vanishing.
+  const leftoverCats = Object.keys(grouped).filter(c => !knownCatOrder.includes(c));
+  const catOrder = knownCatOrder.concat(leftoverCats);
 
   const archivedCount = state.documents.filter(d => d.archived).length;
 
@@ -1291,7 +1324,12 @@ function renderVault(app){
       <button class="icon-only-btn" id="openSettingsBtn" aria-label="Settings" title="Settings">${icon('settings',22)}</button>
     </header>
     <div class="vault">
-      ${!driveTokenValid() ? `
+      ${state.isOfflineMode ? `
+        <div class="reminder-card">
+          <span class="rtitle">You're offline — showing documents you've viewed before</span>
+          <button class="icon-btn" id="reconnectDriveBtn">Retry</button>
+        </div>
+      ` : !driveTokenValid() ? `
         <div class="reminder-card urgent">
           <span class="rtitle">Google Drive connection expired</span>
           <button class="icon-btn" id="reconnectDriveBtn">Reconnect</button>
@@ -1987,7 +2025,7 @@ async function viewDocument(id){
     // URL to leave dangling.
     if(state.modal !== 'viewFile' || state.viewDocId !== id) return;
     await renderViewedBlob(blob, doc, id);
-    cacheDocumentOffline(id, blob, doc.mimeType); // fire-and-forget — never blocks showing the doc
+    cacheDocumentOffline(doc, blob); // fire-and-forget — never blocks showing the doc
   } catch(e){
     console.error('View failed, checking the offline cache', e);
     const cached = await getOfflineDocument(id);
@@ -2121,11 +2159,15 @@ async function reconnectDrive(){
     const tokenResp = await acquireDriveAccess();
     state.driveAccessToken = tokenResp.accessToken;
     state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
+    if(state.isOfflineMode){
+      state.isOfflineMode = false;
+      await loadUserData(); // replaces the limited offline-cache list with the real, full one
+    }
     toast('Reconnected to Google Drive');
     render();
   } catch(e){
     console.error('Reconnect failed', e);
-    toast('Could not reconnect — please try again.');
+    toast(state.isOfflineMode ? 'Still offline — try again once you have a connection.' : 'Could not reconnect — please try again.');
   }
 }
 
@@ -2330,6 +2372,22 @@ async function deleteEverything(){
   }
 }
 
+// Opens the vault using only what's already cached locally, for when there's genuinely no
+// connection to either Firestore or Drive. loadUserData() is tried first — best-effort, since it
+// might still partly succeed (e.g. Firestore reachable but Drive/Apps Script specifically down) —
+// and only replaced with the offline cache's own document list if that came back empty.
+async function enterOfflineVault(){
+  state.isOfflineMode = true;
+  await loadUserData();
+  if(state.documents.length === 0){
+    state.documents = await loadOfflineDocumentList();
+    await loadOfflineDocIds();
+  }
+  state.screen = 'vault';
+  render();
+  armExitGuardIfIdle();
+}
+
 // Firebase persists the sign-in session by default, but the app never checked for it on load —
 // every fresh page open showed the login screen regardless of a still-valid session, which reads
 // to the user as "the app keeps logging me out." Restore silently here: if Firebase still has the
@@ -2364,10 +2422,21 @@ auth.onAuthStateChanged(async (user) => {
     render();
     armExitGuardIfIdle();
   } catch(e){
-    console.warn('Could not mint a Drive access token — asking for a one-tap reconnect instead.', e);
-    state.screen = 'reconnect';
-    render();
-    armExitGuardIfIdle();
+    // NO_GRANT/GRANT_REVOKED is a real permissions problem only a fresh consent popup can fix —
+    // genuinely nothing to do with connectivity. Anything else here (a network error reaching the
+    // Apps Script backend, most commonly no connection at all) gets the offline fallback instead:
+    // showing "reconnect" for a plain connectivity hiccup would misdiagnose it as a permissions
+    // issue, and there's nothing to actually reconnect to when there's no network to reach.
+    const reason = e && e.details && e.details.reason;
+    if(reason === 'NO_GRANT' || reason === 'GRANT_REVOKED'){
+      console.warn('Drive grant missing or revoked — asking for a one-tap reconnect.', e);
+      state.screen = 'reconnect';
+      render();
+      armExitGuardIfIdle();
+    } else {
+      console.warn('Could not reach Drive — opening with previously cached documents only.', e);
+      await enterOfflineVault();
+    }
   } finally {
     authFlowInProgress = false;
   }
@@ -2379,13 +2448,22 @@ auth.onAuthStateChanged(async (user) => {
 // round-tripping to Google when a real refresh is due — so this doesn't need its own expiry check
 // before calling it.
 setInterval(async () => {
-  if(!state.user || !state.driveAccessToken) return;
+  // Deliberately no `|| !state.driveAccessToken` guard: a session that opened in offline mode
+  // (see enterOfflineVault()) has no token at all yet, and this same periodic check doubles as
+  // that session's only route back out of offline mode once a connection actually comes back.
+  if(!state.user) return;
   try{
     const tokenResp = await mintDriveAccessToken();
     state.driveAccessToken = tokenResp.accessToken;
     state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
+    if(state.isOfflineMode){
+      state.isOfflineMode = false;
+      await loadUserData(); // replaces the limited offline-cache list with the real, full one
+      render();
+      toast('Back online — vault refreshed');
+    }
   } catch(e){
-    console.warn('Background Drive token refresh failed — falling back to the manual reconnect banner.', e);
+    console.warn('Background Drive token refresh failed' + (state.isOfflineMode ? ' — still offline.' : ' — falling back to the manual reconnect banner.'), e);
   }
 }, 5*60*1000);
 
