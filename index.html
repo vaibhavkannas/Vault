@@ -405,7 +405,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 16:06';
+const APP_VERSION = '2026.09.04 · 16:13';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -766,6 +766,11 @@ function turnOffAppLock(){
     localStorage.removeItem('vault-lock-webauthn-id');
   } catch(e){}
 }
+// Turns off just the biometric shortcut, leaving the PIN (and app lock overall) intact — the PIN
+// stays as the fallback either way, so this never needs to touch vault-lock-enabled/-pin-hash.
+function turnOffBiometricUnlock(){
+  try{ localStorage.removeItem('vault-lock-webauthn-id'); } catch(e){}
+}
 
 // Whether the *current* app open needs the lock screen right now — false forever if the feature
 // isn't turned on; otherwise true until a successful unlock, and true again after the page has
@@ -945,7 +950,14 @@ async function togglePushNotifications(){
 // never work, rather than leaving state.reminderSettings claiming otherwise.
 async function syncPushSubscriptionIfNeeded(){
   if(!isPushEnabled()) return;
-  if(!isPushSupported() || Notification.permission !== 'granted'){
+  // Only reconcile the flag off when permission was explicitly revoked (a real "I don't want
+  // this" signal) or this browser no longer supports push at all — never merely because this
+  // particular device/browser was never used to grant it (Notification.permission === 'default').
+  // pushEnabled is one account-wide flag with a single stored token, not per-device — treating
+  // "not asked here" the same as "revoked" would silently kill a subscription that's still
+  // working correctly on whichever device it actually was granted on, every time the account is
+  // opened somewhere else that hasn't gone through the permission prompt yet.
+  if(!isPushSupported() || Notification.permission === 'denied'){
     try{
       const batch = db.batch();
       batch.set(userDoc().collection('meta').doc('reminderSettings'), {pushEnabled: false, updatedAt: new Date().toISOString()}, {merge: true});
@@ -955,6 +967,7 @@ async function syncPushSubscriptionIfNeeded(){
     } catch(e){ console.error('Failed to reconcile stale push subscription', e); }
     return;
   }
+  if(Notification.permission !== 'granted') return; // not yet asked on this device — leave it alone
   const messaging = await getMessagingIfSupported();
   if(!messaging) return;
   try{
@@ -1592,6 +1605,7 @@ function renderSettings(app){
         ${isAppLockEnabled() ? `
           <div class="settings-row"><span>App lock is on${hasBiometricUnlockConfigured() ? ' · biometric unlock set up' : ''}</span></div>
           <div class="settings-row"><span>Require a PIN or biometric to open Vault</span><button class="icon-btn" id="changeLockPinBtn">Change PIN</button></div>
+          ${hasBiometricUnlockConfigured() ? `<div class="settings-row"><span>Biometric unlock</span><button class="icon-btn danger" id="turnOffBioBtn">Turn off</button></div>` : ''}
           <div class="settings-row"><span>Turn off app lock</span><button class="icon-btn danger" id="turnOffLockBtn">Turn off</button></div>
         ` : `
           <div class="settings-row"><span>Require a PIN or biometric to open Vault, even while signed in</span><button class="icon-btn" id="setUpLockBtn">Set up</button></div>
@@ -1683,6 +1697,12 @@ function renderSettings(app){
   if(turnOffLockBtn) turnOffLockBtn.onclick = () => {
     turnOffAppLock();
     toast('App lock turned off');
+    render();
+  };
+  const turnOffBioBtn = document.getElementById('turnOffBioBtn');
+  if(turnOffBioBtn) turnOffBioBtn.onclick = () => {
+    turnOffBiometricUnlock();
+    toast('Biometric unlock turned off');
     render();
   };
 
