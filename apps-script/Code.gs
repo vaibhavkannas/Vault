@@ -198,7 +198,8 @@ function firestoreListAll(collectionPath){
 }
 
 // Unwraps Firestore REST's typed-value JSON. Only covers the value types this app's own documents
-// actually use (string/boolean/integer/null) — not a general-purpose Firestore type mapper.
+// actually use (string/boolean/integer/null/array-of-integer-or-string) — not a general-purpose
+// Firestore type mapper.
 function firestoreFieldsToObject(fields){
   const obj = {};
   for(const key in (fields || {})){
@@ -207,6 +208,13 @@ function firestoreFieldsToObject(fields){
     else if(val.booleanValue !== undefined) obj[key] = val.booleanValue;
     else if(val.integerValue !== undefined) obj[key] = Number(val.integerValue);
     else if(val.nullValue !== undefined) obj[key] = null;
+    else if(val.arrayValue !== undefined){
+      obj[key] = (val.arrayValue.values || []).map(function(v){
+        if(v.integerValue !== undefined) return Number(v.integerValue);
+        if(v.stringValue !== undefined) return v.stringValue;
+        return null;
+      });
+    }
   }
   return obj;
 }
@@ -253,17 +261,32 @@ function daysUntil(dateStr){
   return Math.round((parseLocalDate(dateStr) - t) / 86400000);
 }
 
+// A document can override the global milestone schedule with its own days-before-expiry list
+// (doc.reminderDays, set from the client's Edit Document form — e.g. a passport might warrant a
+// heads-up 90 days out, not just 14). Falls back to the shared schedule when unset.
+function milestoneDaysForDoc(doc){
+  return (Array.isArray(doc.reminderDays) && doc.reminderDays.length) ? doc.reminderDays : DIGEST_MILESTONE_DAYS;
+}
+
 function buildDigestRowsForUser(uid){
   const labels = listCategoryLabelsForUser(uid);
   return listActiveDocumentsForUser(uid)
     .map(function(doc){
       return {
+        doc: doc,
         title: doc.title,
         category: labels[doc.category] || doc.category,
         days: daysUntil(doc.expiry)
       };
     })
-    .filter(function(d){ return DIGEST_MILESTONE_DAYS.includes(d.days); })
+    .filter(function(d){
+      // Already-expired documents stay in every digest for as long as they're active (not yet
+      // archived) — an unresolved overdue item deserves ongoing visibility, unlike the sparse
+      // milestone schedule below, which exists specifically to avoid daily noise for something
+      // that isn't due yet.
+      if(d.days < 0) return true;
+      return milestoneDaysForDoc(d.doc).includes(d.days);
+    })
     .sort(function(a, b){ return a.days - b.days; });
 }
 
