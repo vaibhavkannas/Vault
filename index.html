@@ -33,11 +33,15 @@
     --paper-2:#ffffff;
     --brass:#1a73e8;
     --brass-dark:#0842a0;
+    --on-brass:#ffffff; /* text/icons sitting ON a solid --brass fill — white here since brass is dark, but a dark-mode brass has to flip this or the same button reads as washed-out/disabled */
+    --on-danger:#ffffff; /* same idea as --on-brass, for a solid --danger fill (delete buttons etc.) */
     --line:#dadce0;
     --danger:#c5221f;
     --danger-bg:#fce8e6;
     --success:#188038;
     --success-bg:#e6f4ea;
+    --warning:#8a5a05;
+    --warning-bg:#f7edd9;
     --radius:16px;
     --radius-sm:8px;
     --radius-full:999px;
@@ -100,10 +104,10 @@
   input[type="text"], input[type="date"], input[type="password"], select, textarea{width:100%;padding:12px 14px;border:1px solid transparent;border-radius:var(--radius-sm);background:var(--surface-container);font-size:14px;color:var(--ink);margin-bottom:12px;font-family:inherit;}
   input[type="text"]:focus, input[type="date"]:focus, input[type="password"]:focus, select:focus, textarea:focus{outline:2px solid var(--brass);outline-offset:-1px;}
   input[type="password"]{letter-spacing:0.3em;}
-  button.primary{width:100%;padding:13px 16px;background:var(--brass);color:#fff;border:none;border-radius:var(--radius-full);font-size:14px;font-weight:500;cursor:pointer;}
+  button.primary{width:100%;padding:13px 16px;background:var(--brass);color:var(--on-brass);border:none;border-radius:var(--radius-full);font-size:14px;font-weight:500;cursor:pointer;}
   button.primary:active{transform:scale(0.98);}
   button.primary:disabled{opacity:0.5;}
-  button.danger-solid{width:100%;padding:13px 16px;background:var(--danger);color:#fff;border:none;border-radius:var(--radius-full);font-size:14px;font-weight:500;cursor:pointer;}
+  button.danger-solid{width:100%;padding:13px 16px;background:var(--danger);color:var(--on-danger);border:none;border-radius:var(--radius-full);font-size:14px;font-weight:500;cursor:pointer;}
   button.danger-solid:active{transform:scale(0.98);}
   button.danger-solid:disabled{opacity:0.5;}
   button.ghost{width:100%;padding:12px 16px;background:transparent;color:var(--brass);border:1px solid var(--line);border-radius:var(--radius-full);font-size:13.5px;font-weight:500;cursor:pointer;margin-top:8px;}
@@ -239,11 +243,11 @@
   .camera-wrap video, .camera-wrap canvas{width:100%;display:block;}
   .camera-controls{display:flex;gap:10px;margin-bottom:12px;}
   .camera-controls button{flex:1;}
-  .capture-btn{background:var(--brass);color:#fff;border:none;border-radius:var(--radius-full);padding:13px;font-weight:500;font-size:14px;cursor:pointer;}
+  .capture-btn{background:var(--brass);color:var(--on-brass);border:none;border-radius:var(--radius-full);padding:13px;font-weight:500;font-size:14px;cursor:pointer;}
   .page-thumbs{display:flex;gap:8px;overflow-x:auto;margin-bottom:12px;padding-bottom:4px;}
   .page-thumb-wrap{position:relative;flex:none;}
   .page-thumb{width:56px;height:56px;border-radius:10px;object-fit:cover;display:block;}
-  .page-thumb-del{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--danger);color:#fff;border:2px solid var(--paper);font-size:13px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;}
+  .page-thumb-del{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--danger);color:var(--on-danger);border:2px solid var(--paper);font-size:13px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;}
   .progress-row{font-size:12.5px;color:var(--ink-soft);text-align:center;margin:10px 0;}
   .progress-track{height:4px;background:var(--surface-container);border-radius:4px;overflow:hidden;margin-bottom:6px;}
   .progress-fill{height:100%;background:var(--brass);transition:width 0.2s ease;}
@@ -259,16 +263,18 @@
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
       --ink:#e8e9ea; --ink-soft:#c4c7c5; --paper:#111214; --paper-2:#1f2124;
-      --brass:#8ab4f8; --brass-dark:#d3e3fd;
+      --brass:#8ab4f8; --brass-dark:#d3e3fd; --on-brass:#0d2c5c; --on-danger:#5c1210;
       --line:#48494c; --danger:#f2b8b5; --danger-bg:#601410; --success:#6dd58c; --success-bg:#0f5223;
+      --warning:#f5cf87; --warning-bg:#4a3510;
       --surface-container:#2c2e32; --primary-container:#0b3a86; --on-primary-container:#d3e3fd;
       --elevation-1:0 1px 3px rgba(0,0,0,0.5); --elevation-2:0 2px 8px rgba(0,0,0,0.6);
     }
   }
   :root[data-theme="dark"]{
     --ink:#e8e9ea; --ink-soft:#c4c7c5; --paper:#111214; --paper-2:#1f2124;
-    --brass:#8ab4f8; --brass-dark:#d3e3fd;
+    --brass:#8ab4f8; --brass-dark:#d3e3fd; --on-brass:#0d2c5c; --on-danger:#5c1210;
     --line:#48494c; --danger:#f2b8b5; --danger-bg:#601410; --success:#6dd58c; --success-bg:#0f5223;
+    --warning:#f5cf87; --warning-bg:#4a3510;
     --surface-container:#2c2e32; --primary-container:#0b3a86; --on-primary-container:#d3e3fd;
     --elevation-1:0 1px 3px rgba(0,0,0,0.5); --elevation-2:0 2px 8px rgba(0,0,0,0.6);
   }
@@ -477,7 +483,7 @@ const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry';
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 21:52';
+const APP_VERSION = '2026.09.04 · 21:57';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -533,8 +539,8 @@ function brandMarkSvg(size){
   // set above since it's a filled logo glyph, not a UI icon, and always sits on a --brass tile.
   size = size || 36;
   return `<svg width="${size}" height="${size}" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-    <path d="M64 26 L94 39 V64 C94 86 81 100 64 106 C47 100 34 86 34 64 V39 Z" fill="none" stroke="#ffffff" stroke-width="7" stroke-linejoin="round"/>
-    <rect x="52" y="52" width="24" height="30" rx="2.5" fill="#ffffff"/>
+    <path d="M64 26 L94 39 V64 C94 86 81 100 64 106 C47 100 34 86 34 64 V39 Z" fill="none" stroke="var(--on-brass)" stroke-width="7" stroke-linejoin="round"/>
+    <rect x="52" y="52" width="24" height="30" rx="2.5" fill="var(--on-brass)"/>
     <line x1="57" y1="60" x2="71" y2="60" stroke="var(--brass)" stroke-width="2.5"/>
     <line x1="57" y1="67" x2="71" y2="67" stroke="var(--brass)" stroke-width="2.5"/>
     <line x1="57" y1="74" x2="66" y2="74" stroke="var(--brass)" stroke-width="2.5"/>
@@ -756,6 +762,13 @@ window.addEventListener('popstate', () => {
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.04 · 21:57',
+    items: [
+      "Dark mode: buttons that used to read as washed-out or disabled (Add document, Capture page, delete confirmations) now have proper contrast — they were using white text on a light-blue/light-red fill that only looks right in light mode.",
+      'The "expiring within 30 days" badge no longer shows as a bright cream patch in dark mode — it now follows the theme like every other badge.'
+    ]
+  },
   {
     version: '2026.09.04 · 21:52',
     items: [
@@ -2356,7 +2369,7 @@ function renderDocCard(d, opts){
   if(d.expiry){
     const days = daysUntil(d.expiry);
     isExpired = days<0;
-    const style = isExpired ? 'background:var(--danger-bg);color:var(--danger);' : days<=7 ? 'background:var(--danger-bg);color:var(--danger);' : days<=30 ? 'background:#f7edd9;color:#8a5a05;' : 'background:var(--success-bg);color:var(--success);';
+    const style = isExpired ? 'background:var(--danger-bg);color:var(--danger);' : days<=7 ? 'background:var(--danger-bg);color:var(--danger);' : days<=30 ? 'background:var(--warning-bg);color:var(--warning);' : 'background:var(--success-bg);color:var(--success);';
     expiryBadge = `<span class="doc-expiry" style="${style}">${isExpired ? 'Expired' : 'Expires'} ${formatExpiryDate(d.expiry)}</span>`;
   }
   const activeShares = state.shares.filter(s => s.docId===d.id && !s.revoked && new Date(s.expiresAt)>new Date());
