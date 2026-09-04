@@ -326,17 +326,23 @@ function buildDigestHtml(rows){
 
 function sendEmailDigests(){
   const subscribers = listEmailDigestSubscribers();
+  let sent = 0;
   subscribers.forEach(function(sub){
     try{
       const rows = buildDigestRowsForUser(sub.uid);
       if(!rows.length) return;
       const subject = rows.length + ' document' + (rows.length === 1 ? '' : 's') + ' need attention — Vault';
       MailApp.sendEmail(sub.email, subject, buildDigestText(rows), {htmlBody: buildDigestHtml(rows)});
+      sent++;
     } catch(err){
       // One user's bad data or a transient failure must not abort everyone else's digest.
       console.error('Digest failed for uid ' + sub.uid + ': ' + err);
     }
   });
+  // A "completed with no error" run otherwise leaves an empty Cloud log either way, whether it
+  // genuinely sent nothing (no one had a document due) or actually mailed several people — no way
+  // to tell them apart without this.
+  console.log('Email digest: sent to ' + sent + ' of ' + subscribers.length + ' subscriber(s).');
 }
 
 // ---------- Push notifications (FCM) ----------
@@ -395,6 +401,7 @@ function sendPushNotification(token, title, body, data){
 
 function sendPushReminders(){
   const subscribers = listPushSubscribers();
+  let sent = 0;
   subscribers.forEach(function(sub){
     try{
       const rows = buildDigestRowsForUser(sub.uid); // already sorted soonest-first
@@ -405,7 +412,9 @@ function sendPushReminders(){
         ? top.title + ' — ' + formatDaysLabel(top.days)
         : top.title + ' (' + formatDaysLabel(top.days) + ') and ' + (rows.length - 1) + ' more';
       const result = sendPushNotification(sub.token, title, body, {});
-      if(!result.ok){
+      if(result.ok){
+        sent++;
+      } else {
         console.error('Push failed for uid ' + sub.uid + ': ' + JSON.stringify(result.error));
         // A token FCM reports as unregistered will never work again — delete it so the job stops
         // silently retrying a dead subscription forever.
@@ -416,6 +425,7 @@ function sendPushReminders(){
       console.error('Push reminder failed for uid ' + sub.uid + ': ' + err);
     }
   });
+  console.log('Push reminders: sent to ' + sent + ' of ' + subscribers.length + ' subscriber(s).');
 }
 
 // Single entry point for the existing daily trigger (see createDailyDigestTrigger below) — email
