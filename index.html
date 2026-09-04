@@ -412,7 +412,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 16:37';
+const APP_VERSION = '2026.09.04 · 16:54';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -2002,12 +2002,23 @@ function closeModal(){
 // dragging from the top of an add/edit form, for instance, should just scroll, not risk dismissing
 // unsaved input.
 function enableSwipeToDismiss(sheet){
-  let startY = 0, dragging = false, pointerId = null;
-  const DISMISS_THRESHOLD_PX = 90;
+  let startY = 0, dragging = false, pointerId = null, lastY = 0, lastT = 0, velocity = 0;
+  const DISMISS_THRESHOLD_PX = 70;
+  // A fast short flick reads as "dismiss" in every native app this pattern is borrowed from —
+  // requiring the full pixel threshold on every gesture makes a quick swipe feel unresponsive.
+  const DISMISS_VELOCITY_PX_MS = 0.5;
+  const FADE_DISTANCE_PX = 300; // backdrop reaches its floor opacity after this much drag
 
   sheet.addEventListener('pointerdown', (e) => {
     if(e.pointerType === 'mouse' && e.button !== 0) return;
+    // Only a gesture that STARTS with nothing left to scroll up to can ever be a dismiss
+    // attempt — if it doesn't, don't even arm this pointer, so normal scrolling inside the
+    // content is left completely untouched for its whole duration.
+    if(sheet.scrollTop > 0) return;
     startY = e.clientY;
+    lastY = e.clientY;
+    lastT = e.timeStamp;
+    velocity = 0;
     pointerId = e.pointerId;
     dragging = false;
   });
@@ -2015,29 +2026,26 @@ function enableSwipeToDismiss(sheet){
   sheet.addEventListener('pointermove', (e) => {
     if(pointerId === null || e.pointerId !== pointerId) return;
     const deltaY = e.clientY - startY;
-    // Only a downward drag while there's nothing left to scroll up to counts as a dismiss
-    // attempt — anything else (scrolled down into the content, or dragging upward) is ordinary
-    // scrolling and must be left alone.
-    if(sheet.scrollTop > 0 || deltaY <= 0){
-      if(dragging){
-        // The user scrolled back up mid-drag — snap back immediately rather than leaving the
-        // sheet stranded part-way off-screen.
-        dragging = false;
-        sheet.style.touchAction = '';
-        sheet.style.transition = 'transform 0.15s ease';
-        sheet.style.transform = '';
-      }
-      return;
-    }
     if(!dragging){
+      if(deltaY <= 0) return; // hasn't moved down yet — not a dismiss attempt
       dragging = true;
       sheet.setPointerCapture(pointerId);
-      // Suppresses the browser's own scroll/rubber-band handling for the rest of this gesture, so
-      // it doesn't fight the transform-driven drag below.
+      // Suppresses the browser's own scroll/rubber-band/pull-to-refresh handling for the rest of
+      // this gesture. Once armed, this stays in effect until the finger actually lifts (see
+      // below) — a real finger's path isn't perfectly monotonic, and re-toggling this mid-drag on
+      // every tiny backward jitter was handing the gesture back to the browser before release,
+      // which is why the sheet used to move a little and then stop responding.
       sheet.style.touchAction = 'none';
     }
+    const dt = e.timeStamp - lastT;
+    if(dt > 0) velocity = (e.clientY - lastY) / dt;
+    lastY = e.clientY;
+    lastT = e.timeStamp;
+    const clamped = Math.max(0, deltaY);
     sheet.style.transition = 'none';
-    sheet.style.transform = `translateY(${deltaY}px)`;
+    sheet.style.transform = `translateY(${clamped}px)`;
+    const overlay = sheet.parentElement;
+    if(overlay) overlay.style.opacity = String(1 - 0.6 * Math.min(1, clamped / FADE_DISTANCE_PX));
   });
 
   const endDrag = (e) => {
@@ -2048,11 +2056,16 @@ function enableSwipeToDismiss(sheet){
     pointerId = null;
     sheet.style.touchAction = '';
     if(!wasDragging) return;
-    if(deltaY > DISMISS_THRESHOLD_PX){
+    if(deltaY > DISMISS_THRESHOLD_PX || velocity > DISMISS_VELOCITY_PX_MS){
       closeModal();
     } else {
       sheet.style.transition = 'transform 0.2s cubic-bezier(0.2,0.8,0.2,1)';
       sheet.style.transform = '';
+      const overlay = sheet.parentElement;
+      if(overlay){
+        overlay.style.transition = 'opacity 0.2s ease';
+        overlay.style.opacity = '';
+      }
     }
   };
   sheet.addEventListener('pointerup', endDrag);
