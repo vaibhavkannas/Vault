@@ -47,7 +47,16 @@
     font-family:'Roboto',-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
   }
   *{box-sizing:border-box;}
-  body{margin:0;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;}
+  /* Chrome's edge-swipe "navigate back/forward" gesture is a distinct code path from a discrete
+     Back button/key press: it can skip straight past every history.pushState() entry this file
+     creates (there's no different document to show a swipe-preview of for those) and land
+     directly on whichever real, different page was open before this one — bypassing the popstate
+     handler below entirely, no matter what it does. overscroll-behavior-x is the browser's own
+     documented opt-out for exactly that gesture, applied where Chrome looks for it (the
+     scrolling root, which is <html> unless something else scrolls instead). A hardware/software
+     Back button still reaches popstate normally either way — this only suppresses the swipe. */
+  html{overscroll-behavior-x: none;}
+  body{margin:0;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;overscroll-behavior-x:none;}
   /* Baseline tap feedback for every button so nothing feels inert — more specific :active rules
      elsewhere (e.g. button.primary's scale(0.98)) simply override this by CSS specificity. */
   button, .doc-icon, .icon-pick-btn, .cat-toggle, .renewal-card{transition:transform 0.1s ease;}
@@ -387,7 +396,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.03 · 23:20';
+const APP_VERSION = '2026.09.04 · 07:34';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
