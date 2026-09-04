@@ -18,6 +18,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
@@ -161,6 +162,8 @@
   .doc-actions{display:flex;align-items:center;gap:6px;margin-top:8px;}
   .chip-btn{background:var(--primary-container);color:var(--on-primary-container);border:none;border-radius:8px;padding:10px 14px;font-size:12.5px;font-weight:500;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:5px;min-height:20px;}
   .chip-btn.secondary{background:none;color:var(--ink-soft);padding:10px 12px;}
+  .chip-btn.danger{background:var(--danger-bg);color:var(--danger);}
+  .doc-link-note{font-size:11.5px;color:var(--ink-soft);margin:4px 0 0;}
   .icon-btn{border:1px solid var(--line);background:var(--paper-2);border-radius:var(--radius-sm);padding:6px 10px;font-size:11.5px;cursor:pointer;color:var(--ink);}
   svg.icon{flex:none;display:block;}
   .icon-btn.danger{color:var(--danger);border-color:var(--danger-bg);}
@@ -441,7 +444,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 19:39';
+const APP_VERSION = '2026.09.04 · 20:01';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -543,6 +546,7 @@ const state = {
   deleteDocId: null,
   editCategoryId: null,
   viewDocId: null,
+  renewDocId: null,
   viewObjectUrl: null, // tracks the current in-app viewer's blob URL so it can be revoked on close
   lastGeneratedShareId: null, // drives the "here's your link" box after Generate — see generateShare()
   searchQuery: '',
@@ -627,8 +631,8 @@ function clearTopLayerState(){
     stopCamera();
     if(state.viewObjectUrl){ URL.revokeObjectURL(state.viewObjectUrl); state.viewObjectUrl = null; }
     state.modal = null; state.shareDocId = null; state.editDocId = null; state.deleteDocId = null;
-    state.editCategoryId = null; state.viewDocId = null; state.lastGeneratedShareId = null; state.capturedPages = [];
-    pendingOcrText = ''; pendingExpirySuggested = false; pendingOcrRunning = false;
+    state.editCategoryId = null; state.viewDocId = null; state.renewDocId = null; state.lastGeneratedShareId = null; state.capturedPages = [];
+    pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false;
   } else if(state.showArchived){
     state.showArchived = false; state.searchQuery = '';
   } else if(state.screen === 'settings'){
@@ -1390,6 +1394,26 @@ function validYmd(y, moIdx, d){
   return null;
 }
 
+// Same lightweight, best-effort spirit as guessExpiryDate above — point the category dropdown in
+// the right direction from what OCR found, never silently override a choice the user already
+// made. Checked in this order (first match wins), against the default category ids specifically —
+// a category the user renamed or a fully custom one just won't get a suggestion, which is fine,
+// this only ever pre-fills a dropdown the user can freely change anyway.
+const CATEGORY_GUESS_KEYWORDS = [
+  ['id', /aadhaar|aadhar|passport|pan card|voter id|permanent account number|national id|identity card/i],
+  ['licence', /driving licen[cs]e|permit|registration certificate|licen[cs]e/i],
+  ['insurance', /insurance|policy\s*no|premium|sum insured|policyholder/i],
+  ['warranty', /warranty|guarantee|proof of purchase/i],
+  ['bill', /invoice|electricity bill|utility bill|amount due|bill (?:no|number|date)|statement/i],
+];
+function guessCategory(ocrText){
+  if(!ocrText) return null;
+  for(const [id, pattern] of CATEGORY_GUESS_KEYWORDS){
+    if(pattern.test(ocrText) && state.categories.some(c => c.id === id)) return id;
+  }
+  return null;
+}
+
 /* ---------- OCR ---------- */
 async function runOcr(dataUrl, onProgress){
   try{
@@ -1722,6 +1746,8 @@ function renderSettings(app){
         <div class="settings-row"><span>Open Vault folder in Drive</span><button class="icon-btn" id="openDriveBtn">Open</button></div>
         <div class="settings-row"><span>Sync files added directly in Drive</span><button class="icon-btn" id="syncDriveBtn">Sync now</button></div>
         <div class="settings-row"><span>Export document list (CSV)</span><button class="icon-btn" id="exportCsvBtn">Export</button></div>
+        <div class="settings-row"><span>Download every document as a backup (ZIP)</span><button class="icon-btn" id="exportAllBtn">Download</button></div>
+        <div class="search-hint" id="exportAllStatus"></div>
       </div>
 
       <div class="settings-section">
@@ -1795,6 +1821,7 @@ function renderSettings(app){
   document.getElementById('openDriveBtn').onclick = () => window.open(`https://drive.google.com/drive/folders/${state.vaultFolderId}`, '_blank');
   document.getElementById('syncDriveBtn').onclick = runSyncFromDrive;
   document.getElementById('exportCsvBtn').onclick = exportDocumentListCsv;
+  document.getElementById('exportAllBtn').onclick = exportAllDocuments;
   document.getElementById('signOutBtn').onclick = () => signOutUser();
   document.getElementById('deleteAccountBtn').onclick = openDeleteAccountModal;
 
@@ -1975,6 +2002,9 @@ function renderVault(app){
   document.querySelectorAll('[data-share-doc]').forEach(el => {
     el.onclick = () => openShareModal(el.getAttribute('data-share-doc'));
   });
+  document.querySelectorAll('[data-renew-doc]').forEach(el => {
+    el.onclick = () => openRenewExpiredModal(el.getAttribute('data-renew-doc'));
+  });
   document.querySelectorAll('[data-menu-toggle]').forEach(el => {
     el.onclick = (e) => {
       e.stopPropagation();
@@ -2020,14 +2050,21 @@ function renderDocCard(d, opts){
   opts = opts || {};
   const meta = categoryFor(d.category);
   let expiryBadge = '';
+  let isExpired = false;
   if(d.expiry){
     const days = daysUntil(d.expiry);
-    const isExpired = days<0;
+    isExpired = days<0;
     const style = isExpired ? 'background:var(--danger-bg);color:var(--danger);' : days<=7 ? 'background:var(--danger-bg);color:var(--danger);' : days<=30 ? 'background:#f7edd9;color:#8a5a05;' : 'background:var(--success-bg);color:var(--success);';
     expiryBadge = `<span class="doc-expiry" style="${style}">${isExpired ? 'Expired' : 'Expires'} ${formatExpiryDate(d.expiry)}</span>`;
   }
   const activeShares = state.shares.filter(s => s.docId===d.id && !s.revoked && new Date(s.expiresAt)>new Date());
   const menuOpen = state.openActionMenu === d.id;
+  // Denormalized both directions (see confirmRenewExpired) so either end of the pair can show a
+  // note with no extra lookup beyond the already-loaded state.documents list.
+  const supersededByDoc = d.supersededBy ? state.documents.find(x => x.id === d.supersededBy) : null;
+  const supersedesDoc = d.supersedes ? state.documents.find(x => x.id === d.supersedes) : null;
+  const linkNote = supersededByDoc ? `<p class="doc-link-note">→ Replaced by ${escapeHtml(supersededByDoc.title)}</p>`
+    : supersedesDoc ? `<p class="doc-link-note">→ Replaces ${escapeHtml(supersedesDoc.title)}</p>` : '';
   return `
     <div class="doc-card ${d.archived ? 'is-archived' : ''}">
       <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" data-open-doc="${d.id}" role="button" aria-label="View ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
@@ -2036,9 +2073,11 @@ function renderDocCard(d, opts){
         <p class="doc-meta">${opts.showCategory ? `${escapeHtml(meta.label)} · ` : ''}Added ${formatDate(d.addedAt)}${activeShares.length ? ' · shared with '+activeShares.length : ''}${d.archived ? ' · archived' : ''}</p>
         ${d.snippet ? `<p class="doc-snippet">${d.snippet}</p>` : ''}
         ${expiryBadge}
+        ${linkNote}
         <div class="doc-actions">
           <button class="chip-btn" data-view-doc="${d.id}">View</button>
           <button class="chip-btn secondary" data-share-doc="${d.id}">Share</button>
+          ${isExpired && !d.archived ? `<button class="chip-btn danger" data-renew-doc="${d.id}">Renew</button>` : ''}
           <div class="action-menu-wrap">
             <button class="icon-only-btn small" data-menu-toggle="${d.id}" aria-label="More actions" aria-haspopup="true" aria-expanded="${menuOpen}">${icon('more',18)}</button>
             ${menuOpen ? `
@@ -2063,9 +2102,11 @@ function renderDocCard(d, opts){
 let pendingFile = null;
 let pendingOcrText = '';
 let pendingExpirySuggested = false;
+let pendingCategorySuggested = false;
+let categoryManuallyChanged = false;
 let pendingOcrRunning = false; // guards against saving before background OCR finishes
 
-function openAddModal(){ state.modal = 'add'; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+function openAddModal(){ state.modal = 'add'; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
 function closeModal(){
   goBackOneLayer();
 }
@@ -2208,6 +2249,7 @@ function renderModal(){
         <input type="text" id="docTitle" placeholder="e.g. Aadhaar card" />
         <label class="field-label">Category</label>
         <select id="docCategory">${categoryOptionsHtml()}</select>
+        <div class="suggest-note" id="categorySuggestNote" style="display:none;"></div>
         <label class="field-label">Expiry date (optional)</label>
         <input type="date" id="docExpiry" />
         <div class="suggest-note" id="expirySuggestNote" style="display:none;"></div>
@@ -2218,12 +2260,14 @@ function renderModal(){
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('fileDrop').onclick = () => document.getElementById('fileInput').click();
+    document.getElementById('docCategory').onchange = () => { categoryManuallyChanged = true; };
     document.getElementById('fileInput').onchange = async (e) => {
       const f = e.target.files[0];
       if(!f) return;
       pendingFile = f;
       pendingOcrText = '';
       pendingExpirySuggested = false;
+      pendingCategorySuggested = false;
       const drop = document.getElementById('fileDrop');
       drop.textContent = f.name; drop.classList.add('has-file');
       document.getElementById('pdfNote').style.display = f.type === 'application/pdf' ? 'block' : 'none';
@@ -2235,6 +2279,7 @@ function renderModal(){
         pendingOcrText = await runOcr(dataUrl, setOcrProgress);
         document.getElementById('ocrProgress').style.display = 'none';
         applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
+        applyCategorySuggestionIfUntouched('docCategory', 'categorySuggestNote', pendingOcrText);
         pendingOcrRunning = false;
         if(saveBtn) saveBtn.disabled = false;
       } else if(f.type === 'application/pdf'){
@@ -2244,6 +2289,7 @@ function renderModal(){
         try{
           pendingOcrText = await runOcrOnPdfFile(f, setOcrProgress);
           applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
+          applyCategorySuggestionIfUntouched('docCategory', 'categorySuggestNote', pendingOcrText);
         } catch(err){ console.error('PDF OCR failed', err); }
         document.getElementById('ocrProgress').style.display = 'none';
         pendingOcrRunning = false;
@@ -2267,6 +2313,8 @@ function renderModal(){
         <select id="editCategory">${categoryOptionsHtml(doc.category)}</select>
         <label class="field-label">Expiry date (optional)</label>
         <input type="date" id="editExpiry" value="${doc.expiry || ''}" />
+        <label class="field-label">Remind me (days before expiry, optional)</label>
+        <input type="text" id="editReminderDays" placeholder="e.g. 90, 30, 7 — leave blank for the default schedule" value="${(doc.reminderDays || []).join(', ')}" />
         <div class="error-text" id="editErr" style="display:none;"></div>
         <button class="primary" id="saveEditBtn">Save changes</button>
       </div>
@@ -2292,6 +2340,30 @@ function renderModal(){
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('cancelDelBtn').onclick = closeModal;
     document.getElementById('confirmDelBtn').onclick = confirmDeleteDocument;
+  }
+
+  if(state.modal === 'renewExpired'){
+    const doc = state.documents.find(d => d.id === state.renewDocId);
+    if(!doc){ state.modal = null; return; }
+    const otherActiveDocs = state.documents.filter(d => d.id !== doc.id && !d.archived);
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Archive "${escapeHtml(doc.title)}"?</h3>
+        <p class="sub">It stays in Vault for reference, just moved out of your active documents — nothing is deleted, and you can restore it anytime from "View archived" on the main screen.</p>
+        <label class="field-label">Replaced by (optional)</label>
+        <select id="renewReplacementSelect">
+          <option value="">— Not tracking a replacement —</option>
+          ${otherActiveDocs.map(d => `<option value="${d.id}">${escapeHtml(d.title)}</option>`).join('')}
+        </select>
+        <button class="danger-solid" id="confirmRenewBtn">Archive this document</button>
+        <button class="ghost" id="cancelRenewBtn">Cancel</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('cancelRenewBtn').onclick = closeModal;
+    document.getElementById('confirmRenewBtn').onclick = confirmRenewExpired;
   }
 
   if(state.modal === 'viewFile'){
@@ -2332,7 +2404,8 @@ function renderModal(){
         <label class="field-label">Document title</label>
         <input type="text" id="camTitle" placeholder="e.g. Electricity bill" />
         <label class="field-label">Category</label>
-        <select id="camCategory">${categoryOptionsHtml()}</select>
+        <select id="camCategory">${categoryOptionsHtml(pendingCamCategory)}</select>
+        <div class="suggest-note" id="camCategorySuggestNote" style="display:none;"></div>
         <label class="field-label">Expiry date (optional)</label>
         <input type="date" id="camExpiry" />
         <div class="suggest-note" id="camExpirySuggestNote" style="display:none;"></div>
@@ -2344,6 +2417,10 @@ function renderModal(){
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('captureBtn').onclick = capturePage;
     document.getElementById('saveCamBtn').onclick = saveCameraDocument;
+    document.getElementById('camCategory').onchange = () => {
+      categoryManuallyChanged = true;
+      pendingCamCategory = document.getElementById('camCategory').value;
+    };
     overlay.querySelectorAll('[data-remove-page]').forEach(btn => {
       btn.onclick = () => removeCapturedPage(+btn.getAttribute('data-remove-page'));
     });
@@ -2519,6 +2596,22 @@ function applyExpirySuggestionIfEmpty(inputId, noteId, ocrText){
   }
 }
 
+// A <select> always has SOME value (unlike the expiry input, which starts empty), so "should this
+// suggestion apply" can't be answered by checking the current value the way applyExpirySuggestion-
+// IfEmpty does — categoryManuallyChanged tracks whether the user has actually touched the dropdown
+// themselves since this modal opened, via the 'change' listener wired alongside this call.
+function applyCategorySuggestionIfUntouched(selectId, noteId, ocrText){
+  const select = document.getElementById(selectId);
+  const note = document.getElementById(noteId);
+  if(!select || pendingCategorySuggested || categoryManuallyChanged) return;
+  const guess = guessCategory(ocrText);
+  if(guess){
+    select.value = guess;
+    pendingCategorySuggested = true;
+    if(note){ note.textContent = "Category suggested from the scan — change it if that's not right."; note.style.display = 'block'; }
+  }
+}
+
 function setOcrProgress(pct, pageNum, total){
   const el = document.getElementById('ocrProgress');
   if(!el) return;
@@ -2594,6 +2687,11 @@ function readFileAsDataURL(file){
 /* ---------- camera capture ---------- */
 let pendingPageOcrTexts = []; // per-page OCR text, parallel to state.capturedPages — lets removing
                                // a page also cleanly drop just that page's text from pendingOcrText
+// Every capturePage() call rebuilds this modal's whole innerHTML (to show the new thumbnail),
+// which would otherwise silently reset the category <select> back to its default each time — this
+// tracks whatever's currently chosen (by suggestion or by hand) so the template below can restore
+// it across that rebuild instead of losing it.
+let pendingCamCategory = null;
 async function startCamera(){
   const video = document.getElementById('cameraVideo');
   if(state.cameraStream){
@@ -2621,7 +2719,7 @@ async function startCamera(){
 function stopCamera(){
   if(state.cameraStream){ state.cameraStream.getTracks().forEach(t=>t.stop()); state.cameraStream = null; }
 }
-function openCameraModal(){ state.modal = 'camera'; state.capturedPages = []; pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+function openCameraModal(){ state.modal = 'camera'; state.capturedPages = []; pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingCamCategory = null; pendingOcrRunning = false; pushAppHistoryState(); render(); }
 
 async function capturePage(){
   const video = document.getElementById('cameraVideo');
@@ -2646,6 +2744,12 @@ async function capturePage(){
   if(currentIndex !== -1) pendingPageOcrTexts[currentIndex] = pageText;
   pendingOcrText = pendingPageOcrTexts.join('\n').trim();
   applyExpirySuggestionIfEmpty('camExpiry', 'camExpirySuggestNote', pendingOcrText);
+  applyCategorySuggestionIfUntouched('camCategory', 'camCategorySuggestNote', pendingOcrText);
+  // Capture whatever's now selected — freshly suggested or already hand-picked — so the next
+  // capturePage() call's own renderModal() (see the top of this function) restores it instead of
+  // silently resetting the dropdown back to its default.
+  const camCategoryEl = document.getElementById('camCategory');
+  if(camCategoryEl) pendingCamCategory = camCategoryEl.value;
   pendingOcrRunning = false;
   const saveBtn = document.getElementById('saveCamBtn');
   if(saveBtn) saveBtn.disabled = false;
@@ -2706,12 +2810,23 @@ async function saveCameraDocument(){
 
 /* ---------- edit / view / archive / delete ---------- */
 function openEditModal(id){ state.modal = 'edit'; state.editDocId = id; pushAppHistoryState(); render(); }
+// Custom per-document reminder schedule (days-before-expiry), overriding the global milestone
+// list the Apps Script digest otherwise uses — e.g. a passport might warrant a 90-day heads-up,
+// not just the default 14. Blank means "use the default schedule", not "remind never".
+function parseReminderDaysInput(value){
+  if(!value || !value.trim()) return null;
+  const days = value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => Number.isFinite(n) && n >= -365 && n <= 365);
+  const unique = [...new Set(days)];
+  return unique.length ? unique : null;
+}
+
 async function saveEditedDocument(){
   const doc = state.documents.find(d => d.id === state.editDocId);
   if(!doc) return;
   const title = document.getElementById('editTitle').value.trim();
   const category = document.getElementById('editCategory').value;
   const expiry = document.getElementById('editExpiry').value;
+  const reminderDays = parseReminderDaysInput(document.getElementById('editReminderDays').value);
   const errEl = document.getElementById('editErr');
   const saveBtn = document.getElementById('saveEditBtn');
   if(!title){ errEl.textContent='Enter a document title.'; errEl.style.display='block'; return; }
@@ -2724,7 +2839,7 @@ async function saveEditedDocument(){
     if(newCat.id !== oldCat.id){
       await driveMoveFile(doc.driveFileId, oldCat.driveFolderId, newCat.driveFolderId);
     }
-    const updated = {...doc, title, category: newCat.id, expiry: expiry || null};
+    const updated = {...doc, title, category: newCat.id, expiry: expiry || null, reminderDays};
     await persistDocument(updated);
     Object.assign(doc, updated);
     closeModal();
@@ -2841,6 +2956,43 @@ async function toggleArchive(id){
   toast(doc.archived ? 'Archived' : 'Restored');
   try{ await userDoc().collection('documents').doc(id).update({archived: doc.archived}); }
   catch(e){ console.error('Failed to update archive state', e); }
+}
+
+// Guided path for retiring an expired document: archives it (same effect as the generic Archive
+// action) and, if the user points at whatever replaced it, records that link both directions —
+// supersededBy on the old doc, supersedes on the new one — so either card can show the connection
+// without an extra lookup. Kept as a distinct modal/flow (rather than just adding a picker to the
+// generic Archive action) because it's specifically prompted the moment a document is actually
+// overdue, which the buried ⋮ → Archive menu item never was.
+function openRenewExpiredModal(id){ state.modal = 'renewExpired'; state.renewDocId = id; pushAppHistoryState(); render(); }
+async function confirmRenewExpired(){
+  const doc = state.documents.find(d => d.id === state.renewDocId);
+  if(!doc) return;
+  const replacementId = document.getElementById('renewReplacementSelect').value || null;
+  const replacementDoc = replacementId ? state.documents.find(d => d.id === replacementId) : null;
+  const btn = document.getElementById('confirmRenewBtn');
+  if(btn){ btn.disabled = true; btn.textContent = 'Archiving…'; }
+  const previousArchived = doc.archived, previousSupersededBy = doc.supersededBy || null;
+  const previousSupersedes = replacementDoc ? (replacementDoc.supersedes || null) : null;
+  doc.archived = true;
+  if(replacementDoc){ doc.supersededBy = replacementDoc.id; replacementDoc.supersedes = doc.id; }
+  try{
+    const batch = db.batch();
+    batch.update(userDoc().collection('documents').doc(doc.id), replacementDoc
+      ? {archived: true, supersededBy: replacementDoc.id}
+      : {archived: true});
+    if(replacementDoc) batch.update(userDoc().collection('documents').doc(replacementDoc.id), {supersedes: doc.id});
+    await batch.commit();
+    closeModal();
+    toast('Archived');
+  } catch(e){
+    console.error('Failed to archive with renewal link', e);
+    doc.archived = previousArchived; doc.supersededBy = previousSupersededBy;
+    if(replacementDoc) replacementDoc.supersedes = previousSupersedes;
+    render();
+    if(btn){ btn.disabled = false; btn.textContent = 'Archive this document'; }
+    toast(friendlyCloudError(e));
+  }
 }
 
 async function togglePin(id){
@@ -3083,6 +3235,58 @@ function exportDocumentListCsv(){
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
   toast('Exported document list');
+}
+
+// A single portable copy of everything — active and archived alike, since the point of a backup
+// is completeness, not just what's currently in view — zipped client-side (JSZip) rather than
+// triggering one download per file, which browsers commonly throttle or block outright past a
+// handful in quick succession. One bad/unreachable file is skipped, not fatal to the rest.
+async function exportAllDocuments(){
+  if(!state.documents.length){ toast('No documents to export'); return; }
+  const btn = document.getElementById('exportAllBtn');
+  const statusEl = document.getElementById('exportAllStatus');
+  if(btn) btn.disabled = true;
+  const zip = new JSZip();
+  const usedNames = new Set();
+  let done = 0, failed = 0;
+  for(const doc of state.documents){
+    if(statusEl) statusEl.textContent = `Fetching ${done + failed + 1} of ${state.documents.length}…`;
+    try{
+      const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
+      const blob = await res.blob();
+      let name = safeFilename(doc.title, doc.mimeType);
+      if(usedNames.has(name)){
+        // Two documents can share a title (or the same sanitized filename) — number the later one
+        // rather than letting JSZip silently fold them into a single entry.
+        const dot = name.lastIndexOf('.');
+        let i = 2, candidate;
+        do{ candidate = dot === -1 ? `${name} (${i})` : `${name.slice(0,dot)} (${i})${name.slice(dot)}`; i++; } while(usedNames.has(candidate));
+        name = candidate;
+      }
+      usedNames.add(name);
+      zip.file(name, blob);
+      done++;
+    } catch(e){
+      console.error('Export: could not fetch ' + doc.title, e);
+      failed++;
+    }
+  }
+  if(!done){
+    if(btn) btn.disabled = false;
+    if(statusEl) statusEl.textContent = '';
+    toast("Couldn't fetch any documents — check your connection and try again.");
+    return;
+  }
+  if(statusEl) statusEl.textContent = 'Building zip…';
+  const content = await zip.generateAsync({type: 'blob'});
+  const url = URL.createObjectURL(content);
+  const a = document.createElement('a');
+  a.href = url; a.download = `vault-export-${new Date().toISOString().slice(0,10)}.zip`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  if(btn) btn.disabled = false;
+  if(statusEl) statusEl.textContent = '';
+  toast(failed ? `Exported ${done} of ${state.documents.length} — ${failed} couldn't be fetched` : `Exported ${done} document${done===1?'':'s'}`);
 }
 
 /* ---------- sign out / delete account ---------- */
