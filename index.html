@@ -21,6 +21,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js"></script>
 <script src="https://accounts.google.com/gsi/client"></script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap">
 <style>
@@ -141,6 +142,7 @@
   .icon-btn{border:1px solid var(--line);background:var(--paper-2);border-radius:var(--radius-sm);padding:6px 10px;font-size:11.5px;cursor:pointer;color:var(--ink);}
   svg.icon{flex:none;display:block;}
   .icon-btn.danger{color:var(--danger);border-color:var(--danger-bg);}
+  .icon-btn:disabled{opacity:0.5;cursor:default;}
   .icon-only-btn{background:none;border:none;font-size:20px;cursor:pointer;color:var(--ink);padding:8px;line-height:1;border-radius:50%;display:flex;align-items:center;justify-content:center;}
   .icon-only-btn:hover{background:var(--surface-container);}
   .icon-only-btn.small{width:40px;height:40px;padding:0;}
@@ -291,6 +293,9 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
+// Public VAPID key for Web Push (Firebase Console > Project settings > Cloud Messaging > Web Push
+// certificates). Not a secret — same exposure level as firebaseConfig.apiKey above.
+const FCM_VAPID_KEY = 'BN2rOcWAxDeqds9LlGU--0buUzdWu0wABgZD3OvAdrh8Pr911CxG83DKRSWFjq2lgDppPyMuRlhRM9CjtQNP4fA';
 
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('sw.js').catch(e => console.error('Service worker registration failed', e));
@@ -399,7 +404,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 13:08';
+const APP_VERSION = '2026.09.04 · 14:47';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -511,7 +516,7 @@ const state = {
   openActionMenu: null, // doc id whose card's ⋮ overflow menu is currently open, or null
   offlineDocIds: new Set(), // doc ids with a file blob cached in IndexedDB for offline viewing
   isOfflineMode: false, // true when the vault opened with no Drive/Firestore connection at all
-  reminderSettings: {emailDigestEnabled: false} // loaded in loadUserData(), see meta/reminderSettings
+  reminderSettings: {emailDigestEnabled: false, pushEnabled: false} // loaded in loadUserData(), see meta/reminderSettings
 };
 
 function categoryFor(id){
@@ -819,6 +824,139 @@ async function toggleEmailDigest(){
   }
 }
 
+function isPushSupported(){
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+function isPushEnabled(){
+  return !!(state.reminderSettings && state.reminderSettings.pushEnabled);
+}
+// Browsers never re-prompt once denied — requestPermission() just resolves 'denied' immediately
+// with no UI, so this state has to be reflected distinctly rather than left to look like a dead
+// button click.
+function isPushDenied(){
+  return isPushSupported() && Notification.permission === 'denied';
+}
+
+// Guarded, lazy getter rather than an unconditional `firebase.messaging()` call at startup like
+// auth/db above — unlike those, the Messaging SDK can throw on unsupported browsers (old Safari,
+// some WebViews, Firefox private browsing), and since this whole file's code runs in one top-level
+// script block, an uncaught throw here would break the entire app, not just push.
+async function getMessagingIfSupported(){
+  try{
+    if(!isPushSupported()) return null;
+    if(firebase.messaging && firebase.messaging.isSupported && !(await firebase.messaging.isSupported())) return null;
+    return firebase.messaging();
+  } catch(e){
+    console.error('Firebase Messaging unavailable', e);
+    return null;
+  }
+}
+
+async function togglePushNotifications(){
+  if(!isPushSupported()){ toast("Push notifications aren't supported in this browser."); return; }
+
+  if(isPushEnabled()){
+    // Turning OFF — no permission dance needed, mirrors toggleEmailDigest's delete branch exactly.
+    const previous = state.reminderSettings;
+    state.reminderSettings = {...state.reminderSettings, pushEnabled: false, updatedAt: new Date().toISOString()};
+    render();
+    toast('Push notifications turned off');
+    try{
+      const batch = db.batch();
+      batch.set(userDoc().collection('meta').doc('reminderSettings'), state.reminderSettings, {merge: true});
+      batch.delete(db.collection('pushSubscribers').doc(state.user.uid));
+      await batch.commit();
+    } catch(e){
+      console.error('Failed to turn off push notifications', e);
+      state.reminderSettings = previous;
+      render();
+      toast(friendlyCloudError(e));
+    }
+    return;
+  }
+
+  if(Notification.permission === 'denied'){
+    toast('Notifications are blocked for Vault in your browser settings.');
+    return;
+  }
+
+  // Must be the first await in this branch — a direct, synchronous-until-here result of the click,
+  // which is what satisfies the browser's user-gesture requirement for requestPermission().
+  let permission;
+  try{
+    permission = await Notification.requestPermission();
+  } catch(e){
+    console.error('Notification permission request failed', e);
+    toast('Could not request notification permission.');
+    return;
+  }
+  if(permission !== 'granted'){
+    toast(permission === 'denied' ? "Notifications blocked — you can turn this on later from your browser's site settings." : 'Notification permission was dismissed.');
+    render();
+    return;
+  }
+
+  const messaging = await getMessagingIfSupported();
+  if(!messaging){ toast('Push notifications are unavailable in this browser.'); return; }
+
+  let token;
+  try{
+    const registration = await navigator.serviceWorker.ready; // already registered above
+    token = await messaging.getToken({vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: registration});
+    if(!token) throw new Error('No registration token returned');
+  } catch(e){
+    console.error('Failed to obtain FCM token', e);
+    toast('Could not set up push notifications — try again.');
+    return;
+  }
+
+  const previous = state.reminderSettings;
+  state.reminderSettings = {...state.reminderSettings, pushEnabled: true, updatedAt: new Date().toISOString()};
+  render();
+  toast('Push notifications turned on');
+  try{
+    const batch = db.batch();
+    batch.set(userDoc().collection('meta').doc('reminderSettings'), state.reminderSettings, {merge: true});
+    // Keyed by uid, not by device — enabling push on a second device silently overwrites this
+    // token. Fine for now: nobody's asked for multi-device support, and the fix (a token
+    // subcollection) isn't worth the added complexity until someone does.
+    batch.set(db.collection('pushSubscribers').doc(state.user.uid), {token, updatedAt: state.reminderSettings.updatedAt});
+    await batch.commit();
+  } catch(e){
+    console.error('Failed to save push subscription', e);
+    state.reminderSettings = previous;
+    render();
+    toast(friendlyCloudError(e));
+  }
+}
+
+// Runs once per sign-in (called from loadUserData()), fire-and-forget. The modern Messaging SDK
+// has no onTokenRefresh event any more — re-fetching on load and treating the result as
+// authoritative is the documented way to pick up a rotated token. Also reconciles the reverse
+// case: if push is supposed to be on but permission was since revoked (or the browser no longer
+// qualifies), silently turn it back off so the backend stops retrying a subscription that can
+// never work, rather than leaving state.reminderSettings claiming otherwise.
+async function syncPushSubscriptionIfNeeded(){
+  if(!isPushEnabled()) return;
+  if(!isPushSupported() || Notification.permission !== 'granted'){
+    try{
+      const batch = db.batch();
+      batch.set(userDoc().collection('meta').doc('reminderSettings'), {pushEnabled: false, updatedAt: new Date().toISOString()}, {merge: true});
+      batch.delete(db.collection('pushSubscribers').doc(state.user.uid));
+      await batch.commit();
+      state.reminderSettings.pushEnabled = false;
+    } catch(e){ console.error('Failed to reconcile stale push subscription', e); }
+    return;
+  }
+  const messaging = await getMessagingIfSupported();
+  if(!messaging) return;
+  try{
+    const registration = await navigator.serviceWorker.ready;
+    const token = await messaging.getToken({vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: registration});
+    if(token) await db.collection('pushSubscribers').doc(state.user.uid).set({token, updatedAt: new Date().toISOString()}, {merge: true});
+  } catch(e){ console.error('Failed to refresh push token', e); }
+}
+
 /* ---------- Google Drive ---------- */
 function driveTokenValid(){ return !!(state.driveAccessToken && state.driveTokenExpiresAt && Date.now() < state.driveTokenExpiresAt); }
 
@@ -1081,7 +1219,8 @@ async function loadUserData(){
     const sharesSnap = await userDoc().collection('shares').get();
     state.shares = sharesSnap.docs.map(d => ({id: d.id, ...d.data()}));
     const reminderSnap = await userDoc().collection('meta').doc('reminderSettings').get();
-    state.reminderSettings = reminderSnap.exists ? reminderSnap.data() : {emailDigestEnabled: false};
+    state.reminderSettings = reminderSnap.exists ? reminderSnap.data() : {emailDigestEnabled: false, pushEnabled: false};
+    syncPushSubscriptionIfNeeded(); // fire-and-forget — never delays the vault's own load
   } catch(e){
     console.error('Could not load vault data from the cloud', e);
     toast('Could not load your vault — check your connection and try again.');
@@ -1435,6 +1574,16 @@ function renderSettings(app){
           <span>Daily email digest of documents expiring soon</span>
           <button class="icon-btn${isEmailDigestEnabled() ? ' danger' : ''}" id="toggleEmailDigestBtn">${isEmailDigestEnabled() ? 'Turn off' : 'Turn on'}</button>
         </div>
+        <div class="settings-row">
+          <span>Push notifications for documents expiring soon</span>
+          ${!isPushSupported() ? `
+            <button class="icon-btn" disabled>Not supported</button>
+          ` : isPushDenied() ? `
+            <button class="icon-btn" disabled title="Blocked — enable notifications for Vault in your browser's site settings">Blocked</button>
+          ` : `
+            <button class="icon-btn${isPushEnabled() ? ' danger' : ''}" id="togglePushBtn">${isPushEnabled() ? 'Turn off' : 'Turn on'}</button>
+          `}
+        </div>
       </div>
 
       <div class="settings-section">
@@ -1508,6 +1657,8 @@ function renderSettings(app){
   };
 
   document.getElementById('toggleEmailDigestBtn').onclick = toggleEmailDigest;
+  const togglePushBtn = document.getElementById('togglePushBtn');
+  if(togglePushBtn) togglePushBtn.onclick = togglePushNotifications;
 
   document.getElementById('addCategoryBtn').onclick = openAddCategoryModal;
   document.querySelectorAll('[data-rename-cat]').forEach(btn => {

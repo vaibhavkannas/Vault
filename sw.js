@@ -1,3 +1,40 @@
+// Push notifications (FCM). A service worker has no shared scope with index.html, so the SDK and
+// firebaseConfig have to be loaded/duplicated here independently rather than imported — these are
+// the same literal values as index.html's own firebaseConfig, none of them secret.
+importScripts('https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js');
+firebase.initializeApp({
+  apiKey: "AIzaSyC9zVPWgTekPiDUDn1YcLDInHBFRRUgW9w",
+  authDomain: "elite-vault-7b00a.firebaseapp.com",
+  projectId: "elite-vault-7b00a",
+  storageBucket: "elite-vault-7b00a.firebasestorage.app",
+  messagingSenderId: "713625816347",
+  appId: "1:713625816347:web:72d45d04fbb9e6944c97be"
+});
+const messaging = firebase.messaging();
+
+messaging.onBackgroundMessage((payload) => {
+  const title = (payload.notification && payload.notification.title) || 'Vault';
+  self.registration.showNotification(title, {
+    body: payload.notification && payload.notification.body,
+    icon: './icon.svg',
+    badge: './icon.svg',
+    data: payload.data || {}
+  });
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({type: 'window', includeUncontrolled: true}).then((clientList) => {
+      for(const client of clientList){
+        if(client.url.startsWith(self.location.origin) && 'focus' in client) return client.focus();
+      }
+      if(self.clients.openWindow) return self.clients.openWindow('./');
+    })
+  );
+});
+
 // Caches the app shell (this page and the pinned-version library scripts it loads) so the app can
 // still open with no connection at all — not just survive a connection drop mid-session. Without
 // this, a document already cached for offline viewing (see index.html's offline document cache)
@@ -10,7 +47,7 @@
 // index.html/manifest.json/icon.svg themselves don't need a bump for ordinary content edits:
 // they're fetched network-first below, so the live copy always wins whenever a connection is
 // available — the cached copy is only ever a fallback for when it isn't.
-const CACHE_VERSION = '1';
+const CACHE_VERSION = '2';
 const SHELL_CACHE = 'vault-shell-v' + CACHE_VERSION;
 
 // Same-origin, could change between deploys — always prefer a live fetch.
@@ -26,6 +63,7 @@ const CACHE_FIRST_URLS = [
   'https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js',
   'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js',
   'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js',
+  'https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js',
   'https://accounts.google.com/gsi/client',
   'https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap'
 ];
