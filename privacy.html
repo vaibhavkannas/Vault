@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy — Vault</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#1a73e8">
+<script>
+  // Matches index.html's own pre-paint theme script, so opening this page from the app (which may
+  // already be in dark mode) doesn't flash a plain white page.
+  try{
+    const saved = localStorage.getItem('vault-theme');
+    if(saved === 'dark' || saved === 'light') document.documentElement.setAttribute('data-theme', saved);
+  } catch(e){}
+</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap">
+<style>
+  :root{
+    --ink:#1f1f1f;
+    --ink-soft:#5f6368;
+    --paper:#ffffff;
+    --brass:#1a73e8;
+    --line:#dadce0;
+    --surface-container:#f1f3f4;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#e3e3e3; --ink-soft:#c4c7c5; --paper:#131314; --brass:#a8c7fa; --line:#444746; --surface-container:#282a2c;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink:#e3e3e3; --ink-soft:#c4c7c5; --paper:#131314; --brass:#a8c7fa; --line:#444746; --surface-container:#282a2c;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:'Roboto',-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;line-height:1.6;}
+  .wrap{max-width:680px;margin:0 auto;padding:40px 20px 80px;}
+  a{color:var(--brass);}
+  h1{font-size:26px;margin:0 0 6px;}
+  .updated{color:var(--ink-soft);font-size:13.5px;margin:0 0 32px;}
+  h2{font-size:17px;margin:32px 0 10px;}
+  p, li{font-size:14.5px;color:var(--ink);}
+  ul{padding-left:20px;margin:10px 0;}
+  li{margin-bottom:6px;}
+  .back-link{display:inline-block;margin-bottom:24px;font-size:14px;text-decoration:none;}
+  .card{background:var(--surface-container);border-radius:12px;padding:16px 18px;margin:16px 0;}
+  .card p{margin:0;font-size:13.5px;color:var(--ink-soft);}
+  footer{margin-top:48px;padding-top:20px;border-top:1px solid var(--line);font-size:13px;color:var(--ink-soft);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back-link" href="./index.html">← Back to Vault</a>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: September 4, 2026</p>
+
+  <p>Vault is a personal document storage app. This page explains what data it accesses, where it's stored, and how you're in control of it.</p>
+
+  <h2>What Vault accesses, and why</h2>
+  <ul>
+    <li><strong>Your basic Google profile</strong> (name, email address, profile photo) — used only to identify you within the app and show your account in the interface.</li>
+    <li><strong>Files and folders Vault itself creates in your Google Drive</strong> (the <code>drive.file</code> scope) — Vault can only see and manage the "Vault" folder and files it creates there. It cannot see, list, or modify any other file in your Drive.</li>
+    <li><strong>Your overall Drive storage quota</strong> (the <code>drive.metadata.readonly</code> scope, read-only) — used only to show the storage-usage bar in Settings. This does not let Vault see the names or contents of your other files.</li>
+  </ul>
+
+  <div class="card"><p>Vault never requests access to your full Google Drive, Gmail, contacts, or any other Google data beyond what's listed above.</p></div>
+
+  <h2>Where your data lives</h2>
+  <ul>
+    <li><strong>Your actual documents</strong> (photos, scans, PDFs) are stored as ordinary files in your own Google Drive, under the "Vault" folder Vault creates there. They are never copied to any other server.</li>
+    <li><strong>Document details</strong> (titles, categories, expiry dates, and similar metadata — not the files themselves) are stored in Google Cloud Firestore, under an account record tied to your unique Google user ID.</li>
+    <li><strong>Persistent Drive access</strong>: so you don't have to re-approve access every time you open Vault, a Drive refresh token is stored server-side in a Google Apps Script project, associated with your account ID. This runs entirely on Google's own infrastructure and is never shared with any other party.</li>
+    <li><strong>Text recognition (OCR)</strong>, used to help fill in details automatically when you add a document, runs entirely inside your browser using open-source software. Your document images are never uploaded to any OCR or AI service.</li>
+  </ul>
+
+  <h2>What Vault does not do</h2>
+  <ul>
+    <li>No analytics, tracking, or advertising of any kind.</li>
+    <li>No selling, renting, or sharing of your data with third parties.</li>
+    <li>No human ever reviews your documents.</li>
+  </ul>
+
+  <h2>Sharing a document</h2>
+  <p>Vault has an optional feature to create a shareable link for a specific document. This record is stored under your own account and exists only so you can choose to share access to that one document — it doesn't grant anyone broader access to your Vault.</p>
+
+  <h2>Your controls</h2>
+  <ul>
+    <li><strong>Sign out</strong> any time from the Settings screen.</li>
+    <li><strong>Revoke Drive access</strong> any time from your Google Account's <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">third-party access page</a> — this immediately invalidates Vault's stored access.</li>
+    <li><strong>Delete everything</strong> — Settings includes a permanent delete option that removes all of your document records, your Vault folder in Drive, and your account, in one step.</li>
+  </ul>
+
+  <h2>Children's privacy</h2>
+  <p>Vault is not directed at children and does not knowingly collect data from children.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>If this policy changes, the "last updated" date above will change too. Continued use of Vault after an update means you accept the revised policy.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy or your data can be sent to <a href="mailto:vaibhavkanna1997@gmail.com">vaibhavkanna1997@gmail.com</a>.</p>
+
+  <footer>Vault — your documents, organized in your own Google Drive.</footer>
+</div>
+</body>
+</html>

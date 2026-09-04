@@ -81,6 +81,7 @@
   .google-btn:active{transform:scale(0.98);}
   .gicon{width:18px;height:18px;flex:none;}
   .demo-note{margin-top:16px;font-size:11.5px;color:var(--ink-soft);background:var(--surface-container);border-radius:12px;padding:10px 12px;text-align:left;line-height:1.5;}
+  .privacy-link{display:block;margin-top:14px;font-size:12px;color:var(--ink-soft);text-decoration:underline;}
 
   input[type="text"], input[type="date"], select, textarea{width:100%;padding:12px 14px;border:1px solid transparent;border-radius:var(--radius-sm);background:var(--surface-container);font-size:14px;color:var(--ink);margin-bottom:12px;font-family:inherit;}
   input[type="text"]:focus, input[type="date"]:focus, select:focus, textarea:focus{outline:2px solid var(--brass);outline-offset:-1px;}
@@ -396,7 +397,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 07:34';
+const APP_VERSION = '2026.09.04 · 07:48';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -980,6 +981,7 @@ function renderLogin(app){
       <div class="error-text" id="loginErr" style="display:none;"></div>
       ${isStandalonePwa() ? `<div class="demo-note">Signing in from the installed app but stuck? Open this site in your regular browser and sign in there once — the installed app will pick up the same sign-in automatically the next time you open it.</div>` : ''}
       <div class="demo-note">Your documents are stored as regular files in your own Google Drive, under a "Vault" folder, and organized by category. This app can only see the files and folders it creates there.</div>
+      <a class="privacy-link" href="./privacy.html" target="_blank" rel="noopener">Privacy Policy</a>
       <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
   `;
