@@ -128,7 +128,9 @@
   .doc-icon{width:44px;height:44px;border-radius:50%;background:var(--primary-container);color:var(--on-primary-container);display:flex;align-items:center;justify-content:center;flex:none;position:relative;cursor:pointer;}
   .doc-icon.ocr-badge::after{content:'';position:absolute;bottom:-1px;right:-1px;width:10px;height:10px;border-radius:50%;background:var(--success);border:2px solid var(--paper-2);}
   .doc-body{flex:1;min-width:0;}
-  .doc-title{font-weight:400;font-size:15px;margin:0 0 2px;}
+  .doc-title{font-weight:400;font-size:15px;margin:0 0 2px;cursor:pointer;}
+  .offline-badge{display:inline-flex;vertical-align:middle;color:var(--success);margin-left:4px;}
+  .offline-badge svg{display:block;}
   .doc-meta{font-size:12px;color:var(--ink-soft);margin:0;}
   .doc-snippet{font-size:12px;color:var(--ink-soft);margin:4px 0 0;background:var(--surface-container);padding:6px 9px;border-radius:8px;}
   .doc-snippet mark{background:var(--primary-container);color:var(--on-primary-container);padding:0 1px;border-radius:2px;}
@@ -397,7 +399,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 07:48';
+const APP_VERSION = '2026.09.04 · 09:08';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -506,7 +508,8 @@ const state = {
   showArchived: false,
   cameraStream: null,
   capturedPages: [],  // dataURLs from camera, before combining
-  openActionMenu: null // doc id whose card's ⋮ overflow menu is currently open, or null
+  openActionMenu: null, // doc id whose card's ⋮ overflow menu is currently open, or null
+  offlineDocIds: new Set() // doc ids with a file blob cached in IndexedDB for offline viewing
 };
 
 function categoryFor(id){
@@ -819,6 +822,76 @@ async function provisionVault(){
   state.categories = categories;
 }
 
+/* ---------- offline document cache ----------
+   Keeps a copy of a document's file blob in IndexedDB the moment it's successfully viewed, so
+   opening it again later works even with no connection. Deliberately scoped to file content only,
+   not the document list itself — the list still comes from Firestore, which this app doesn't
+   configure for offline persistence, so a fully-offline cold load isn't in scope here. */
+const OFFLINE_DB_NAME = 'vault-offline-cache';
+const OFFLINE_STORE = 'files';
+function openOfflineDb(){
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(OFFLINE_DB_NAME, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore(OFFLINE_STORE); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function cacheDocumentOffline(id, blob, mimeType){
+  try{
+    const db = await openOfflineDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(OFFLINE_STORE, 'readwrite');
+      tx.objectStore(OFFLINE_STORE).put({blob, mimeType}, id);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    state.offlineDocIds.add(id);
+  } catch(e){ console.warn('Could not cache document for offline viewing', e); }
+}
+async function getOfflineDocument(id){
+  try{
+    const db = await openOfflineDb();
+    return await new Promise((resolve, reject) => {
+      const req = db.transaction(OFFLINE_STORE, 'readonly').objectStore(OFFLINE_STORE).get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch(e){ console.warn('Could not read the offline document cache', e); return null; }
+}
+async function removeOfflineDocument(id){
+  state.offlineDocIds.delete(id);
+  try{
+    const db = await openOfflineDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(OFFLINE_STORE, 'readwrite');
+      tx.objectStore(OFFLINE_STORE).delete(id);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch(e){ console.warn('Could not remove an offline document cache entry', e); }
+}
+// Populates state.offlineDocIds from whatever's already cached, so cards can show the offline
+// badge immediately on load rather than only after the user re-views each document this session.
+async function loadOfflineDocIds(){
+  try{
+    const db = await openOfflineDb();
+    const ids = await new Promise((resolve, reject) => {
+      const req = db.transaction(OFFLINE_STORE, 'readonly').objectStore(OFFLINE_STORE).getAllKeys();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    state.offlineDocIds = new Set(ids);
+  } catch(e){
+    console.warn('Could not list offline-cached documents', e);
+    state.offlineDocIds = new Set();
+  }
+}
+function clearOfflineCache(){
+  state.offlineDocIds = new Set();
+  try{ indexedDB.deleteDatabase(OFFLINE_DB_NAME); } catch(e){ console.warn('Could not clear the offline document cache', e); }
+}
+
 // Loads everything for the signed-in account. Called right after sign-in once state.user.uid
 // and a valid Drive token are both ready — provisioning a brand-new account needs Drive access.
 async function loadUserData(){
@@ -850,6 +923,7 @@ async function loadUserData(){
     console.error('Could not load vault data from the cloud', e);
     toast('Could not load your vault — check your connection and try again.');
   }
+  await loadOfflineDocIds();
 }
 
 async function persistDocument(doc){
@@ -1316,10 +1390,12 @@ function renderVault(app){
 
   filtered.forEach(d => {
     const v = document.getElementById('view-'+d.id), s = document.getElementById('share-'+d.id),
-          m = document.getElementById('menu-'+d.id), ic = document.getElementById('docicon-'+d.id);
+          m = document.getElementById('menu-'+d.id), ic = document.getElementById('docicon-'+d.id),
+          t = document.getElementById('doctitle-'+d.id);
     if(v) v.onclick = () => viewDocument(d.id);
     if(s) s.onclick = () => openShareModal(d.id);
     if(ic) ic.onclick = () => viewDocument(d.id);
+    if(t) t.onclick = () => viewDocument(d.id);
     if(m) m.onclick = (e) => {
       e.stopPropagation();
       state.openActionMenu = state.openActionMenu === d.id ? null : d.id;
@@ -1372,7 +1448,7 @@ function renderDocCard(d){
     <div class="doc-card ${d.archived ? 'is-archived' : ''}">
       <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" id="docicon-${d.id}" role="button" aria-label="View ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
       <div class="doc-body">
-        <p class="doc-title">${escapeHtml(d.title)}</p>
+        <p class="doc-title" id="doctitle-${d.id}" role="button">${escapeHtml(d.title)}${state.offlineDocIds.has(d.id) ? `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>` : ''}</p>
         <p class="doc-meta">Added ${formatDate(d.addedAt)}${activeShares.length ? ' · shared with '+activeShares.length : ''}${d.archived ? ' · archived' : ''}</p>
         ${d.snippet ? `<p class="doc-snippet">${d.snippet}</p>` : ''}
         ${expiryBadge}
@@ -1525,6 +1601,9 @@ function renderModal(){
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('downloadFromViewBtn').onclick = () => downloadDocument(doc.id);
+    // Tapping the dimmed backdrop closes the viewer, same as the × button — scoped to just this
+    // modal (not add/edit/camera forms, where a stray tap outside would risk losing input).
+    overlay.onclick = (e) => { if(e.target === overlay) closeModal(); };
   }
 
   if(state.modal === 'camera'){
@@ -1907,19 +1986,30 @@ async function viewDocument(id){
     // Closed/navigated away before the fetch resolved — nothing to fill in, and no stale blob
     // URL to leave dangling.
     if(state.modal !== 'viewFile' || state.viewDocId !== id) return;
-    const url = URL.createObjectURL(blob);
-    state.viewObjectUrl = url;
-    const contentEl = document.getElementById('viewFileContent');
-    if(!contentEl) return;
-    if(doc.mimeType === 'application/pdf'){
-      await renderPdfInto(contentEl, blob, id);
-    } else {
-      contentEl.innerHTML = `<img src="${url}" alt="${escapeHtml(doc.title)}" style="max-width:100%;border-radius:8px;display:block;margin:0 auto;">`;
-    }
+    await renderViewedBlob(blob, doc, id);
+    cacheDocumentOffline(id, blob, doc.mimeType); // fire-and-forget — never blocks showing the doc
   } catch(e){
-    console.error('View failed', e);
+    console.error('View failed, checking the offline cache', e);
+    const cached = await getOfflineDocument(id);
+    if(cached && state.modal === 'viewFile' && state.viewDocId === id){
+      await renderViewedBlob(cached.blob, doc, id);
+      toast('Showing the offline copy — you may be disconnected');
+      return;
+    }
     const contentEl = document.getElementById('viewFileContent');
     if(contentEl) contentEl.innerHTML = `<p class="error-text">${escapeHtml(friendlyCloudError(e))}</p>`;
+  }
+}
+
+async function renderViewedBlob(blob, doc, id){
+  const url = URL.createObjectURL(blob);
+  state.viewObjectUrl = url;
+  const contentEl = document.getElementById('viewFileContent');
+  if(!contentEl) return;
+  if(doc.mimeType === 'application/pdf'){
+    await renderPdfInto(contentEl, blob, id);
+  } else {
+    contentEl.innerHTML = `<img src="${url}" alt="${escapeHtml(doc.title)}" style="max-width:100%;border-radius:8px;display:block;margin:0 auto;">`;
   }
 }
 
@@ -1989,6 +2079,7 @@ async function confirmDeleteDocument(){
   state.shares = state.shares.filter(s => s.docId !== id);
   closeModal();
   toast('Document deleted');
+  removeOfflineDocument(id);
   try{
     await userDoc().collection('documents').doc(id).delete();
     for(const s of removedShares) await userDoc().collection('shares').doc(s.id).delete();
@@ -2223,6 +2314,7 @@ async function deleteEverything(){
     }
     await auth.currentUser.delete();
     toast('Account and vault deleted');
+    clearOfflineCache();
     resetToLoggedOutState();
     render();
     armExitGuardIfIdle();
