@@ -405,7 +405,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 15:40';
+const APP_VERSION = '2026.09.04 · 15:56';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -774,6 +774,11 @@ function turnOffAppLock(){
 let appLockUnlockedThisLoad = false;
 let appLockHiddenAt = null;
 const APP_LOCK_GRACE_MS = 2*60*1000;
+// Guards the auto-biometric attempt in renderLocked() so a re-render while still locked (e.g. the
+// visibilitychange listener below calling render() again) doesn't re-fire the OS biometric prompt
+// on top of itself. Reset in markAppUnlocked() so the next time the app actually locks, it tries
+// biometric fresh again.
+let bioAutoAttemptedThisLock = false;
 function isAppLockDue(){
   if(!isAppLockEnabled()) return false;
   if(!appLockUnlockedThisLoad) return true;
@@ -782,6 +787,7 @@ function isAppLockDue(){
 function markAppUnlocked(){
   appLockUnlockedThisLoad = true;
   appLockHiddenAt = null;
+  bioAutoAttemptedThisLock = false;
   render();
 }
 document.addEventListener('visibilitychange', () => {
@@ -1229,6 +1235,17 @@ async function loadUserData(){
   await loadOfflineDocIds();
 }
 
+// Every category starts collapsed at the start of each vault session (fresh sign-in, reconnect,
+// silent session restore, or offline open) — called at those specific moments, not from inside
+// loadUserData() itself, since that's shared by two mid-session reconnect paths (reconnectDrive(),
+// the background online-recovery check) where the user may have already deliberately expanded
+// something and a reset would be surprising. Pinned has no collapse mechanism and is unaffected.
+function collapseAllCategories(){
+  const next = {};
+  state.categories.forEach(c => { next[c.id] = true; });
+  state.collapsedCats = next;
+}
+
 async function persistDocument(doc){
   await userDoc().collection('documents').doc(doc.id).set(doc);
 }
@@ -1388,7 +1405,7 @@ function renderLocked(app){
     <div class="login-screen">
       <div class="seal">${brandMarkSvg(50)}</div>
       <h1>Vault Locked</h1>
-      <p>${hasBio ? 'Use biometric unlock, or enter your PIN.' : 'Enter your PIN to continue.'}</p>
+      <p>${hasBio ? 'Verifying with biometric unlock…' : 'Enter your PIN to continue.'}</p>
       ${hasBio ? `<button class="google-btn" id="bioUnlockBtn">${icon('shield',20)} Unlock with biometric</button>` : ''}
       <input type="password" inputmode="numeric" pattern="[0-9]*" id="lockPinInput" placeholder="PIN" maxlength="8" style="text-align:center;font-size:22px;letter-spacing:8px;width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);margin-top:10px;background:var(--paper);color:var(--ink);" />
       <div class="error-text" id="lockErr" style="display:none;"></div>
@@ -1406,12 +1423,22 @@ function renderLocked(app){
   document.getElementById('lockUnlockBtn').onclick = tryPin;
   pinInput.onkeydown = (e) => { if(e.key === 'Enter') tryPin(); };
   pinInput.focus();
-  const bioBtn = document.getElementById('bioUnlockBtn');
-  if(bioBtn) bioBtn.onclick = async () => {
+  const attemptBio = async () => {
     const ok = await verifyBiometricUnlock();
     if(ok) markAppUnlocked();
     else { errEl.textContent = "Biometric unlock didn't go through — try your PIN instead."; errEl.style.display = 'block'; }
   };
+  const bioBtn = document.getElementById('bioUnlockBtn');
+  if(bioBtn) bioBtn.onclick = attemptBio;
+  // Biometric is the primary path when it's set up — try it automatically rather than making the
+  // user tap a button first, falling back to the PIN (already focused above) only if it fails or
+  // is cancelled. Guarded by bioAutoAttemptedThisLock so this fires once per lock, not once per
+  // render (renderLocked can be invoked again while still locked, e.g. by the visibilitychange
+  // listener below).
+  if(hasBio && !bioAutoAttemptedThisLock){
+    bioAutoAttemptedThisLock = true;
+    attemptBio();
+  }
   document.getElementById('lockSignOutBtn').onclick = () => signOutUser();
 }
 
@@ -1466,6 +1493,7 @@ function renderLogin(app){
       state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
       btn.textContent = 'Setting up your vault…';
       await loadUserData();
+      collapseAllCategories();
       state.screen = 'vault';
       render();
       armExitGuardIfIdle();
@@ -1514,6 +1542,7 @@ async function completeReconnect(){
     state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
     btn.textContent = 'Loading your vault…';
     await loadUserData();
+    collapseAllCategories();
     state.screen = 'vault';
     render();
     armExitGuardIfIdle();
@@ -1705,13 +1734,15 @@ function renderVault(app){
 
   // Pinned documents get their own section above everything else, including Renewals — unlike
   // Renewals (system-computed from expiry dates), a pin is the user's own explicit "I reach for
-  // this one" signal, so it takes priority. Shown only there, not duplicated in their category
-  // section below, to avoid the same document appearing twice in one screen.
+  // this one" signal, so it takes priority. Also still shown in their own category section below
+  // (categories collapse by default now, so the repeat costs nothing visually until someone
+  // expands that section) — excluding pinned docs from their category used to mean pinning your
+  // only document in a category made that category vanish from the list entirely, since its count
+  // was computed only from unpinned docs.
   const pinnedDocs = filtered.filter(d => d.pinned);
-  const unpinnedFiltered = filtered.filter(d => !d.pinned);
 
   const grouped = {};
-  unpinnedFiltered.forEach(d => { (grouped[d.category] = grouped[d.category] || []).push(d); });
+  filtered.forEach(d => { (grouped[d.category] = grouped[d.category] || []).push(d); });
   const knownCatOrder = state.categories.map(c=>c.id).filter(c => grouped[c] && grouped[c].length);
   // Categories aren't part of the offline cache (see the offline document cache section above) —
   // in offline mode state.categories is empty, which would otherwise silently drop every document
@@ -1747,7 +1778,7 @@ function renderVault(app){
 
       ${pinnedDocs.length ? `
         <div class="section-title">Pinned</div>
-        <div class="doc-card-grid">${pinnedDocs.map(renderDocCard).join('')}</div>
+        <div class="doc-card-grid">${pinnedDocs.map(d => renderDocCard(d, {showCategory: true})).join('')}</div>
       ` : ''}
 
       ${!state.searchQuery && !state.showArchived && upcoming.length ? `
@@ -1774,7 +1805,7 @@ function renderVault(app){
           <span class="cat-title-label">${categoryIconHtml(meta,15)} ${escapeHtml(meta.label)}</span>
           <span class="cat-count">${grouped[cat].length}<span class="cat-chevron ${state.collapsedCats[cat] ? 'collapsed' : ''}">${icon('chevronDown',15)}</span></span>
         </div>
-        ${state.collapsedCats[cat] ? '' : `<div class="doc-card-grid">${grouped[cat].map(renderDocCard).join('')}</div>`}
+        ${state.collapsedCats[cat] ? '' : `<div class="doc-card-grid">${grouped[cat].map(d => renderDocCard(d)).join('')}</div>`}
       `; }).join('')}
       <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
@@ -1882,7 +1913,8 @@ function renderVault(app){
   renderModal();
 }
 
-function renderDocCard(d){
+function renderDocCard(d, opts){
+  opts = opts || {};
   const meta = categoryFor(d.category);
   let expiryBadge = '';
   if(d.expiry){
@@ -1898,7 +1930,7 @@ function renderDocCard(d){
       <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" id="docicon-${d.id}" role="button" aria-label="View ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
       <div class="doc-body">
         <p class="doc-title" id="doctitle-${d.id}" role="button">${escapeHtml(d.title)}${state.offlineDocIds.has(d.id) ? `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>` : ''}</p>
-        <p class="doc-meta">Added ${formatDate(d.addedAt)}${activeShares.length ? ' · shared with '+activeShares.length : ''}${d.archived ? ' · archived' : ''}</p>
+        <p class="doc-meta">${opts.showCategory ? `${escapeHtml(meta.label)} · ` : ''}Added ${formatDate(d.addedAt)}${activeShares.length ? ' · shared with '+activeShares.length : ''}${d.archived ? ' · archived' : ''}</p>
         ${d.snippet ? `<p class="doc-snippet">${d.snippet}</p>` : ''}
         ${expiryBadge}
         <div class="doc-actions">
@@ -2901,6 +2933,7 @@ async function enterOfflineVault(){
     state.documents = await loadOfflineDocumentList();
     await loadOfflineDocIds();
   }
+  collapseAllCategories();
   state.screen = 'vault';
   render();
   armExitGuardIfIdle();
@@ -2936,6 +2969,7 @@ auth.onAuthStateChanged(async (user) => {
     state.driveAccessToken = tokenResp.accessToken;
     state.driveTokenExpiresAt = Date.now() + (tokenResp.expiresIn ? tokenResp.expiresIn*1000 : 55*60*1000);
     await loadUserData();
+    collapseAllCategories();
     state.screen = 'vault';
     render();
     armExitGuardIfIdle();
