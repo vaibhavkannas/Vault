@@ -197,6 +197,12 @@
   .modal-close{display:flex;justify-content:flex-end;margin-bottom:6px;}
   .modal-close button{background:none;border:none;font-size:20px;color:var(--ink-soft);cursor:pointer;padding:6px;border-radius:50%;}
   .modal-close button:hover{background:var(--surface-container);}
+  /* Drag-to-dismiss handle: dragging content itself only ever counts as a dismiss attempt when
+     it's already scrolled to the very top, so it can silently do nothing if that's ever untrue —
+     the handle has no such condition, any downward drag on it always dismisses. Padding makes the
+     actual touch target a proper ~44px even though the visible bar itself stays small and quiet. */
+  .sheet-handle{display:flex;justify-content:center;padding:6px 0 14px;margin:-22px -20px 0;touch-action:none;cursor:grab;}
+  .sheet-handle::before{content:'';width:36px;height:4px;border-radius:2px;background:var(--line);}
   .file-drop{border:1.5px dashed var(--line);border-radius:var(--radius-sm);padding:18px;text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;cursor:pointer;background:var(--surface-container);}
   .file-drop.has-file{color:var(--success);background:var(--success-bg);}
 
@@ -435,7 +441,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 17:39';
+const APP_VERSION = '2026.09.04 · 19:39';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -2071,25 +2077,41 @@ function closeModal(){
 // added earlier. Scoped to just this one modal (via the caller only invoking it for viewFile) —
 // dragging from the top of an add/edit form, for instance, should just scroll, not risk dismissing
 // unsaved input.
-function enableSwipeToDismiss(sheet){
+//
+// Dragging the content area is gated on being scrolled to the very top — reasonable in principle
+// (otherwise it'd fight ordinary scrolling), but it means the gesture can go silently dead from
+// anywhere it isn't exactly true, with nothing on screen to explain why. `handle`, when passed, is
+// a small dedicated grab bar with no such condition: a drag starting there always counts, the same
+// guaranteed contract every native bottom sheet's handle gives you, independent of scroll state.
+function enableSwipeToDismiss(sheet, handle){
   let startY = 0, dragging = false, pointerId = null, lastY = 0, lastT = 0, velocity = 0;
   const DISMISS_THRESHOLD_PX = 90;
   const FADE_DISTANCE_PX = 300; // backdrop reaches its floor opacity after this much drag
   const EXIT_DURATION_MIN_MS = 120, EXIT_DURATION_MAX_MS = 260;
 
-  sheet.addEventListener('pointerdown', (e) => {
+  const begin = (e) => {
     if(e.pointerType === 'mouse' && e.button !== 0) return;
-    // Only a gesture that STARTS with nothing left to scroll up to can ever be a dismiss
-    // attempt — if it doesn't, don't even arm this pointer, so normal scrolling inside the
-    // content is left completely untouched for its whole duration.
-    if(sheet.scrollTop > 0) return;
     startY = e.clientY;
     lastY = e.clientY;
     lastT = e.timeStamp;
     velocity = 0;
     pointerId = e.pointerId;
     dragging = false;
+  };
+
+  sheet.addEventListener('pointerdown', (e) => {
+    // Only a gesture that STARTS with nothing left to scroll up to can ever be a dismiss
+    // attempt — if it doesn't, don't even arm this pointer, so normal scrolling inside the
+    // content is left completely untouched for its whole duration.
+    if(sheet.scrollTop > 0) return;
+    begin(e);
   });
+  if(handle){
+    handle.addEventListener('pointerdown', (e) => {
+      e.stopPropagation(); // this already begins the gesture directly — don't also run sheet's own listener above
+      begin(e);
+    });
+  }
 
   sheet.addEventListener('pointermove', (e) => {
     if(pointerId === null || e.pointerId !== pointerId) return;
@@ -2277,6 +2299,7 @@ function renderModal(){
     if(!doc){ state.modal = null; return; }
     overlay.innerHTML = `
       <div class="modal-sheet">
+        <div class="sheet-handle" id="viewFileHandle" aria-hidden="true"></div>
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>${escapeHtml(doc.title)}</h3>
         <div id="viewFileContent" class="search-hint">Loading…</div>
@@ -2286,7 +2309,7 @@ function renderModal(){
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('downloadFromViewBtn').onclick = () => downloadDocument(doc.id);
-    enableSwipeToDismiss(overlay.querySelector('.modal-sheet'));
+    enableSwipeToDismiss(overlay.querySelector('.modal-sheet'), document.getElementById('viewFileHandle'));
   }
 
   if(state.modal === 'camera'){
