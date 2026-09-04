@@ -118,7 +118,14 @@ self.addEventListener('fetch', (event) => {
 });
 
 function networkFirst(req, fallbackKey){
-  return fetch(req).then(res => {
+  // Plain fetch(req) still honors the browser's own HTTP cache, not just this function's Cache
+  // Storage — GitHub Pages sends Cache-Control: max-age=600 on index.html, so for up to 10 minutes
+  // after any deploy, "network first" here could be silently satisfied out of the browser's HTTP
+  // cache without a real round-trip, serving a stale app shell even though the whole point of this
+  // function (see the comment on NETWORK_FIRST_REL above) is "always prefer whatever's live."
+  // cache:'no-store' forces an actual network request every time; the try/catch fallback below is
+  // unaffected since it still reads from this file's own Cache Storage, not the HTTP cache.
+  return fetch(new Request(req, {cache: 'no-store'})).then(res => {
     const copy = res.clone();
     caches.open(SHELL_CACHE).then(cache => cache.put(req, copy));
     return res;

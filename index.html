@@ -320,7 +320,16 @@ const db = firebase.firestore();
 const FCM_VAPID_KEY = 'BN2rOcWAxDeqds9LlGU--0buUzdWu0wABgZD3OvAdrh8Pr911CxG83DKRSWFjq2lgDppPyMuRlhRM9CjtQNP4fA';
 
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('sw.js').catch(e => console.error('Service worker registration failed', e));
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    // Browsers only auto-check a registered service worker's script for updates roughly once every
+    // 24 hours — fine for a passive install, but far too slow for a PWA reopened many times in the
+    // same day expecting each reopen to pick up whatever was just deployed. update() explicitly
+    // forces a check (a no-op, not an error, when there's nothing new) rather than waiting on the
+    // browser's own throttle; every foreground return is as good a moment as any to ask.
+    document.addEventListener('visibilitychange', () => {
+      if(document.visibilityState === 'visible') reg.update().catch(() => {});
+    });
+  }).catch(e => console.error('Service worker registration failed', e));
 }
 
 // Firebase Auth (above) only handles identity — who's signed in. Drive *access* is a fully
@@ -426,7 +435,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 17:22';
+const APP_VERSION = '2026.09.04 · 17:29';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
