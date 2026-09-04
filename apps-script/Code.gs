@@ -301,7 +301,7 @@ function buildDigestHtml(rows){
     '</div>';
 }
 
-function runDailyDigest(){
+function sendEmailDigests(){
   const subscribers = listEmailDigestSubscribers();
   subscribers.forEach(function(sub){
     try{
@@ -314,6 +314,95 @@ function runDailyDigest(){
       console.error('Digest failed for uid ' + sub.uid + ': ' + err);
     }
   });
+}
+
+// ---------- Push notifications (FCM) ----------
+//
+// Mirrors the email digest above: an independent subscriber list (pushSubscribers, storing an FCM
+// token instead of an email), enumerated and sent to from the same daily trigger. Auth is the same
+// ScriptApp.getOAuthToken() pattern already used for Firestore reads — FCM's HTTP v1 send API
+// accepts the same kind of OAuth bearer token, just with the 'firebase.messaging' scope added in
+// appsscript.json, so no separate credential/service account is needed here either.
+
+const FCM_SEND_URL = 'https://fcm.googleapis.com/v1/projects/' + FIRESTORE_PROJECT_ID + '/messages:send';
+
+function firestoreDelete(path){
+  const res = UrlFetchApp.fetch(FIRESTORE_BASE + path, {
+    method: 'delete',
+    headers: {Authorization: 'Bearer ' + ScriptApp.getOAuthToken()},
+    muteHttpExceptions: true
+  });
+  return res.getResponseCode() === 200 || res.getResponseCode() === 404; // 404 = already gone
+}
+
+function listPushSubscribers(){
+  return firestoreListAll('pushSubscribers')
+    .map(function(d){
+      const fields = firestoreFieldsToObject(d.fields);
+      return {uid: d.name.split('/').pop(), token: fields.token};
+    })
+    .filter(function(s){ return !!s.token; });
+}
+
+function sendPushNotification(token, title, body, data){
+  const payload = {
+    message: {
+      token: token,
+      notification: {title: title, body: body},
+      webpush: {fcm_options: {link: VAULT_APP_URL}},
+      data: data || {}
+    }
+  };
+  const res = UrlFetchApp.fetch(FCM_SEND_URL, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {Authorization: 'Bearer ' + ScriptApp.getOAuthToken()},
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+  if(res.getResponseCode() === 200) return {ok: true};
+  let json;
+  try{ json = JSON.parse(res.getContentText()); } catch(err){ json = {}; }
+  const details = (json.error && json.error.details) || [];
+  // FCM v1's documented shape for a dead token: HTTP 404 plus a typed error detail carrying this
+  // code. Checking both, since relying on the status code alone is one signal short of certain.
+  const unregistered = res.getResponseCode() === 404 || details.some(function(d){ return d.errorCode === 'UNREGISTERED'; });
+  return {ok: false, unregistered: unregistered, error: json.error};
+}
+
+function sendPushReminders(){
+  const subscribers = listPushSubscribers();
+  subscribers.forEach(function(sub){
+    try{
+      const rows = buildDigestRowsForUser(sub.uid); // already sorted soonest-first
+      if(!rows.length) return;
+      const title = rows.length + ' document' + (rows.length === 1 ? '' : 's') + ' need attention';
+      const top = rows[0];
+      const body = rows.length === 1
+        ? top.title + ' — ' + formatDaysLabel(top.days)
+        : top.title + ' (' + formatDaysLabel(top.days) + ') and ' + (rows.length - 1) + ' more';
+      const result = sendPushNotification(sub.token, title, body, {});
+      if(!result.ok){
+        console.error('Push failed for uid ' + sub.uid + ': ' + JSON.stringify(result.error));
+        // A token FCM reports as unregistered will never work again — delete it so the job stops
+        // silently retrying a dead subscription forever.
+        if(result.unregistered) firestoreDelete('/pushSubscribers/' + sub.uid);
+      }
+    } catch(err){
+      // One user's bad data or a transient failure must not abort everyone else's reminders.
+      console.error('Push reminder failed for uid ' + sub.uid + ': ' + err);
+    }
+  });
+}
+
+// Single entry point for the existing daily trigger (see createDailyDigestTrigger below) — email
+// and push subscribers are independent, independently-toggled sets, so this fans out to both
+// rather than needing a second trigger (which would re-risk the duplicate-trigger footgun
+// createDailyDigestTrigger already guards against, for a second manual setup+consent cycle with no
+// real benefit). Each channel's own try/catch keeps a failure in one from taking down the other.
+function runDailyDigest(){
+  try{ sendEmailDigests(); } catch(err){ console.error('sendEmailDigests failed: ' + err); }
+  try{ sendPushReminders(); } catch(err){ console.error('sendPushReminders failed: ' + err); }
 }
 
 // One-off setup — run manually, once, from the Apps Script editor. Never called from doPost.
