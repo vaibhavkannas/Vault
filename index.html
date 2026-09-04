@@ -435,7 +435,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 17:29';
+const APP_VERSION = '2026.09.04 · 17:39';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -697,20 +697,31 @@ window.addEventListener('popstate', () => {
   render();
   armExitGuardIfIdle();
 });
-// Defensive hedge, not a confirmed fix: reported symptom was Back closing the app with no warning
-// at all on a genuinely fresh load/sign-in, before any other tap — but only once something else
-// had been tapped first did the warning reliably appear. The one difference between those two
-// moments is whether a real user gesture had occurred yet, and some Android WebView/browser
-// combinations are known to not always honor a history entry pushed before any gesture the same
-// way for hardware-Back purposes as one pushed after one — which the boot-time arm above always
-// is. Force one fresh guard entry the moment the very first real interaction happens, regardless
-// of what our own bookkeeping already believes (armExitGuardIfIdle's own !guardArmed check would
-// otherwise skip it here, since nothing else invalidates guardArmed between boot and this).
-document.addEventListener('pointerdown', () => {
-  if(!state.modal && !state.showArchived && state.screen !== 'settings' && state.screen !== 'checking'){
-    if(safePushHistoryState({seq: currentHistorySeq() + 1, guard: true})) guardArmed = true;
-  }
-}, {once: true, capture: true});
+// Defensive hedge: reported symptom was Back closing the app with no warning at all on a
+// genuinely fresh load/sign-in, before any other tap — but only once something else had been
+// tapped first did the warning reliably appear. The one difference between those two moments is
+// whether a real user gesture had occurred yet, and some Android WebView/browser combinations are
+// known to not always honor a history entry pushed before any gesture the same way for
+// hardware-Back purposes as one pushed after one — which the boot-time arm above always is. Force
+// one fresh guard entry the moment the very first real interaction happens on an idle root screen,
+// regardless of what our own bookkeeping already believes (armExitGuardIfIdle's own !guardArmed
+// check would otherwise skip it here, since nothing else invalidates guardArmed between boot and
+// this).
+//
+// {once:true} alone doesn't work here and was the actual bug behind the inconsistency: it detaches
+// the listener after the very FIRST pointerdown no matter what the handler does internally — and
+// on a real load, that first tap very often lands while state.screen is still 'checking' (the
+// loading splash, shown before auth has even resolved), which this handler deliberately ignores.
+// That silently burned the one-shot hedge for nothing, leaving only the boot-time entry — exactly
+// the unreliable-for-Back-purposes one this hedge exists to back up — for the rest of that whole
+// page load. Removing the listener manually, only once it actually succeeds, means every
+// pointerdown gets a chance until the real first interaction on vault/settings finally lands.
+function armGuardOnFirstRealGesture(){
+  if(state.modal || state.showArchived || state.screen === 'settings' || state.screen === 'checking') return;
+  document.removeEventListener('pointerdown', armGuardOnFirstRealGesture, {capture: true});
+  if(safePushHistoryState({seq: currentHistorySeq() + 1, guard: true})) guardArmed = true;
+}
+document.addEventListener('pointerdown', armGuardOnFirstRealGesture, {capture: true});
 
 /* ---------- theme ---------- */
 function currentTheme(){
@@ -835,7 +846,16 @@ document.addEventListener('visibilitychange', () => {
     // and needs the same re-verify gate as the vault — omitting it here used to mean the lock never
     // engaged at all if the app was backgrounded while on Settings, since nothing else re-renders on
     // its own when the tab becomes visible again.
-    if(state.screen === 'vault' || state.screen === 'settings') render();
+    //
+    // Gated on isAppLockDue() too — an unconditional render() here (the original shape of this
+    // fix) tore down and rebuilt whatever was already open on EVERY foreground return, lock enabled
+    // or not, even though the only reason this listener touches the DOM at all is to let the lock
+    // take over when it's actually due. That silently destroyed a document viewer mid-swipe-gesture
+    // (a fresh renderModal() call replaces the .modal-sheet node the gesture's listeners are bound
+    // to, and re-fetches the document from scratch) on something as routine as a notification
+    // banner briefly stealing focus. Now it only re-renders when there's something for the lock to
+    // actually do, leaving an open document/modal/gesture untouched otherwise.
+    if((state.screen === 'vault' || state.screen === 'settings') && isAppLockDue()) render();
   }
 });
 
