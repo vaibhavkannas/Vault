@@ -399,7 +399,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 09:35';
+const APP_VERSION = '2026.09.04 · 10:07';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1037,6 +1037,46 @@ async function runOcr(dataUrl, onProgress){
   }
 }
 
+// A single page's render-and-OCR never being allowed to run forever, wrapped around the whole
+// per-page step below rather than just the OCR half — a stuck/pathological PDF page render is as
+// much a risk to guard against as slow OCR, and either one hanging must not leave the Save button
+// disabled indefinitely. Doesn't (and can't) actually cancel a still-running PDF.js/Tesseract
+// operation — it just stops the *flow* from waiting on it, which is what protects the user.
+function withTimeout(promise, ms, fallbackValue){
+  return Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(() => resolve(fallbackValue), ms))
+  ]);
+}
+
+// Renders each page of an uploaded PDF to a canvas and OCRs it, the same way a multi-page camera
+// capture already OCRs every page before combining them into one PDF (see capturePage()) — the
+// only difference is these pages already exist as a PDF instead of being captured one at a time.
+// Rendered well above renderPdfInto's screen-sized viewing resolution, since OCR accuracy benefits
+// from more detail than a preview needs; capped so an unusually large page doesn't run OCR against
+// an oversized, slow-to-process image for no real accuracy gain.
+async function runOcrOnPdfFile(file, onProgress){
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
+  const pageTexts = [];
+  for(let pageNum = 1; pageNum <= pdf.numPages; pageNum++){
+    const text = await withTimeout(ocrOnePdfPage(pdf, pageNum, (pct) => onProgress && onProgress(pct, pageNum, pdf.numPages)), 25000, '');
+    pageTexts.push(text);
+  }
+  return pageTexts.join('\n').trim();
+}
+async function ocrOnePdfPage(pdf, pageNum, onProgress){
+  const page = await pdf.getPage(pageNum);
+  const baseViewport = page.getViewport({scale: 1});
+  const scale = Math.min(1500 / baseViewport.width, 3);
+  const viewport = page.getViewport({scale});
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  await page.render({canvasContext: canvas.getContext('2d'), viewport}).promise;
+  return runOcr(canvas.toDataURL('image/png'), onProgress);
+}
+
 /* ---------- render root ---------- */
 function render(){
   const app = document.getElementById('app');
@@ -1449,6 +1489,7 @@ function renderVault(app){
       const doc = state.documents.find(x => x.id === docId);
       state.openActionMenu = null;
       if(action === 'edit') openEditModal(docId);
+      else if(action === 'extractText') extractTextForDocument(docId);
       else if(action === 'archive') toggleArchive(docId);
       else if(action === 'remind' && doc) window.open(addToCalendarUrl(doc), '_blank');
       else if(action === 'download') downloadDocument(docId);
@@ -1498,6 +1539,7 @@ function renderDocCard(d){
             ${menuOpen ? `
               <div class="action-menu" id="actionMenu-${d.id}">
                 <button data-menu-action="edit" data-doc="${d.id}">${icon('edit',15)} Edit</button>
+                ${d.mimeType === 'application/pdf' && !d.ocrText ? `<button data-menu-action="extractText" data-doc="${d.id}">${icon('search',15)} Extract text</button>` : ''}
                 <button data-menu-action="archive" data-doc="${d.id}">${icon(d.archived?'restore':'archive',15)} ${d.archived ? 'Restore' : 'Archive'}</button>
                 ${d.expiry ? `<button data-menu-action="remind" data-doc="${d.id}">${icon('calendar',15)} Add reminder</button>` : ''}
                 <button data-menu-action="download" data-doc="${d.id}">${icon('download',15)} Download</button>
@@ -1544,7 +1586,7 @@ function renderModal(){
         <label class="field-label">File</label>
         <div class="file-drop" id="fileDrop">Tap to choose a file</div>
         <input type="file" id="fileInput" accept="image/*,application/pdf" style="display:none;" />
-        <div class="search-hint" id="pdfNote" style="display:none;">PDFs are stored, but text search and expiry suggestion only work on photos/scans right now — OCR can't read inside a PDF yet.</div>
+        <div class="search-hint" id="pdfNote" style="display:none;">Multi-page PDFs are OCR'd one page at a time, so this can take a little longer.</div>
         <div class="progress-row" id="ocrProgress" style="display:none;"></div>
         <label class="field-label">Document title</label>
         <input type="text" id="docTitle" placeholder="e.g. Aadhaar card" />
@@ -1577,6 +1619,17 @@ function renderModal(){
         pendingOcrText = await runOcr(dataUrl, setOcrProgress);
         document.getElementById('ocrProgress').style.display = 'none';
         applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
+        pendingOcrRunning = false;
+        if(saveBtn) saveBtn.disabled = false;
+      } else if(f.type === 'application/pdf'){
+        const saveBtn = document.getElementById('saveDocBtn');
+        pendingOcrRunning = true;
+        if(saveBtn) saveBtn.disabled = true;
+        try{
+          pendingOcrText = await runOcrOnPdfFile(f, setOcrProgress);
+          applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
+        } catch(err){ console.error('PDF OCR failed', err); }
+        document.getElementById('ocrProgress').style.display = 'none';
         pendingOcrRunning = false;
         if(saveBtn) saveBtn.disabled = false;
       }
@@ -2106,6 +2159,29 @@ async function toggleArchive(id){
   toast(doc.archived ? 'Archived' : 'Restored');
   try{ await userDoc().collection('documents').doc(id).update({archived: doc.archived}); }
   catch(e){ console.error('Failed to update archive state', e); }
+}
+
+// Backfills OCR text for a PDF that was uploaded before this app ran OCR on PDFs at all (or one
+// that simply hasn't been re-uploaded since) — re-downloads the file it already has and runs it
+// through the same per-page OCR path a fresh PDF upload uses now, then updates the saved record so
+// content search picks it up without the user needing to delete and re-add the document.
+async function extractTextForDocument(id){
+  const doc = state.documents.find(d => d.id === id);
+  if(!doc || doc.mimeType !== 'application/pdf') return;
+  toast('Reading text on-device…');
+  try{
+    const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
+    const blob = await res.blob();
+    const file = new File([blob], safeFilename(doc.title, doc.mimeType), {type: doc.mimeType});
+    const ocrText = await runOcrOnPdfFile(file);
+    doc.ocrText = ocrText;
+    render();
+    await userDoc().collection('documents').doc(id).update({ocrText});
+    toast(ocrText ? 'Text extracted — now searchable' : 'No readable text found in this document');
+  } catch(e){
+    console.error('Extract text failed', e);
+    toast(friendlyCloudError(e));
+  }
 }
 
 function requestDeleteDocument(id){ state.modal = 'confirmDelete'; state.deleteDocId = id; pushAppHistoryState(); render(); }
