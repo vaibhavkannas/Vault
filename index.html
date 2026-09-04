@@ -399,7 +399,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 12:25';
+const APP_VERSION = '2026.09.04 · 13:08';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -510,7 +510,8 @@ const state = {
   capturedPages: [],  // dataURLs from camera, before combining
   openActionMenu: null, // doc id whose card's ⋮ overflow menu is currently open, or null
   offlineDocIds: new Set(), // doc ids with a file blob cached in IndexedDB for offline viewing
-  isOfflineMode: false // true when the vault opened with no Drive/Firestore connection at all
+  isOfflineMode: false, // true when the vault opened with no Drive/Firestore connection at all
+  reminderSettings: {emailDigestEnabled: false} // loaded in loadUserData(), see meta/reminderSettings
 };
 
 function categoryFor(id){
@@ -787,6 +788,37 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+/* ---------- reminders ----------
+   Unlike app lock, this setting has to be readable by a server-side job (the Apps Script daily
+   digest trigger) with no live session, so it can't live in localStorage — it's mirrored in
+   Firestore at meta/reminderSettings (loaded into state.reminderSettings in loadUserData()) plus a
+   backend-only emailDigestSubscribers/{uid} index doc the digest job actually enumerates. */
+function isEmailDigestEnabled(){
+  return !!(state.reminderSettings && state.reminderSettings.emailDigestEnabled);
+}
+async function toggleEmailDigest(){
+  const next = !isEmailDigestEnabled();
+  const previous = state.reminderSettings;
+  state.reminderSettings = {...state.reminderSettings, emailDigestEnabled: next, updatedAt: new Date().toISOString()};
+  render();
+  toast(next ? 'Daily email digest turned on' : 'Daily email digest turned off');
+  try{
+    const batch = db.batch();
+    batch.set(userDoc().collection('meta').doc('reminderSettings'), state.reminderSettings, {merge: true});
+    const subRef = db.collection('emailDigestSubscribers').doc(state.user.uid);
+    if(next) batch.set(subRef, {email: state.user.email, updatedAt: state.reminderSettings.updatedAt});
+    else batch.delete(subRef);
+    await batch.commit();
+  } catch(e){
+    // Unlike togglePin's fire-and-forget, this rolls back on failure — a setting that controls
+    // whether a background job emails the user is worth not silently diverging from Firestore.
+    console.error('Failed to update email digest setting', e);
+    state.reminderSettings = previous;
+    render();
+    toast(friendlyCloudError(e));
+  }
+}
+
 /* ---------- Google Drive ---------- */
 function driveTokenValid(){ return !!(state.driveAccessToken && state.driveTokenExpiresAt && Date.now() < state.driveTokenExpiresAt); }
 
@@ -1048,6 +1080,8 @@ async function loadUserData(){
     });
     const sharesSnap = await userDoc().collection('shares').get();
     state.shares = sharesSnap.docs.map(d => ({id: d.id, ...d.data()}));
+    const reminderSnap = await userDoc().collection('meta').doc('reminderSettings').get();
+    state.reminderSettings = reminderSnap.exists ? reminderSnap.data() : {emailDigestEnabled: false};
   } catch(e){
     console.error('Could not load vault data from the cloud', e);
     toast('Could not load your vault — check your connection and try again.');
@@ -1396,6 +1430,14 @@ function renderSettings(app){
       </div>
 
       <div class="settings-section">
+        <h4>Reminders</h4>
+        <div class="settings-row">
+          <span>Daily email digest of documents expiring soon</span>
+          <button class="icon-btn${isEmailDigestEnabled() ? ' danger' : ''}" id="toggleEmailDigestBtn">${isEmailDigestEnabled() ? 'Turn off' : 'Turn on'}</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
         <h4>Categories</h4>
         ${state.categories.map(c => `
           <div class="cat-manage-row">
@@ -1464,6 +1506,8 @@ function renderSettings(app){
     toast('App lock turned off');
     render();
   };
+
+  document.getElementById('toggleEmailDigestBtn').onclick = toggleEmailDigest;
 
   document.getElementById('addCategoryBtn').onclick = openAddCategoryModal;
   document.querySelectorAll('[data-rename-cat]').forEach(btn => {

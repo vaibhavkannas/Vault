@@ -147,3 +147,186 @@ function handleMint(uid){
     lock.releaseLock();
   }
 }
+
+// ---------- Expiring-document email digest ----------
+//
+// Independent of the Drive-token logic above: this reads Firestore directly (not via doPost) and
+// is only ever invoked by a time-driven trigger (see createDailyDigestTrigger, run once manually
+// from the Apps Script editor — never called from doPost). Requires the 'datastore' and
+// 'script.send_mail' scopes declared in appsscript.json.
+//
+// Auth model: ScriptApp.getOAuthToken() mints a token for whoever the script executes as — the
+// project owner, since both the web app (executeAs: USER_DEPLOYING) and every trigger created by
+// that same owner always run as them. The project owner has full IAM on their own Firestore data,
+// so this reaches the Firestore REST API the same way the Admin SDK or gcloud would: authenticated
+// as a principal with IAM permission, which bypasses Firestore Security Rules entirely (rules only
+// gate the Firebase-client-SDK-style access path). No service account or private key involved.
+
+const FIRESTORE_PROJECT_ID = 'elite-vault-7b00a';
+const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1/projects/' + FIRESTORE_PROJECT_ID + '/databases/(default)/documents';
+const VAULT_APP_URL = 'https://vaibhavkannas.github.io/Vault/';
+// Send only on these days-until-expiry milestones, not every day across the full lookahead/grace
+// window — an unrenewed document would otherwise generate up to 44 emails (14 down through -30)
+// before its owner acts or turns the digest off. Recomputed fresh from daysUntil() every run, so
+// this needs no "already sent" tracking of its own.
+const DIGEST_MILESTONE_DAYS = [14, 7, 3, 1, 0, -1, -7, -30];
+
+function firestoreFetch(path){
+  const res = UrlFetchApp.fetch(FIRESTORE_BASE + path, {
+    headers: {Authorization: 'Bearer ' + ScriptApp.getOAuthToken()},
+    muteHttpExceptions: true
+  });
+  let json;
+  try{ json = JSON.parse(res.getContentText()); } catch(err){ json = {}; }
+  return {ok: res.getResponseCode() === 200, json: json};
+}
+
+function firestoreListAll(collectionPath){
+  let out = [];
+  let pageToken = null;
+  do{
+    const qs = pageToken ? ('?pageToken=' + encodeURIComponent(pageToken)) : '';
+    const result = firestoreFetch('/' + collectionPath + qs);
+    if(!result.ok){
+      console.error('Firestore list failed for ' + collectionPath + ': ' + JSON.stringify(result.json));
+      break;
+    }
+    out = out.concat(result.json.documents || []);
+    pageToken = result.json.nextPageToken;
+  } while(pageToken);
+  return out;
+}
+
+// Unwraps Firestore REST's typed-value JSON. Only covers the value types this app's own documents
+// actually use (string/boolean/integer/null) — not a general-purpose Firestore type mapper.
+function firestoreFieldsToObject(fields){
+  const obj = {};
+  for(const key in (fields || {})){
+    const val = fields[key];
+    if(val.stringValue !== undefined) obj[key] = val.stringValue;
+    else if(val.booleanValue !== undefined) obj[key] = val.booleanValue;
+    else if(val.integerValue !== undefined) obj[key] = Number(val.integerValue);
+    else if(val.nullValue !== undefined) obj[key] = null;
+  }
+  return obj;
+}
+
+function listEmailDigestSubscribers(){
+  return firestoreListAll('emailDigestSubscribers')
+    .map(function(d){
+      const fields = firestoreFieldsToObject(d.fields);
+      return {uid: d.name.split('/').pop(), email: fields.email};
+    })
+    .filter(function(s){ return !!s.email; });
+}
+
+function listActiveDocumentsForUser(uid){
+  return firestoreListAll('users/' + uid + '/documents')
+    .map(function(d){ return firestoreFieldsToObject(d.fields); })
+    // Mirrors index.html's own `!d.archived` check exactly (not `=== false`), so legacy documents
+    // with no archived field at all are still treated as active, same as the client does.
+    .filter(function(doc){ return !doc.archived && doc.expiry; });
+}
+
+function listCategoryLabelsForUser(uid){
+  const map = {};
+  firestoreListAll('users/' + uid + '/categories').forEach(function(d){
+    const fields = firestoreFieldsToObject(d.fields);
+    if(fields.id) map[fields.id] = fields.label || fields.id;
+  });
+  return map;
+}
+
+// Expiry dates are plain "YYYY-MM-DD" strings with no timezone (see index.html's own
+// parseLocalDate/daysUntil) — parse the components as a local date rather than via `new
+// Date(dateStr)`, which would interpret it as UTC midnight. Apps Script's Date "local" methods
+// resolve against this project's configured timeZone (Asia/Kolkata, see appsscript.json), so this
+// agrees with what an IST-based user sees in-app.
+function parseLocalDate(dateStr){
+  const parts = dateStr.split('-').map(Number);
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+function daysUntil(dateStr){
+  const t = new Date();
+  t.setHours(0, 0, 0, 0);
+  return Math.round((parseLocalDate(dateStr) - t) / 86400000);
+}
+
+function buildDigestRowsForUser(uid){
+  const labels = listCategoryLabelsForUser(uid);
+  return listActiveDocumentsForUser(uid)
+    .map(function(doc){
+      return {
+        title: doc.title,
+        category: labels[doc.category] || doc.category,
+        days: daysUntil(doc.expiry)
+      };
+    })
+    .filter(function(d){ return DIGEST_MILESTONE_DAYS.includes(d.days); })
+    .sort(function(a, b){ return a.days - b.days; });
+}
+
+function formatDaysLabel(days){
+  if(days === 0) return 'expires today';
+  if(days === 1) return 'expires tomorrow';
+  if(days > 1) return 'expires in ' + days + ' days';
+  if(days === -1) return 'expired 1 day ago';
+  return 'expired ' + (-days) + ' days ago';
+}
+
+function buildDigestText(rows){
+  const lines = rows.map(function(r){ return '- ' + r.title + ' (' + r.category + ') — ' + formatDaysLabel(r.days); });
+  return 'Documents needing attention in Vault:\n\n' + lines.join('\n') + '\n\n' + VAULT_APP_URL;
+}
+
+function escapeHtml(str){
+  return String(str).replace(/[&<>"']/g, function(c){
+    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+  });
+}
+
+function buildDigestHtml(rows){
+  const items = rows.map(function(r){
+    const urgent = r.days <= 7;
+    return '<li style="margin-bottom:8px;">' +
+      '<strong>' + escapeHtml(r.title) + '</strong> &middot; ' + escapeHtml(r.category) +
+      '<br><span style="color:' + (urgent ? '#b3261e' : '#5f6368') + ';">' + formatDaysLabel(r.days) + '</span>' +
+      '</li>';
+  }).join('');
+  return '<div style="font-family:Roboto,Arial,sans-serif;max-width:480px;">' +
+    '<p>Documents needing attention in Vault:</p>' +
+    '<ul style="list-style:none;padding:0;">' + items + '</ul>' +
+    '<p><a href="' + VAULT_APP_URL + '">Open Vault</a></p>' +
+    '</div>';
+}
+
+function runDailyDigest(){
+  const subscribers = listEmailDigestSubscribers();
+  subscribers.forEach(function(sub){
+    try{
+      const rows = buildDigestRowsForUser(sub.uid);
+      if(!rows.length) return;
+      const subject = rows.length + ' document' + (rows.length === 1 ? '' : 's') + ' need attention — Vault';
+      MailApp.sendEmail(sub.email, subject, buildDigestText(rows), {htmlBody: buildDigestHtml(rows)});
+    } catch(err){
+      // One user's bad data or a transient failure must not abort everyone else's digest.
+      console.error('Digest failed for uid ' + sub.uid + ': ' + err);
+    }
+  });
+}
+
+// One-off setup — run manually, once, from the Apps Script editor. Never called from doPost.
+// Apps Script does not prevent duplicate triggers, and a duplicate would silently double-send
+// every digest forever with no visible error, hence the existence check.
+function createDailyDigestTrigger(){
+  const existing = ScriptApp.getProjectTriggers().filter(function(t){
+    return t.getHandlerFunction() === 'runDailyDigest';
+  });
+  if(existing.length > 0){
+    Logger.log('runDailyDigest trigger already exists (' + existing.length + ') — not creating another.');
+    return;
+  }
+  ScriptApp.newTrigger('runDailyDigest').timeBased().everyDays(1).atHour(8).create();
+  Logger.log('Created daily trigger for runDailyDigest at ~8am ' + Session.getScriptTimeZone());
+}
