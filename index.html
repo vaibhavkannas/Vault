@@ -399,7 +399,7 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.04 · 10:07';
+const APP_VERSION = '2026.09.04 · 12:18';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1346,8 +1346,15 @@ function renderVault(app){
     .filter(d => d.days<=60 && d.days>=-EXPIRED_REMINDER_GRACE_DAYS)
     .sort((a,b)=>a.days-b.days);
 
+  // Pinned documents get their own section above everything else, including Renewals — unlike
+  // Renewals (system-computed from expiry dates), a pin is the user's own explicit "I reach for
+  // this one" signal, so it takes priority. Shown only there, not duplicated in their category
+  // section below, to avoid the same document appearing twice in one screen.
+  const pinnedDocs = filtered.filter(d => d.pinned);
+  const unpinnedFiltered = filtered.filter(d => !d.pinned);
+
   const grouped = {};
-  filtered.forEach(d => { (grouped[d.category] = grouped[d.category] || []).push(d); });
+  unpinnedFiltered.forEach(d => { (grouped[d.category] = grouped[d.category] || []).push(d); });
   const knownCatOrder = state.categories.map(c=>c.id).filter(c => grouped[c] && grouped[c].length);
   // Categories aren't part of the offline cache (see the offline document cache section above) —
   // in offline mode state.categories is empty, which would otherwise silently drop every document
@@ -1380,6 +1387,11 @@ function renderVault(app){
         <input type="text" id="searchInput" placeholder="Search titles or text inside documents" value="${escapeHtml(state.searchQuery)}" />
       </div>
       ${state.searchQuery ? `<div class="search-hint">${filtered.length} result${filtered.length===1?'':'s'} for "${escapeHtml(state.searchQuery)}"</div>` : ''}
+
+      ${pinnedDocs.length ? `
+        <div class="section-title">Pinned</div>
+        <div class="doc-card-grid">${pinnedDocs.map(renderDocCard).join('')}</div>
+      ` : ''}
 
       ${!state.searchQuery && !state.showArchived && upcoming.length ? `
         <div class="section-title">Renewals</div>
@@ -1488,7 +1500,8 @@ function renderVault(app){
       const action = btn.getAttribute('data-menu-action');
       const doc = state.documents.find(x => x.id === docId);
       state.openActionMenu = null;
-      if(action === 'edit') openEditModal(docId);
+      if(action === 'pin') togglePin(docId);
+      else if(action === 'edit') openEditModal(docId);
       else if(action === 'extractText') extractTextForDocument(docId);
       else if(action === 'archive') toggleArchive(docId);
       else if(action === 'remind' && doc) window.open(addToCalendarUrl(doc), '_blank');
@@ -1538,6 +1551,7 @@ function renderDocCard(d){
             <button class="icon-only-btn small" id="menu-${d.id}" aria-label="More actions" aria-haspopup="true" aria-expanded="${menuOpen}">${icon('more',18)}</button>
             ${menuOpen ? `
               <div class="action-menu" id="actionMenu-${d.id}">
+                <button data-menu-action="pin" data-doc="${d.id}">${icon('star',15)} ${d.pinned ? 'Unpin' : 'Pin to top'}</button>
                 <button data-menu-action="edit" data-doc="${d.id}">${icon('edit',15)} Edit</button>
                 ${d.mimeType === 'application/pdf' && !d.ocrText ? `<button data-menu-action="extractText" data-doc="${d.id}">${icon('search',15)} Extract text</button>` : ''}
                 <button data-menu-action="archive" data-doc="${d.id}">${icon(d.archived?'restore':'archive',15)} ${d.archived ? 'Restore' : 'Archive'}</button>
@@ -2159,6 +2173,16 @@ async function toggleArchive(id){
   toast(doc.archived ? 'Archived' : 'Restored');
   try{ await userDoc().collection('documents').doc(id).update({archived: doc.archived}); }
   catch(e){ console.error('Failed to update archive state', e); }
+}
+
+async function togglePin(id){
+  const doc = state.documents.find(d => d.id === id);
+  if(!doc) return;
+  doc.pinned = !doc.pinned;
+  render();
+  toast(doc.pinned ? 'Pinned to top' : 'Unpinned');
+  try{ await userDoc().collection('documents').doc(id).update({pinned: doc.pinned}); }
+  catch(e){ console.error('Failed to update pin state', e); }
 }
 
 // Backfills OCR text for a PDF that was uploaded before this app ran OCR on PDFs at all (or one
