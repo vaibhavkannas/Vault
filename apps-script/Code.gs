@@ -219,17 +219,21 @@ function firestoreFieldsToObject(fields){
   return obj;
 }
 
-// Looks up each subscriber's real address via Identity Toolkit's accounts:lookup (batched by
-// localId) rather than trusting the client-writable `email` field stored alongside the
-// subscription doc — any signed-in user can rewrite that field via the Firestore JS SDK (there's
-// no Security Rule constraining it to their own verified address), and this MailApp.sendEmail call
-// below runs as the project owner, so an unverified field here is a way to redirect that send to
-// an arbitrary address.
+// Looks up each subscriber's real address via the Identity Platform Admin API's project-scoped
+// accounts:lookup (batched by localId) rather than trusting the client-writable `email` field
+// stored alongside the subscription doc — any signed-in user can rewrite that field via the
+// Firestore JS SDK (there's no Security Rule constraining it to their own verified address), and
+// this MailApp.sendEmail call below runs as the project owner, so an unverified field here is a
+// way to redirect that send to an arbitrary address.
+//
+// Deliberately NOT the plain /v1/accounts:lookup?key=... endpoint verifyIdToken() above uses —
+// that's the client-facing surface for verifying a single caller's own ID token. Bulk lookup by
+// UID needs this project-scoped endpoint instead, authenticated purely via the OAuth token (no API
+// key), the same one the Admin SDK's getUsers()/listUsers() call under the hood.
 function resolveVerifiedEmails(uids){
   if(!uids.length) return {};
-  const key = PropertiesService.getScriptProperties().getProperty('FIREBASE_WEB_API_KEY');
   const res = UrlFetchApp.fetch(
-    'https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=' + key,
+    'https://identitytoolkit.googleapis.com/v1/projects/' + FIRESTORE_PROJECT_ID + '/accounts:lookup',
     {
       method: 'post',
       contentType: 'application/json',
@@ -240,6 +244,11 @@ function resolveVerifiedEmails(uids){
   );
   let body;
   try{ body = JSON.parse(res.getContentText()); } catch(err){ body = {}; }
+  if(!body.users || !body.users.length){
+    // Never silently swallow this — an admin lookup that resolves nobody despite real uids to look
+    // up is exactly the failure mode that already cost a long debugging session once.
+    console.error('resolveVerifiedEmails: resolved 0 of ' + uids.length + ' uid(s) — HTTP ' + res.getResponseCode() + ': ' + res.getContentText());
+  }
   const map = {};
   (body.users || []).forEach(function(u){ if(u.email) map[u.localId] = u.email; });
   return map;
