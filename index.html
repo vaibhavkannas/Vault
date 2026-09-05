@@ -108,7 +108,10 @@
   input[type="text"], input[type="date"], input[type="password"], select, textarea{width:100%;padding:12px 14px;border:1px solid transparent;border-radius:var(--radius-sm);background:var(--surface-container);font-size:14px;color:var(--ink);margin-bottom:12px;font-family:inherit;}
   input[type="text"]:focus, input[type="date"]:focus, input[type="password"]:focus, select:focus, textarea:focus{outline:2px solid var(--brass);outline-offset:-1px;}
   input[type="password"]{letter-spacing:0.3em;}
-  button.primary{width:100%;padding:13px 16px;background:var(--brass);color:var(--on-brass);border:none;border-radius:var(--radius-full);font-size:14px;font-weight:500;cursor:pointer;}
+  /* display:flex (not the plain text-centering a <button> gets by default) so an icon — svg.icon
+     below is display:block — sits inline with its label instead of dropping to its own line; a
+     text-only .primary button centers exactly the same either way, so this is safe everywhere. */
+  button.primary{width:100%;padding:13px 16px;background:var(--brass);color:var(--on-brass);border:none;border-radius:var(--radius-full);font-size:14px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;}
   button.primary:active{transform:scale(0.98);}
   button.primary:disabled{opacity:0.5;}
   button.danger-solid{width:100%;padding:13px 16px;background:var(--danger);color:var(--on-danger);border:none;border-radius:var(--radius-full);font-size:14px;font-weight:500;cursor:pointer;}
@@ -500,7 +503,7 @@ const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry, 
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.05 · 05:46';
+const APP_VERSION = '2026.09.05 · 06:16';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -789,6 +792,12 @@ window.addEventListener('popstate', () => {
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.05 · 06:16',
+    items: [
+      "Fixed misaligned icon/text on the new \"Share file\" button — and on Quick Reference's Add button, which had the same underlying issue."
+    ]
+  },
   {
     version: '2026.09.05 · 05:46',
     items: [
