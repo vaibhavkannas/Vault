@@ -300,8 +300,19 @@
   .scroll-hint{display:flex;align-items:center;justify-content:center;gap:4px;color:var(--ink-soft);font-size:12px;margin:0 0 14px;}
   .page-thumbs{display:flex;gap:8px;overflow-x:auto;margin-bottom:12px;padding-bottom:4px;}
   .page-thumb-wrap{position:relative;flex:none;}
-  .page-thumb{width:56px;height:56px;border-radius:10px;object-fit:cover;display:block;}
+  .page-thumb{width:56px;height:56px;border-radius:10px;object-fit:cover;display:block;cursor:pointer;}
   .page-thumb-del{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--danger);color:var(--on-danger);border:2px solid var(--paper);font-size:13px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;}
+  /* Sized to the image's own rendered box (inline-block shrinks to content) so cropBox's
+     left/top/width/height land directly in the image's on-screen coordinate space — no
+     letterboxing offset math needed anywhere in wireCropOverlay(). */
+  .crop-stage{position:relative;display:inline-block;margin:0 auto 14px;max-width:100%;touch-action:none;}
+  .crop-stage img{display:block;max-width:100%;max-height:56vh;width:auto;height:auto;border-radius:8px;user-select:none;-webkit-user-drag:none;}
+  .crop-box{position:absolute;border:2px solid var(--brass);box-shadow:0 0 0 9999px rgba(0,0,0,0.45);cursor:move;touch-action:none;}
+  .crop-handle{position:absolute;width:40px;height:40px;margin:-20px;border-radius:50%;background:rgba(26,115,232,0.35);border:2px solid var(--brass);touch-action:none;}
+  .crop-handle[data-handle="tl"]{left:0;top:0;cursor:nwse-resize;}
+  .crop-handle[data-handle="tr"]{left:100%;top:0;cursor:nesw-resize;}
+  .crop-handle[data-handle="bl"]{left:0;top:100%;cursor:nesw-resize;}
+  .crop-handle[data-handle="br"]{left:100%;top:100%;cursor:nwse-resize;}
   .progress-row{font-size:12.5px;color:var(--ink-soft);text-align:center;margin:10px 0;}
   .progress-track{height:4px;background:var(--surface-container);border-radius:4px;overflow:hidden;margin-bottom:6px;}
   .progress-fill{height:100%;background:var(--brass);transition:width 0.2s ease;}
@@ -550,7 +561,7 @@ const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry';
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.05 · 14:58';
+const APP_VERSION = '2026.09.05 · 15:04';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -666,7 +677,16 @@ const state = {
   collapsedCats: {},
   showArchived: false,
   cameraStream: null,
-  capturedPages: [],  // dataURLs from camera, before combining
+  capturedPages: [],  // dataURLs from camera, before combining — the only thing saveCameraDocument() reads
+  capturedPagesRaw: [], // parallel to capturedPages: the untouched original capture per page, so
+                         // re-opening the crop step re-crops from the real source instead of an
+                         // already-cropped/already-filtered image
+  capturedPageEnhance: [], // parallel to capturedPages: whether the Enhance toggle was on for that page
+  cropIndex: null, // index into capturedPages currently open in the crop step; null = crop UI closed.
+                    // cropIndex === capturedPages.length means "new page not yet appended"
+  cropSourceDataUrl: null, // the raw dataURL currently loaded into the crop <img>
+  cropRect: null, // live crop rectangle in on-screen CSS px, relative to the crop <img>: {x,y,w,h}
+  cropEnhanceOn: false, // live Enhance toggle state for the open crop screen
   openActionMenu: null, // doc id whose card's ⋮ overflow menu is currently open, or null
   offlineDocIds: new Set(), // doc ids with a file blob cached in IndexedDB for offline viewing
   isOfflineMode: false, // true when the vault opened with no Drive/Firestore connection at all
@@ -853,6 +873,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.05 · 15:04',
+    items: [
+      "Capturing a document now lets you crop the page (drag the corners) and optionally enhance it for text clarity before it's saved — you can also reopen any already-captured page to re-crop or re-enhance it before saving."
+    ]
+  },
   {
     version: '2026.09.05 · 14:58',
     items: [
@@ -3364,52 +3390,93 @@ function renderModal(){
   }
 
   if(state.modal === 'camera'){
-    overlay.innerHTML = `
-      <div class="modal-sheet">
-        <div class="sheet-handle" id="cameraHandle" aria-hidden="true"></div>
-        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
-        <h3>Capture a document</h3>
-        <p class="sub">Capture one page at a time — saved as a single PDF either way.</p>
-        <div class="camera-wrap"><video id="cameraVideo" autoplay playsinline></video></div>
-        <div class="camera-controls">
-          <button class="capture-btn" id="captureBtn">Capture page</button>
-        </div>
-        <p class="scroll-hint">${icon('chevronDown',14)} Title, category, expiry &amp; save button below</p>
-        ${state.capturedPages.length ? `<div class="page-thumbs">${state.capturedPages.map((p,i)=>`
-          <div class="page-thumb-wrap">
-            <img class="page-thumb" src="${p}">
-            <button type="button" class="page-thumb-del" data-remove-page="${i}" aria-label="Remove this page">×</button>
+    if(state.cropIndex !== null){
+      overlay.innerHTML = `
+        <div class="modal-sheet crop-sheet">
+          <div class="modal-close"><button id="closeCropBtn" aria-label="Cancel crop">×</button></div>
+          <h3>Adjust page</h3>
+          <p class="sub">Drag the corners to crop, or drag inside the frame to move it.</p>
+          <div class="crop-stage" id="cropStage">
+            <img id="cropImage" src="${state.cropSourceDataUrl}" draggable="false" />
+            <div class="crop-box" id="cropBox">
+              <div class="crop-handle" data-handle="tl"></div>
+              <div class="crop-handle" data-handle="tr"></div>
+              <div class="crop-handle" data-handle="bl"></div>
+              <div class="crop-handle" data-handle="br"></div>
+            </div>
           </div>
-        `).join('')}</div>` : ''}
-        <div class="progress-row" id="ocrProgress" style="display:none;"></div>
-        <label class="field-label">Document title</label>
-        <input type="text" id="camTitle" placeholder="e.g. Electricity bill" value="${escapeHtml(pendingCamTitle)}" />
-        <label class="field-label">Category</label>
-        <select id="camCategory">${categoryOptionsHtml(pendingCamCategory)}</select>
-        <div class="suggest-note" id="camCategorySuggestNote" style="display:none;"></div>
-        <label class="field-label">Expiry date (optional)</label>
-        <input type="date" id="camExpiry" value="${pendingCamExpiry}" />
-        <div class="suggest-note" id="camExpirySuggestNote" style="display:none;"></div>
-        <label class="field-label">Remind me (days before expiry, optional)</label>
-        <input type="text" id="camReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml(pendingCamReminderDaysText)}" />
-        <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
-        <div class="error-text" id="camErr" style="display:none;"></div>
-        <button class="primary" id="saveCamBtn" ${state.capturedPages.length && !pendingOcrRunning ? '' : 'disabled'}>Save as PDF (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    document.getElementById('closeModalBtn').onclick = closeModal;
-    document.getElementById('captureBtn').onclick = capturePage;
-    document.getElementById('saveCamBtn').onclick = saveCameraDocument;
-    document.getElementById('camCategory').onchange = () => {
-      categoryManuallyChanged = true;
-      pendingCamCategory = document.getElementById('camCategory').value;
-    };
-    overlay.querySelectorAll('[data-remove-page]').forEach(btn => {
-      btn.onclick = () => removeCapturedPage(+btn.getAttribute('data-remove-page'));
-    });
-    enableSwipeToDismiss(overlay.querySelector('.modal-sheet'), document.getElementById('cameraHandle'));
-    startCamera();
+          <label class="settings-row" style="cursor:pointer;">
+            <span>Enhance for text (contrast + brightness)</span>
+            <input type="checkbox" id="cropEnhanceToggle" ${state.cropEnhanceOn ? 'checked' : ''} style="width:auto;margin:0;flex:none;" />
+          </label>
+          <div class="camera-controls">
+            <button class="ghost" id="cancelCropBtn">Cancel</button>
+            <button class="primary" id="confirmCropBtn">Use this crop</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+      document.getElementById('closeCropBtn').onclick = cancelCrop;
+      document.getElementById('cancelCropBtn').onclick = cancelCrop;
+      document.getElementById('confirmCropBtn').onclick = confirmCrop;
+      document.getElementById('cropEnhanceToggle').onchange = (e) => {
+        state.cropEnhanceOn = e.target.checked;
+        document.getElementById('cropImage').style.filter = e.target.checked ? ENHANCE_FILTER : '';
+      };
+      wireCropOverlay();
+      // Deliberately no enableSwipeToDismiss here — a downward drag anywhere in this sheet must
+      // move/resize the crop box, never dismiss the sheet; Cancel/× are the only exits.
+    } else {
+      overlay.innerHTML = `
+        <div class="modal-sheet">
+          <div class="sheet-handle" id="cameraHandle" aria-hidden="true"></div>
+          <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+          <h3>Capture a document</h3>
+          <p class="sub">Capture one page at a time — saved as a single PDF either way.</p>
+          <div class="camera-wrap"><video id="cameraVideo" autoplay playsinline></video></div>
+          <div class="camera-controls">
+            <button class="capture-btn" id="captureBtn">Capture page</button>
+          </div>
+          <p class="scroll-hint">${icon('chevronDown',14)} Title, category, expiry &amp; save button below</p>
+          ${state.capturedPages.length ? `<div class="page-thumbs">${state.capturedPages.map((p,i)=>`
+            <div class="page-thumb-wrap">
+              <img class="page-thumb" src="${p}" data-edit-page="${i}">
+              <button type="button" class="page-thumb-del" data-remove-page="${i}" aria-label="Remove this page">×</button>
+            </div>
+          `).join('')}</div>` : ''}
+          <div class="progress-row" id="ocrProgress" style="display:none;"></div>
+          <label class="field-label">Document title</label>
+          <input type="text" id="camTitle" placeholder="e.g. Electricity bill" value="${escapeHtml(pendingCamTitle)}" />
+          <label class="field-label">Category</label>
+          <select id="camCategory">${categoryOptionsHtml(pendingCamCategory)}</select>
+          <div class="suggest-note" id="camCategorySuggestNote" style="display:none;"></div>
+          <label class="field-label">Expiry date (optional)</label>
+          <input type="date" id="camExpiry" value="${pendingCamExpiry}" />
+          <div class="suggest-note" id="camExpirySuggestNote" style="display:none;"></div>
+          <label class="field-label">Remind me (days before expiry, optional)</label>
+          <input type="text" id="camReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml(pendingCamReminderDaysText)}" />
+          <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
+          <div class="error-text" id="camErr" style="display:none;"></div>
+          <button class="primary" id="saveCamBtn" ${state.capturedPages.length && !pendingOcrRunning ? '' : 'disabled'}>Save as PDF (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+      document.getElementById('closeModalBtn').onclick = closeModal;
+      document.getElementById('captureBtn').onclick = capturePage;
+      document.getElementById('saveCamBtn').onclick = saveCameraDocument;
+      document.getElementById('camCategory').onchange = () => {
+        categoryManuallyChanged = true;
+        pendingCamCategory = document.getElementById('camCategory').value;
+      };
+      overlay.querySelectorAll('[data-remove-page]').forEach(btn => {
+        btn.onclick = () => removeCapturedPage(+btn.getAttribute('data-remove-page'));
+      });
+      overlay.querySelectorAll('[data-edit-page]').forEach(img => {
+        img.onclick = () => openCropForExistingPage(+img.getAttribute('data-edit-page'));
+      });
+      enableSwipeToDismiss(overlay.querySelector('.modal-sheet'), document.getElementById('cameraHandle'));
+      startCamera();
+    }
   }
 
   if(state.modal === 'share'){
@@ -3772,9 +3839,104 @@ async function startCamera(){
 function stopCamera(){
   if(state.cameraStream){ state.cameraStream.getTracks().forEach(t=>t.stop()); state.cameraStream = null; }
 }
-function openCameraModal(){ state.modal = 'camera'; state.capturedPages = []; pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingCamTitle = ''; pendingCamCategory = null; pendingCamExpiry = ''; pendingCamReminderDaysText = ''; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+function openCameraModal(){
+  state.modal = 'camera'; state.capturedPages = []; state.capturedPagesRaw = []; state.capturedPageEnhance = [];
+  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropRect = null; state.cropEnhanceOn = false;
+  pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false;
+  categoryManuallyChanged = false; pendingCamTitle = ''; pendingCamCategory = null; pendingCamExpiry = '';
+  pendingCamReminderDaysText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
+}
 
-async function capturePage(){
+const CROP_MIN_SIZE = 40; // on-screen px — keeps handles draggable and forbids a degenerate 0-area crop
+
+// A "leading" edge (top or left): the edge AT `pos` moves by `delta`; the OPPOSITE edge (pos+size)
+// must stay fixed, so size shrinks by exactly what pos grows. Clamped so pos can't cross 0 and size
+// can't drop below CROP_MIN_SIZE — clamps the DELTA itself (not pos/size after the fact), so the box
+// never needs a second corrective jump.
+function dragLeadingEdge(pos, size, delta){
+  const dMin = -pos;
+  const dMax = size - CROP_MIN_SIZE;
+  const d = Math.max(dMin, Math.min(delta, dMax));
+  return {pos: pos + d, size: size - d};
+}
+// A "trailing" edge (bottom or right): the edge AT `pos+size` moves by `delta`; `pos` is fixed.
+// Clamped so the moving edge stays within [pos+CROP_MIN_SIZE, axisLimit].
+function dragTrailingEdge(pos, size, delta, axisLimit){
+  const dMin = CROP_MIN_SIZE - size;
+  const dMax = axisLimit - (pos + size);
+  const d = Math.max(dMin, Math.min(delta, dMax));
+  return {size: size + d};
+}
+
+// Wires the crop step's drag interactions: a default centered box on first paint, a plain move-drag
+// on the box itself, and clamped resize on each of the four corner handles. The stage is an
+// inline-block wrapper sized to the image's own rendered box (see the .crop-stage CSS), so
+// stage.clientWidth/Height are exactly the image's on-screen size and cropBox's left/top/width/
+// height land directly in the image's own coordinate space — no letterboxing offset math needed.
+function wireCropOverlay(){
+  const img = document.getElementById('cropImage');
+  const stage = document.getElementById('cropStage');
+  const box = document.getElementById('cropBox');
+  if(state.cropEnhanceOn) img.style.filter = ENHANCE_FILTER;
+
+  function paintBox(){
+    const r = state.cropRect;
+    box.style.left = r.x + 'px'; box.style.top = r.y + 'px';
+    box.style.width = r.w + 'px'; box.style.height = r.h + 'px';
+  }
+  function initRect(){
+    if(state.cropRect){ paintBox(); return; }
+    const w = img.clientWidth, h = img.clientHeight;
+    const mx = w * 0.05, my = h * 0.05; // default: centered box, 5% margin each side
+    state.cropRect = {x: mx, y: my, w: w - mx * 2, h: h - my * 2};
+    paintBox();
+  }
+  if(img.complete && img.naturalWidth) initRect(); else img.onload = initRect;
+
+  let dragMode = null; // 'move' | 'tl' | 'tr' | 'bl' | 'br' | null
+  let startPointer = {x: 0, y: 0};
+  let startRect = null;
+
+  function onPointerDown(mode, e){
+    e.preventDefault(); e.stopPropagation();
+    dragMode = mode;
+    startPointer = {x: e.clientX, y: e.clientY};
+    startRect = {...state.cropRect};
+    stage.setPointerCapture(e.pointerId);
+  }
+  box.addEventListener('pointerdown', (e) => onPointerDown('move', e));
+  box.querySelectorAll('.crop-handle').forEach(h => {
+    h.addEventListener('pointerdown', (e) => onPointerDown(h.dataset.handle, e));
+  });
+
+  stage.addEventListener('pointermove', (e) => {
+    if(!dragMode) return;
+    const dx = e.clientX - startPointer.x, dy = e.clientY - startPointer.y;
+    const stageW = stage.clientWidth, stageH = stage.clientHeight;
+    let r = {...startRect};
+    if(dragMode === 'move'){
+      r.x = Math.max(0, Math.min(startRect.x + dx, stageW - startRect.w));
+      r.y = Math.max(0, Math.min(startRect.y + dy, stageH - startRect.h));
+    } else {
+      const isLeft = dragMode === 'tl' || dragMode === 'bl';
+      const isTop = dragMode === 'tl' || dragMode === 'tr';
+      if(isLeft){ const res = dragLeadingEdge(startRect.x, startRect.w, dx); r.x = res.pos; r.w = res.size; }
+      else { const res = dragTrailingEdge(startRect.x, startRect.w, dx, stageW); r.w = res.size; }
+      if(isTop){ const res = dragLeadingEdge(startRect.y, startRect.h, dy); r.y = res.pos; r.h = res.size; }
+      else { const res = dragTrailingEdge(startRect.y, startRect.h, dy, stageH); r.h = res.size; }
+    }
+    state.cropRect = r;
+    paintBox();
+  });
+  const endDrag = () => { dragMode = null; };
+  stage.addEventListener('pointerup', endDrag);
+  stage.addEventListener('pointercancel', endDrag);
+}
+
+// Grabs the raw video frame and opens the crop step on it rather than storing it directly — OCR
+// and the suggestion logic that used to run right here now run at the end of confirmCrop() instead,
+// on the cropped/enhanced pixels, which is a free accuracy improvement (no background/margins).
+function capturePage(){
   const video = document.getElementById('cameraVideo');
   if(!video || !video.videoWidth) return;
   snapshotCamFormFields();
@@ -3782,13 +3944,70 @@ async function capturePage(){
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
   canvas.getContext('2d').drawImage(video, 0, 0);
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-  state.capturedPages.push(dataUrl);
-  pendingPageOcrTexts.push('');
+  state.cropIndex = state.capturedPages.length; // "append" position — not pushed yet
+  state.cropSourceDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+  state.cropEnhanceOn = false;
+  state.cropRect = null; // computed on first paint, once the image's on-screen size is known
+  renderModal();
+}
+
+// Re-opens the crop step for an already-captured page, seeded from its untouched original capture
+// rather than its current (possibly already cropped/enhanced) stored image — otherwise repeated
+// edits would compound quality loss each time.
+function openCropForExistingPage(index){
+  state.cropIndex = index;
+  state.cropSourceDataUrl = state.capturedPagesRaw[index];
+  state.cropEnhanceOn = !!state.capturedPageEnhance[index];
+  state.cropRect = null; // re-editing starts from a fresh centered box, not the exact previous rect
+  renderModal();
+}
+
+const ENHANCE_FILTER = 'contrast(1.4) brightness(1.08) saturate(0.9)';
+
+// Bakes the crop (and, if enabled, the enhance filter) onto a full-resolution canvas and replaces
+// or appends into state.capturedPages — the only thing saveCameraDocument()'s jsPDF loop ever
+// reads, so that loop needs no changes at all. The on-screen crop rect is converted to true source
+// pixels via the live <img>'s natural-vs-rendered size ratio, so the output is never upsampled
+// beyond what the camera actually captured.
+async function confirmCrop(){
+  const img = document.getElementById('cropImage');
+  const r = state.cropRect;
+  const scaleX = img.naturalWidth / img.clientWidth, scaleY = img.naturalHeight / img.clientHeight;
+  const sx = Math.round(r.x * scaleX), sy = Math.round(r.y * scaleY);
+  const sw = Math.round(r.w * scaleX), sh = Math.round(r.h * scaleY);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = sw; canvas.height = sh;
+  const ctx = canvas.getContext('2d');
+  if(state.cropEnhanceOn) ctx.filter = ENHANCE_FILTER; // must be set before drawImage
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+
+  const index = state.cropIndex;
+  const isNewPage = index === state.capturedPages.length;
+  const rawSrc = state.cropSourceDataUrl;
+  const enhanceOn = state.cropEnhanceOn;
+  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropRect = null;
+
+  if(isNewPage){
+    state.capturedPages.push(dataUrl);
+    state.capturedPagesRaw.push(rawSrc);
+    state.capturedPageEnhance.push(enhanceOn);
+    pendingPageOcrTexts.push('');
+  } else {
+    state.capturedPages[index] = dataUrl; // in-place replace — saveCameraDocument() needs no change
+    state.capturedPageEnhance[index] = enhanceOn;
+    // capturedPagesRaw[index] deliberately untouched — a future re-edit keeps starting from the
+    // real original, not from this crop's own output.
+  }
   pendingOcrRunning = true;
   renderModal();
-  const pageNum = state.capturedPages.length;
-  const pageText = await runOcr(dataUrl, pct => setOcrProgress(pct, pageNum, pageNum));
+  const pageNum = isNewPage ? state.capturedPages.length : index + 1;
+  const totalPages = state.capturedPages.length;
+
+  // Same OCR/suggestion tail capturePage() used to run inline, now running on the cropped and
+  // possibly-enhanced pixels instead of the raw frame.
+  const pageText = await runOcr(dataUrl, pct => setOcrProgress(pct, pageNum, totalPages));
   const progEl = document.getElementById('ocrProgress');
   if(progEl) progEl.style.display = 'none';
   // Re-find this page's CURRENT position rather than trusting the index captured before the
@@ -3800,16 +4019,26 @@ async function capturePage(){
   applyExpirySuggestionIfEmpty('camExpiry', 'camExpirySuggestNote', pendingOcrText);
   applyCategorySuggestionIfUntouched('camCategory', 'camCategorySuggestNote', pendingOcrText);
   // Re-snapshot — a suggestion above may have just written into the expiry/category fields
-  // directly, so this picks that up too, ready for the next capturePage()'s own renderModal().
+  // directly, so this picks that up too, ready for the next renderModal().
   snapshotCamFormFields();
   pendingOcrRunning = false;
   const saveBtn = document.getElementById('saveCamBtn');
   if(saveBtn) saveBtn.disabled = false;
 }
 
+function cancelCrop(){
+  // A brand-new capture that's cancelled was never pushed to capturedPages — nothing to roll back
+  // beyond closing the overlay. Cancelling an edit of an existing page leaves its stored image
+  // untouched, since confirmCrop() never ran.
+  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropRect = null;
+  renderModal();
+}
+
 function removeCapturedPage(index){
   snapshotCamFormFields();
   state.capturedPages.splice(index, 1);
+  state.capturedPagesRaw.splice(index, 1);
+  state.capturedPageEnhance.splice(index, 1);
   pendingPageOcrTexts.splice(index, 1);
   pendingOcrText = pendingPageOcrTexts.join('\n').trim();
   renderModal();
