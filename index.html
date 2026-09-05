@@ -561,7 +561,7 @@ const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry';
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.05 · 15:04';
+const APP_VERSION = '2026.09.05 · 15:12';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -692,6 +692,8 @@ const state = {
   isOfflineMode: false, // true when the vault opened with no Drive/Firestore connection at all
   reminderSettings: {emailDigestEnabled: false, pushEnabled: false}, // loaded in loadUserData(), see meta/reminderSettings
   quickRefs: [], // [{id, label, value, addedAt}] — the standalone label/value list, see renderQuickRef()
+  quickRefsDriveFileId: null, // Drive file id of Vault/quickrefs.json once discovered/created this
+                              // session — null until the first successful load or save
   editQuickRefId: null, // null while adding a new entry, else the id being edited
   revealedQuickRefIds: new Set(), // which entries currently show their value in the clear, not masked
   quickRefSearchQuery: ''
@@ -873,6 +875,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.05 · 15:12',
+    items: [
+      "Quick Reference entries now live in your own Drive \"Vault\" folder alongside your documents, instead of a separate cloud database — existing entries move over automatically the next time you open Vault, and they're now included in the backup zip too."
+    ]
+  },
   {
     version: '2026.09.05 · 15:04',
     items: [
@@ -1504,6 +1512,16 @@ async function driveFindAllFolderIdsByName(name, parentId){
   const json = await res.json();
   return (json.files || []).map(f => f.id);
 }
+// Same query shape as driveFindFolder, but for a plain (non-folder) file by exact name — used to
+// locate Vault/quickrefs.json without needing any Firestore pointer doc for it.
+async function driveFindFile(name, parentId){
+  const escaped = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const parentClause = parentId ? `'${parentId}' in parents` : `'root' in parents`;
+  const q = encodeURIComponent(`${parentClause} and name='${escaped}' and mimeType!='application/vnd.google-apps.folder' and trashed=false`);
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`);
+  const json = await res.json();
+  return (json.files && json.files.length) ? json.files[0].id : null;
+}
 
 // Files are stored as their real type (image/PDF) — not encrypted, per product decision — so
 // they're directly viewable if opened in Drive itself. Google's multipart-upload endpoint is
@@ -1774,6 +1792,55 @@ function clearOfflineCache(){
   try{ localStorage.removeItem(OFFLINE_QUICKREFS_KEY); } catch(e){ console.warn('Could not clear the offline Quick Reference cache', e); }
 }
 
+const QUICKREFS_DRIVE_FILENAME = 'quickrefs.json';
+// Whole-file read: Quick Reference lives as one JSON file (not one Firestore doc per entry) in the
+// Vault folder — reuses the same alt=media download idiom already used for documents (viewDocument,
+// getDocumentBlob, runSyncFromDrive, buildDocumentsZipBlob), just parsed as JSON instead of a Blob.
+async function loadQuickRefsFromDrive(){
+  const fileId = await driveFindFile(QUICKREFS_DRIVE_FILENAME, state.vaultFolderId);
+  if(!fileId) return {fileId: null, items: []};
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+  const parsed = await res.json();
+  return {fileId, items: Array.isArray(parsed.items) ? parsed.items : []};
+}
+// Whole-file write: uploads a fresh quickrefs.json (reusing driveUpload exactly as document saves
+// do), and only once that succeeds deletes the previous file, if any — the same create-before-
+// delete ordering finalizeAndStoreDocument uses in reverse, so a failure between the two steps
+// never leaves zero copies. This is a plain create-then-delete rather than an in-place update, which
+// needs no new Drive endpoint shape beyond driveFindFile — everything else here is driveUpload/
+// driveDelete as they already exist. Two tabs/devices editing concurrently can race and overwrite
+// each other's write — accepted for a single-user app, same as any other last-write-wins field here.
+async function saveQuickRefsToDrive(items, existingFileId){
+  const blob = new Blob([JSON.stringify({version: 1, updatedAt: new Date().toISOString(), items})], {type: 'application/json'});
+  const newFileId = await driveUpload(blob, QUICKREFS_DRIVE_FILENAME, 'application/json', state.vaultFolderId);
+  if(existingFileId){
+    try{ await driveDelete(existingFileId); } catch(e){ console.error('Could not clean up the previous quickrefs.json', e); }
+  }
+  return newFileId;
+}
+// One-time migration entry point, called from loadUserData() once state.vaultFolderId is known.
+// Prefers an existing Drive file as sole source of truth; only reads (and migrates) the legacy
+// Firestore users/{uid}/quickRefs collection when no Drive file exists yet, and only deletes those
+// legacy docs after the Drive write is confirmed — a failure partway through leaves the Firestore
+// originals untouched, so the exact same migration simply retries on the next load.
+async function migrateAndLoadQuickRefs(loadDoc){
+  const fromDrive = await loadQuickRefsFromDrive();
+  if(fromDrive.fileId) return fromDrive;
+  const legacySnap = await loadDoc().collection('quickRefs').orderBy('addedAt', 'desc').get();
+  if(legacySnap.empty) return {fileId: null, items: []};
+  const legacyItems = legacySnap.docs.map(d => ({id: d.id, ...d.data()}));
+  try{
+    const fileId = await saveQuickRefsToDrive(legacyItems, null);
+    const batch = db.batch();
+    legacySnap.docs.forEach(d => batch.delete(d.ref));
+    await batch.commit();
+    return {fileId, items: legacyItems};
+  } catch(e){
+    console.error('Quick Reference migration to Drive failed — will retry next load', e);
+    return {fileId: null, items: legacyItems};
+  }
+}
+
 // Loads everything for the signed-in account. Called right after sign-in once state.user.uid
 // and a valid Drive token are both ready — provisioning a brand-new account needs Drive access.
 async function loadUserData(){
@@ -1792,14 +1859,15 @@ async function loadUserData(){
   const everProvisionedFallback = () => { try{ return localStorage.getItem('vault-ever-provisioned-' + uid) === 'true'; } catch(e){ return false; } };
   try{
     // metaSnap doesn't depend on anything below, and nothing below except categories depends on
-    // it — it used to be awaited alone, before even issuing the other four reads, which cost a
+    // it — it used to be awaited alone, before even issuing the other reads, which cost a
     // full extra round trip on every sign-in/reopen for no reason. Firing it in the same wave
-    // turns "meta, then everything else" into "everything (except categories) at once."
-    const [metaSnap, docsSnap, reminderSnap, quickRefsSnap] = await Promise.all([
+    // turns "meta, then everything else" into "everything (except categories, and Quick Reference
+    // — see below) at once." Quick Reference isn't read here at all anymore: it now lives in Drive,
+    // which needs state.vaultFolderId settled first, so migrateAndLoadQuickRefs() runs further down.
+    const [metaSnap, docsSnap, reminderSnap] = await Promise.all([
       loadDoc().collection('meta').doc('vault').get(),
       loadDoc().collection('documents').orderBy('addedAt', 'desc').get(),
-      loadDoc().collection('meta').doc('reminderSettings').get(),
-      loadDoc().collection('quickRefs').orderBy('addedAt', 'desc').get()
+      loadDoc().collection('meta').doc('reminderSettings').get()
     ]);
     if(!stillCurrent()) return;
     // metaSnap.data().vaultFolderId is checked, not just metaSnap.exists — an account from
@@ -1833,7 +1901,12 @@ async function loadUserData(){
       return ok;
     });
     state.reminderSettings = reminderSnap.exists ? reminderSnap.data() : {emailDigestEnabled: false, pushEnabled: false};
-    state.quickRefs = quickRefsSnap.docs.map(d => ({id: d.id, ...d.data()}));
+    // state.vaultFolderId is settled by now (both branches above set it) — Quick Reference lives in
+    // Drive, so this is the earliest point it can be read.
+    const {fileId: quickRefsFileId, items: quickRefItems} = await migrateAndLoadQuickRefs(loadDoc);
+    if(!stillCurrent()) return;
+    state.quickRefs = quickRefItems;
+    state.quickRefsDriveFileId = quickRefsFileId;
     cacheAllDocumentMetadataOffline(state.documents); // fire-and-forget — keeps the offline list complete
     cacheQuickRefsOffline(state.quickRefs); // fire-and-forget — keeps Quick Reference usable offline
     syncPushSubscriptionIfNeeded(); // fire-and-forget — never delays the vault's own load
@@ -2569,10 +2642,16 @@ async function saveQuickRef(){
   const ref = existing
     ? {...existing, label, value}
     : {id: 'qr_' + Date.now(), label, value, addedAt: new Date().toISOString()};
+  // Whole-file write: state.quickRefs is already fully loaded in memory (see loadUserData()), so
+  // building the complete next-items array here and overwriting quickrefs.json with it in one go
+  // is the "read-modify-write" a single shared JSON file (rather than one Firestore doc per entry)
+  // requires.
+  const nextItems = existing ? state.quickRefs.map(r => r.id === ref.id ? ref : r) : [ref, ...state.quickRefs];
   try{
-    await userDoc().collection('quickRefs').doc(ref.id).set(ref);
+    state.quickRefsDriveFileId = await saveQuickRefsToDrive(nextItems, state.quickRefsDriveFileId);
     if(existing) Object.assign(existing, ref);
     else state.quickRefs.unshift(ref);
+    cacheQuickRefsOffline(state.quickRefs);
     closeModal();
     toast(existing ? 'Updated' : 'Saved');
   } catch(e){
@@ -2588,15 +2667,20 @@ function requestDeleteQuickRef(id){ state.modal = 'confirmDeleteQuickRef'; state
 async function confirmDeleteQuickRef(){
   const id = state.editQuickRefId;
   const before = state.quickRefs;
+  const beforeFileId = state.quickRefsDriveFileId;
   state.quickRefs = state.quickRefs.filter(r => r.id !== id);
   state.revealedQuickRefIds.delete(id);
   closeModal();
   toast('Deleted');
   try{
-    await userDoc().collection('quickRefs').doc(id).delete();
+    // state.quickRefs here is already the post-filter array (the filter ran above) — exactly what
+    // should replace quickrefs.json.
+    state.quickRefsDriveFileId = await saveQuickRefsToDrive(state.quickRefs, beforeFileId);
+    cacheQuickRefsOffline(state.quickRefs);
   } catch(e){
     console.error('Failed to delete quick reference', e);
     state.quickRefs = before;
+    state.quickRefsDriveFileId = beforeFileId;
     render();
     toast(friendlyCloudError(e));
   }
@@ -4620,7 +4704,14 @@ async function buildDocumentsZipBlob(onProgress){
       failed++;
     }
   }
-  if(!done) return {blob: null, done, failed};
+  // Quick Reference lives in Drive as its own file now, not something this per-document fetch loop
+  // touches — added directly here instead, so both this export and the pre-delete-account backup
+  // (buildDocumentsZipBlob is shared by both) capture it too, at the zip root alongside the
+  // per-category document folders.
+  if(state.quickRefs.length){
+    zip.file('quickrefs.json', JSON.stringify({version: 1, exportedAt: new Date().toISOString(), items: state.quickRefs}, null, 2));
+  }
+  if(!done && !state.quickRefs.length) return {blob: null, done, failed};
   const blob = await zip.generateAsync({type: 'blob'});
   return {blob, done, failed};
 }
@@ -4654,7 +4745,7 @@ async function exportAllDocuments(){
 function resetToLoggedOutState(){
   Object.assign(state, {
     screen: 'login', user: null, driveAccessToken: null, driveTokenExpiresAt: null,
-    vaultFolderId: null, categories: [], documents: [], modal: null,
+    vaultFolderId: null, categories: [], documents: [], modal: null, quickRefsDriveFileId: null,
     searchQuery: '', showArchived: false, collapsedCats: {}, openActionMenu: null, isOfflineMode: false
   });
   // Deliberately not touching history/guard bookkeeping here: an earlier version force-reset a
