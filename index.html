@@ -176,8 +176,12 @@
   .renewal-actions svg{width:14px;height:14px;}
 
   .doc-card{background:var(--paper-2);border-radius:var(--radius);padding:12px;margin-bottom:8px;display:flex;gap:11px;align-items:flex-start;box-shadow:var(--elevation-1);}
-  .doc-card.is-archived{opacity:0.65;}
-  .doc-card.is-offline-unavailable{opacity:0.55;}
+  /* Scoped to the icon/title/meta/snippet only, not the whole card — dimming .doc-actions too made
+     the ⋮ overflow menu (and View/Share) look disabled/unclickable, when they're fully usable. */
+  .doc-card.is-archived .doc-icon, .doc-card.is-archived .doc-title,
+  .doc-card.is-archived .doc-meta, .doc-card.is-archived .doc-snippet{opacity:0.65;}
+  .doc-card.is-offline-unavailable .doc-icon, .doc-card.is-offline-unavailable .doc-title,
+  .doc-card.is-offline-unavailable .doc-meta, .doc-card.is-offline-unavailable .doc-snippet{opacity:0.55;}
   .doc-icon{width:44px;height:44px;border-radius:50%;background:var(--primary-container);color:var(--on-primary-container);display:flex;align-items:center;justify-content:center;flex:none;position:relative;cursor:pointer;}
   .doc-icon.ocr-badge::after{content:'';position:absolute;bottom:-1px;right:-1px;width:10px;height:10px;border-radius:50%;background:var(--success);border:2px solid var(--paper-2);}
   .doc-body{flex:1;min-width:0;}
@@ -523,7 +527,7 @@ const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry';
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.05 · 14:09';
+const APP_VERSION = '2026.09.05 · 14:47';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -629,6 +633,9 @@ const state = {
   editCategoryId: null,
   viewDocId: null,
   renewDocId: null,
+  archiveDocId: null, // doc awaiting a tap-to-confirm in the 'confirmArchive' modal
+  renewalUploadTargetId: null, // set when the 'add' modal was opened from the Renew flow to upload
+                                // a replacement — on save, that doc supersedes this one and this one archives
   pendingChangelogItems: null, // set by maybeShowChangelog() right before showing the 'changelog' modal
   vaultWasAlreadyProvisioned: false, // set in loadUserData(); read by maybeShowChangelog()
   viewObjectUrl: null, // tracks the current in-app viewer's blob URL so it can be revoked on close
@@ -720,7 +727,8 @@ function clearTopLayerState(){
     stopCamera();
     if(state.viewObjectUrl){ URL.revokeObjectURL(state.viewObjectUrl); state.viewObjectUrl = null; }
     state.modal = null; state.shareDocId = null; state.editDocId = null; state.deleteDocId = null;
-    state.editCategoryId = null; state.viewDocId = null; state.renewDocId = null; state.editQuickRefId = null; state.pendingChangelogItems = null; state.capturedPages = [];
+    state.editCategoryId = null; state.viewDocId = null; state.renewDocId = null; state.archiveDocId = null;
+    state.renewalUploadTargetId = null; state.editQuickRefId = null; state.pendingChangelogItems = null; state.capturedPages = [];
     pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false;
   } else if(state.showArchived){
     state.showArchived = false; state.searchQuery = '';
@@ -822,6 +830,15 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.05 · 14:47',
+    items: [
+      "Fixed archived documents (and the offline-unavailable ones) looking so faded that even their ⋮ menu looked disabled — only the icon and title now dim to show it's archived; View, Share, and the menu stay fully usable.",
+      "Renewing a document now offers uploading the new file right away, not just picking an already-added document as the replacement — it pre-fills the title/category from the old document, and archives the old one automatically once the new one is saved.",
+      "Renewal cards now always show both Renew and Archive, instead of only showing Renew once a document was already overdue.",
+      "The renewal card's Archive icon now asks for confirmation first, instead of archiving the moment it's tapped."
+    ]
+  },
   {
     version: '2026.09.05 · 14:09',
     items: [
@@ -2547,8 +2564,8 @@ function renderVault(app){
                 <div class="renewal-title">${escapeHtml(d.title)}</div>
                 <div class="renewal-days">${d.days<0?'Expired':d.days===0?'Due today':d.days+' day'+(d.days===1?'':'s')+' left'}</div>
                 <div class="renewal-actions">
+                  <button class="icon-only-btn small" data-renewal-renew="${d.id}" aria-label="Renew ${escapeHtml(d.title)}" title="Renew">${icon('restore',14)}</button>
                   <button class="icon-only-btn small" data-renewal-archive="${d.id}" aria-label="Archive ${escapeHtml(d.title)}" title="Archive">${icon('archive',14)}</button>
-                  ${d.days<0 ? `<button class="icon-only-btn small" data-renewal-renew="${d.id}" aria-label="Renew ${escapeHtml(d.title)}" title="Renew">${icon('restore',14)}</button>` : ''}
                 </div>
               </div>
             `).join('')}
@@ -2647,7 +2664,7 @@ function renderVault(app){
     el.onkeydown = (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } };
   });
   document.querySelectorAll('[data-renewal-archive]').forEach(btn => {
-    btn.onclick = (e) => { e.stopPropagation(); toggleArchive(btn.getAttribute('data-renewal-archive')); };
+    btn.onclick = (e) => { e.stopPropagation(); requestArchiveDocument(btn.getAttribute('data-renewal-archive')); };
   });
   document.querySelectorAll('[data-renewal-renew]').forEach(btn => {
     btn.onclick = (e) => { e.stopPropagation(); openRenewExpiredModal(btn.getAttribute('data-renewal-renew')); };
@@ -2776,7 +2793,11 @@ let pendingCategorySuggested = false;
 let categoryManuallyChanged = false;
 let pendingOcrRunning = false; // guards against saving before background OCR finishes
 
-function openAddModal(){ state.modal = 'add'; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+function openAddModal(){ state.modal = 'add'; state.renewalUploadTargetId = null; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+// Opens the same 'add' modal, but flagged so saveDocument() links the new file to oldDocId as its
+// replacement and archives oldDocId once the upload succeeds — the direct "upload now" path from
+// the Renew flow, rather than only being able to pick an already-existing document as the reason.
+function openAddModalForRenewal(oldDocId){ state.modal = 'add'; state.renewalUploadTargetId = oldDocId; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
 function closeModal(){
   goBackOneLayer();
 }
@@ -2936,20 +2957,21 @@ function renderModal(){
   overlay.onclick = (e) => { if(e.target === overlay) closeModal(); };
 
   if(state.modal === 'add'){
+    const renewalTarget = state.renewalUploadTargetId ? state.documents.find(d => d.id === state.renewalUploadTargetId) : null;
     overlay.innerHTML = `
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
-        <h3>Add a document</h3>
-        <p class="sub">OCR runs on-device to make it searchable and to suggest an expiry date.</p>
+        <h3>${renewalTarget ? 'Upload replacement document' : 'Add a document'}</h3>
+        <p class="sub">${renewalTarget ? `This replaces "${escapeHtml(renewalTarget.title)}" — once saved, that document is archived and linked to this one.` : `OCR runs on-device to make it searchable and to suggest an expiry date.`}</p>
         <label class="field-label">File</label>
         <div class="file-drop" id="fileDrop">Tap to choose a file</div>
         <input type="file" id="fileInput" accept="image/*,application/pdf" style="display:none;" />
         <div class="search-hint" id="pdfNote" style="display:none;">Multi-page PDFs are OCR'd one page at a time, so this can take a little longer.</div>
         <div class="progress-row" id="ocrProgress" style="display:none;"></div>
         <label class="field-label">Document title</label>
-        <input type="text" id="docTitle" placeholder="e.g. Aadhaar card" />
+        <input type="text" id="docTitle" placeholder="e.g. Aadhaar card" value="${renewalTarget ? escapeHtml(renewalTarget.title) : ''}" />
         <label class="field-label">Category</label>
-        <select id="docCategory">${categoryOptionsHtml()}</select>
+        <select id="docCategory">${categoryOptionsHtml(renewalTarget ? renewalTarget.category : undefined)}</select>
         <div class="suggest-note" id="categorySuggestNote" style="display:none;"></div>
         <label class="field-label">Expiry date (optional)</label>
         <input type="date" id="docExpiry" />
@@ -2958,7 +2980,7 @@ function renderModal(){
         <input type="text" id="docReminderDays" placeholder="e.g. 90, 30, 7" />
         <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
         <div class="error-text" id="addErr" style="display:none;"></div>
-        <button class="primary" id="saveDocBtn">Save document</button>
+        <button class="primary" id="saveDocBtn">${renewalTarget ? 'Save & archive old document' : 'Save document'}</button>
       </div>
     `;
     document.body.appendChild(overlay);
@@ -3045,6 +3067,24 @@ function renderModal(){
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('cancelDelBtn').onclick = closeModal;
     document.getElementById('confirmDelBtn').onclick = confirmDeleteDocument;
+  }
+
+  if(state.modal === 'confirmArchive'){
+    const doc = state.documents.find(d => d.id === state.archiveDocId);
+    if(!doc){ goBackOneLayer(); return; }
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Archive "${escapeHtml(doc.title)}"?</h3>
+        <p class="sub">It stays in Vault for reference, just moved out of your active documents — nothing is deleted, and you can restore it anytime from "View archived" on the main screen.</p>
+        <button class="danger-solid" id="confirmArchiveBtn">Archive</button>
+        <button class="ghost" id="cancelArchiveBtn">Cancel</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('cancelArchiveBtn').onclick = closeModal;
+    document.getElementById('confirmArchiveBtn').onclick = () => { const id = state.archiveDocId; closeModal(); toggleArchive(id); };
   }
 
   if(state.modal === 'changelog'){
@@ -3186,9 +3226,10 @@ function renderModal(){
     overlay.innerHTML = `
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
-        <h3>Archive "${escapeHtml(doc.title)}"?</h3>
-        <p class="sub">It stays in Vault for reference, just moved out of your active documents — nothing is deleted, and you can restore it anytime from "View archived" on the main screen.</p>
-        <label class="field-label">Replaced by (optional)</label>
+        <h3>Renew "${escapeHtml(doc.title)}"</h3>
+        <p class="sub">Upload the new version now, or just archive this one if you'll add the replacement later. Either way it stays in Vault for reference — nothing is deleted, and you can restore it anytime from "View archived".</p>
+        <button class="primary" id="uploadReplacementBtn">${icon('camera',16)} Upload a new document</button>
+        <label class="field-label" style="margin-top:16px;">Or link an existing document as the replacement</label>
         <select id="renewReplacementSelect">
           <option value="">— Not tracking a replacement —</option>
           ${otherActiveDocs.map(d => `<option value="${d.id}">${escapeHtml(d.title)}</option>`).join('')}
@@ -3201,6 +3242,7 @@ function renderModal(){
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('cancelRenewBtn').onclick = closeModal;
     document.getElementById('confirmRenewBtn').onclick = confirmRenewExpired;
+    document.getElementById('uploadReplacementBtn').onclick = () => openAddModalForRenewal(doc.id);
   }
 
   if(state.modal === 'viewFile'){
@@ -3491,6 +3533,8 @@ async function saveDocument(){
   const reminderDays = parseReminderDaysInput(document.getElementById('docReminderDays').value);
   const errEl = document.getElementById('addErr');
   const saveBtn = document.getElementById('saveDocBtn');
+  const renewalTargetId = state.renewalUploadTargetId;
+  const defaultBtnLabel = renewalTargetId ? 'Save & archive old document' : 'Save document';
 
   if(!title){ errEl.textContent='Enter a document title.'; errEl.style.display='block'; return; }
   if(!pendingFile){ errEl.textContent='Choose a file.'; errEl.style.display='block'; return; }
@@ -3499,9 +3543,15 @@ async function saveDocument(){
   saveBtn.textContent = 'Saving…';
 
   try{
-    await finalizeAndStoreDocument({title, category, expiry, reminderDays, blob: pendingFile, mimeType: pendingFile.type, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
+    const newDoc = await finalizeAndStoreDocument({title, category, expiry, reminderDays, blob: pendingFile, mimeType: pendingFile.type, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
+    state.renewalUploadTargetId = null;
     closeModal();
-    toast(pendingOcrText ? 'Saved and indexed' : 'Saved');
+    if(renewalTargetId){
+      const linked = await linkRenewalAndArchiveOld(renewalTargetId, newDoc.id);
+      toast(linked ? 'Renewed — old document archived' : 'Saved, but the old document needs archiving manually');
+    } else {
+      toast(pendingOcrText ? 'Saved and indexed' : 'Saved');
+    }
   } catch(e){
     // Without this, any failure here (a huge file, a Drive error, OCR erroring in a way runOcr
     // didn't already catch) left the button stuck on "Saving…" with no way to retry.
@@ -3509,7 +3559,34 @@ async function saveDocument(){
     errEl.textContent = friendlyCloudError(e);
     errEl.style.display = 'block';
     saveBtn.disabled = false;
-    saveBtn.textContent = 'Save document';
+    saveBtn.textContent = defaultBtnLabel;
+  }
+}
+
+// Links a just-uploaded replacement to the document it replaces (supersedes/supersededBy, both
+// directions — see confirmRenewExpired) and archives the old one. Kept separate from
+// finalizeAndStoreDocument's own try/catch: by the time this runs, the new file is already safely
+// saved, so a failure here is "archive the old one yourself" territory, not a failed save.
+async function linkRenewalAndArchiveOld(oldId, newId){
+  const oldDoc = state.documents.find(d => d.id === oldId);
+  const newDoc = state.documents.find(d => d.id === newId);
+  if(!oldDoc || !newDoc) return false;
+  const archivedAt = new Date().toISOString();
+  oldDoc.archived = true; oldDoc.archivedAt = archivedAt; oldDoc.supersededBy = newDoc.id;
+  newDoc.supersedes = oldDoc.id;
+  try{
+    const batch = db.batch();
+    batch.update(userDoc().collection('documents').doc(oldDoc.id), {archived: true, archivedAt, supersededBy: newDoc.id});
+    batch.update(userDoc().collection('documents').doc(newDoc.id), {supersedes: oldDoc.id});
+    await batch.commit();
+    render();
+    return true;
+  } catch(e){
+    console.error('Failed to link renewal / archive old document', e);
+    oldDoc.archived = false; oldDoc.archivedAt = null; oldDoc.supersededBy = null;
+    newDoc.supersedes = null;
+    render();
+    return false;
   }
 }
 
@@ -3536,6 +3613,7 @@ async function finalizeAndStoreDocument({title, category, expiry, reminderDays, 
     throw e;
   }
   state.documents.unshift(doc);
+  return doc;
 }
 
 function readFileAsDataURL(file){
@@ -3845,6 +3923,11 @@ async function downloadDocument(id){
     toast(e && e.code === 'OFFLINE_NOT_CACHED' ? e.message : friendlyCloudError(e));
   }
 }
+
+// The renewal strip's Archive icon sits directly on the card with no menu step guarding it (unlike
+// the doc-card's ⋮ → Archive, which already takes two deliberate taps) — a single mis-tap there
+// archived a document with zero chance to back out. This adds that missing confirmation.
+function requestArchiveDocument(id){ state.modal = 'confirmArchive'; state.archiveDocId = id; pushAppHistoryState(); render(); }
 
 async function toggleArchive(id){
   const doc = state.documents.find(d => d.id === id);
