@@ -104,6 +104,11 @@
   .gicon{width:18px;height:18px;flex:none;}
   .demo-note{margin-top:16px;font-size:11.5px;color:var(--ink-soft);background:var(--surface-container);border-radius:12px;padding:10px 12px;text-align:left;line-height:1.5;}
   .privacy-link{display:block;margin-top:14px;font-size:12px;color:var(--ink-soft);text-decoration:underline;}
+  /* In Settings' About section, .version-tag sits directly under .privacy-link as one left-aligned
+     group, not as its own isolated centered footer (the .login-screen/checking/locked/vault-footer
+     contexts it was designed for, where there's nothing beside it to align with) — override just
+     that one context rather than the shared default, which those other screens still need. */
+  .settings-section .version-tag{text-align:left;text-transform:none;letter-spacing:normal;opacity:1;font-size:12px;margin-top:6px;}
 
   input[type="text"], input[type="date"], input[type="password"], select, textarea{width:100%;padding:12px 14px;border:1px solid transparent;border-radius:var(--radius-sm);background:var(--surface-container);font-size:14px;color:var(--ink);margin-bottom:12px;font-family:inherit;}
   input[type="text"]:focus, input[type="date"]:focus, input[type="password"]:focus, select:focus, textarea:focus{outline:2px solid var(--brass);outline-offset:-1px;}
@@ -507,7 +512,7 @@ const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry, 
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.05 · 06:22';
+const APP_VERSION = '2026.09.05 · 06:28';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -808,6 +813,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.05 · 06:28',
+    items: [
+      "Settings: \"Privacy Policy\" and the version number under About now line up on the left together, instead of the version number sitting oddly centered on its own."
+    ]
+  },
   {
     version: '2026.09.05 · 06:22',
     items: [
