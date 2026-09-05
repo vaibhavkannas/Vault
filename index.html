@@ -319,6 +319,11 @@
   .acct-email{font-size:12px;color:var(--ink-soft);}
   .storage-bar-track{height:8px;background:var(--surface-container);border-radius:4px;overflow:hidden;margin:10px 0 6px;}
   .storage-bar-fill{height:100%;background:var(--brass);}
+  /* Reserves the height of the tallest state (bar + usage line) up front, so swapping between
+     "Loading…", the plain unlimited-account line, and the bar all render at the same box size —
+     without this, whichever state briefly wasn't the tallest left the rest of Settings visibly
+     shifting up or down underneath it. */
+  #storageInfo{min-height:42px;}
   .settings-row{display:flex;align-items:center;justify-content:space-between;background:var(--paper-2);border-radius:var(--radius);padding:14px;margin-bottom:8px;font-size:13.5px;box-shadow:var(--elevation-1);}
   .quickref-caution{font-size:11.5px;color:var(--ink-soft);background:var(--surface-container);border-radius:var(--radius-sm);padding:10px 12px;margin:0 0 14px;line-height:1.5;}
   .quickref-row{display:flex;align-items:center;gap:6px;background:var(--paper-2);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px;box-shadow:var(--elevation-1);}
@@ -512,7 +517,7 @@ const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry, 
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.05 · 06:28';
+const APP_VERSION = '2026.09.05 · 13:10';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -813,6 +818,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.05 · 13:10',
+    items: [
+      "Fixed Settings briefly jumping every time you changed something — the Drive storage line was silently reloading and flashing back to \"Loading…\" on every toggle, not just when you opened Settings (it now only refreshes when actually relevant: opening Settings, or syncing files from Drive). The storage line also now reserves its own space either way, so even that refresh can no longer shift anything else on the screen."
+    ]
+  },
   {
     version: '2026.09.05 · 06:28',
     items: [
@@ -1368,6 +1379,41 @@ async function driveGetStorageQuota(){
   const res = await driveFetch('https://www.googleapis.com/drive/v3/about?fields=storageQuota');
   const json = await res.json();
   return json.storageQuota; // {limit, usage, usageInDrive, ...} — limit is absent for unlimited plans
+}
+// null = never fetched this session yet; {error: message} = last fetch failed. Either way, Settings'
+// Storage row renders straight from this cache on every render() instead of re-fetching —
+// renderSettings() itself re-runs on every settings change (theme, a toggle, anything), not just
+// when the screen is first opened, so re-fetching from inside it flashed the row back to "Loading…"
+// (a shorter line than the real content) and back on every single unrelated toggle, visibly
+// shifting everything below it. Only refreshDriveStorageInfo() below — called once, from
+// openSettingsBtn's click handler, on the actual transition into the screen — ever touches the
+// network for this. Caching the error case too (not just success) matters just as much: without it,
+// a failed fetch would leave every later re-render stuck showing "Loading…" forever instead of the
+// error, since nothing re-triggers the fetch outside that one entry point.
+let driveStorageQuotaCache = null;
+function storageInfoHtml(cached, vaultBytes){
+  if(cached && cached.error){
+    return `Vault: ${formatBytes(vaultBytes)} · could not load overall Drive usage (${cached.error})`;
+  }
+  if(cached && cached.limit){
+    const pct = Math.min(100, Math.round((+cached.usage / +cached.limit) * 100));
+    return `
+      <div class="storage-bar-track"><div class="storage-bar-fill" style="width:${pct}%"></div></div>
+      <div class="search-hint">${formatBytes(+cached.usage)} of ${formatBytes(+cached.limit)} used in Drive · Vault: ${formatBytes(vaultBytes)}</div>
+    `;
+  }
+  return `Vault: ${formatBytes(vaultBytes)} · Drive storage is unlimited on this account`;
+}
+async function refreshDriveStorageInfo(){
+  const vaultBytes = state.documents.reduce((sum,d) => sum + (d.size||0), 0);
+  try{
+    driveStorageQuotaCache = await driveGetStorageQuota();
+  } catch(e){
+    console.error('Could not load storage quota', e);
+    driveStorageQuotaCache = {error: e && e.code === 'DRIVE_TOKEN_EXPIRED' ? 'reconnect to Google' : 'check your connection'};
+  }
+  const el = document.getElementById('storageInfo');
+  if(el) el.innerHTML = storageInfoHtml(driveStorageQuotaCache, vaultBytes);
 }
 function formatBytes(n){
   if(!n || n<=0) return '0 B';
@@ -1985,6 +2031,7 @@ async function completeReconnect(){
 }
 
 function renderSettings(app){
+  const vaultBytes = state.documents.reduce((sum,d) => sum + (d.size||0), 0);
   app.innerHTML = `
     <div class="settings-header">
       <button class="icon-only-btn" id="backToVaultBtn" aria-label="Back">${icon('back',22)}</button>
@@ -2004,7 +2051,7 @@ function renderSettings(app){
 
       <div class="settings-section">
         <h4>Storage</h4>
-        <div id="storageInfo" class="search-hint">Loading…</div>
+        <div id="storageInfo" class="search-hint">${driveStorageQuotaCache !== null ? storageInfoHtml(driveStorageQuotaCache, vaultBytes) : 'Loading…'}</div>
       </div>
 
       <div class="settings-section">
@@ -2090,25 +2137,6 @@ function renderSettings(app){
   `;
 
   document.getElementById('backToVaultBtn').onclick = () => goBackOneLayer();
-
-  const vaultBytes = state.documents.reduce((sum,d) => sum + (d.size||0), 0);
-  driveGetStorageQuota().then(quota => {
-    const el = document.getElementById('storageInfo');
-    if(!el) return;
-    if(quota && quota.limit){
-      const pct = Math.min(100, Math.round((+quota.usage / +quota.limit) * 100));
-      el.innerHTML = `
-        <div class="storage-bar-track"><div class="storage-bar-fill" style="width:${pct}%"></div></div>
-        <div class="search-hint">${formatBytes(+quota.usage)} of ${formatBytes(+quota.limit)} used in Drive · Vault: ${formatBytes(vaultBytes)}</div>
-      `;
-    } else {
-      el.textContent = `Vault: ${formatBytes(vaultBytes)} · Drive storage is unlimited on this account`;
-    }
-  }).catch(e => {
-    console.error('Could not load storage quota', e);
-    const el = document.getElementById('storageInfo');
-    if(el) el.textContent = `Vault: ${formatBytes(vaultBytes)} · could not load overall Drive usage (${e && e.code === 'DRIVE_TOKEN_EXPIRED' ? 'reconnect to Google' : 'check your connection'})`;
-  });
 
   document.querySelectorAll('[data-theme-choice]').forEach(btn => {
     btn.onclick = () => { applyTheme(btn.getAttribute('data-theme-choice')); render(); };
@@ -2429,7 +2457,7 @@ function renderVault(app){
     if(wrap && renewalStripEl.scrollWidth > renewalStripEl.clientWidth + 1) wrap.classList.add('has-overflow');
   }
 
-  document.getElementById('openSettingsBtn').onclick = () => { state.screen = 'settings'; pushAppHistoryState(); render(); };
+  document.getElementById('openSettingsBtn').onclick = () => { state.screen = 'settings'; pushAppHistoryState(); render(); refreshDriveStorageInfo(); };
   document.getElementById('openQuickRefBtn').onclick = () => { state.screen = 'quickref'; pushAppHistoryState(); render(); };
   const addBtn = document.getElementById('addDocBtn');
   if(addBtn) addBtn.onclick = () => openAddModal();
@@ -3899,6 +3927,10 @@ async function runSyncFromDrive(){
     }
     toast(importedCount ? `Imported ${importedCount} file${importedCount===1?'':'s'} from Drive` : 'Nothing new to import');
     render();
+    // The one settings action that can actually change what Storage reports — newly-imported
+    // files change the Vault total, and (unlike every other settings toggle) are worth a fresh
+    // read of the account-wide total too, in case something else changed it meanwhile.
+    refreshDriveStorageInfo();
   } catch(e){
     console.error('Sync from Drive failed', e);
     toast(friendlyCloudError(e));
