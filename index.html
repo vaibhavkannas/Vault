@@ -561,7 +561,7 @@ const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry';
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.05 · 15:12';
+const APP_VERSION = '2026.09.05 · 18:16';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -875,6 +875,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.05 · 18:16',
+    items: [
+      "Renewing a document now offers capturing the replacement with your camera, not just uploading a file — either way it pre-fills the title/category from the old document and archives it automatically once the new one is saved."
+    ]
+  },
   {
     version: '2026.09.05 · 15:12',
     items: [
@@ -3437,8 +3443,11 @@ function renderModal(){
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>Renew "${escapeHtml(doc.title)}"</h3>
-        <p class="sub">Upload the new version now, or just archive this one if you'll add the replacement later. Either way it stays in Vault for reference — nothing is deleted, and you can restore it anytime from "View archived".</p>
-        <button class="primary" id="uploadReplacementBtn">${icon('camera',16)} Upload a new document</button>
+        <p class="sub">Capture or upload the new version now, or just archive this one if you'll add the replacement later. Either way it stays in Vault for reference — nothing is deleted, and you can restore it anytime from "View archived".</p>
+        <div class="camera-controls">
+          <button class="primary" id="captureReplacementBtn">${icon('camera',16)} Capture with camera</button>
+          <button class="ghost" id="uploadReplacementBtn">${icon('download',16)} Upload a file</button>
+        </div>
         <label class="field-label" style="margin-top:16px;">Or link an existing document as the replacement</label>
         <select id="renewReplacementSelect">
           <option value="">— Not tracking a replacement —</option>
@@ -3453,6 +3462,7 @@ function renderModal(){
     document.getElementById('cancelRenewBtn').onclick = closeModal;
     document.getElementById('confirmRenewBtn').onclick = confirmRenewExpired;
     document.getElementById('uploadReplacementBtn').onclick = () => openAddModalForRenewal(doc.id);
+    document.getElementById('captureReplacementBtn').onclick = () => openCameraModalForRenewal(doc.id);
   }
 
   if(state.modal === 'viewFile'){
@@ -3511,12 +3521,13 @@ function renderModal(){
       // Deliberately no enableSwipeToDismiss here — a downward drag anywhere in this sheet must
       // move/resize the crop box, never dismiss the sheet; Cancel/× are the only exits.
     } else {
+      const renewalTarget = state.renewalUploadTargetId ? state.documents.find(d => d.id === state.renewalUploadTargetId) : null;
       overlay.innerHTML = `
         <div class="modal-sheet">
           <div class="sheet-handle" id="cameraHandle" aria-hidden="true"></div>
           <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
-          <h3>Capture a document</h3>
-          <p class="sub">Capture one page at a time — saved as a single PDF either way.</p>
+          <h3>${renewalTarget ? 'Capture replacement document' : 'Capture a document'}</h3>
+          <p class="sub">${renewalTarget ? `This replaces "${escapeHtml(renewalTarget.title)}" — once saved, that document is archived and linked to this one.` : `Capture one page at a time — saved as a single PDF either way.`}</p>
           <div class="camera-wrap"><video id="cameraVideo" autoplay playsinline></video></div>
           <div class="camera-controls">
             <button class="capture-btn" id="captureBtn">Capture page</button>
@@ -3541,7 +3552,7 @@ function renderModal(){
           <input type="text" id="camReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml(pendingCamReminderDaysText)}" />
           <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
           <div class="error-text" id="camErr" style="display:none;"></div>
-          <button class="primary" id="saveCamBtn" ${state.capturedPages.length && !pendingOcrRunning ? '' : 'disabled'}>Save as PDF (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
+          <button class="primary" id="saveCamBtn" ${state.capturedPages.length && !pendingOcrRunning ? '' : 'disabled'}>${renewalTarget ? 'Save & archive old' : 'Save as PDF'} (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
         </div>
       `;
       document.body.appendChild(overlay);
@@ -3926,9 +3937,23 @@ function stopCamera(){
 function openCameraModal(){
   state.modal = 'camera'; state.capturedPages = []; state.capturedPagesRaw = []; state.capturedPageEnhance = [];
   state.cropIndex = null; state.cropSourceDataUrl = null; state.cropRect = null; state.cropEnhanceOn = false;
+  state.renewalUploadTargetId = null;
   pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = ''; pendingCamCategory = null; pendingCamExpiry = '';
   pendingCamReminderDaysText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
+}
+// Opens the same camera flow, but flagged (like openAddModalForRenewal) so saveCameraDocument()
+// links the new capture to oldDocId as its replacement and archives oldDocId once the capture
+// succeeds — the camera counterpart to the Renew flow's file-upload path. Pre-fills title/category
+// from the old document, same as the 'add' modal does for its own renewal path.
+function openCameraModalForRenewal(oldDocId){
+  const oldDoc = state.documents.find(d => d.id === oldDocId);
+  state.modal = 'camera'; state.capturedPages = []; state.capturedPagesRaw = []; state.capturedPageEnhance = [];
+  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropRect = null; state.cropEnhanceOn = false;
+  state.renewalUploadTargetId = oldDocId;
+  pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false;
+  categoryManuallyChanged = false; pendingCamTitle = oldDoc ? oldDoc.title : ''; pendingCamCategory = oldDoc ? oldDoc.category : null;
+  pendingCamExpiry = ''; pendingCamReminderDaysText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
 }
 
 const CROP_MIN_SIZE = 40; // on-screen px — keeps handles draggable and forbids a degenerate 0-area crop
@@ -4140,6 +4165,7 @@ async function saveCameraDocument(){
   if(!state.capturedPages.length){ errEl.textContent='Capture at least one page.'; errEl.style.display='block'; return; }
   errEl.style.display = 'none';
   const originalLabel = saveBtn.textContent;
+  const renewalTargetId = state.renewalUploadTargetId;
   saveBtn.disabled = true;
   saveBtn.textContent = 'Saving…';
 
@@ -4158,10 +4184,16 @@ async function saveCameraDocument(){
     const blob = dataUrlToBlob(pdf.output('datauristring'));
     const mimeType = 'application/pdf';
 
-    await finalizeAndStoreDocument({title, category, expiry, reminderDays, blob, mimeType, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
+    const newDoc = await finalizeAndStoreDocument({title, category, expiry, reminderDays, blob, mimeType, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
+    state.renewalUploadTargetId = null;
     stopCamera();
     closeModal();
-    toast('Captured and saved');
+    if(renewalTargetId){
+      const linked = await linkRenewalAndArchiveOld(renewalTargetId, newDoc.id);
+      toast(linked ? 'Renewed — old document archived' : 'Saved, but the old document needs archiving manually');
+    } else {
+      toast('Captured and saved');
+    }
   } catch(e){
     console.error('Save failed', e);
     errEl.textContent = friendlyCloudError(e);
