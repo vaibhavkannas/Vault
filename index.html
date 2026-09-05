@@ -138,7 +138,7 @@
   .cat-count{font-weight:400;color:var(--ink-soft);font-size:12px;display:inline-flex;align-items:center;gap:2px;}
   .cat-chevron{display:flex;transition:transform 0.15s ease;}
   .cat-chevron.collapsed{transform:rotate(-90deg);}
-  .archive-toggle{background:none;border:none;color:var(--brass);font-size:12.5px;font-weight:500;cursor:pointer;padding:4px;margin:0 0 14px;display:inline-flex;align-items:center;gap:4px;}
+  .archive-toggle{background:none;border:none;color:var(--brass);font-size:12.5px;font-weight:500;cursor:pointer;padding:4px;margin:24px auto 0;display:flex;align-items:center;justify-content:center;gap:4px;width:100%;}
 
   .reminder-card{display:flex;align-items:center;gap:10px;background:var(--success-bg);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px;font-size:13px;}
   .reminder-card.urgent{background:var(--danger-bg);}
@@ -160,12 +160,14 @@
 
   .doc-card{background:var(--paper-2);border-radius:var(--radius);padding:12px;margin-bottom:8px;display:flex;gap:11px;align-items:flex-start;box-shadow:var(--elevation-1);}
   .doc-card.is-archived{opacity:0.65;}
+  .doc-card.is-offline-unavailable{opacity:0.55;}
   .doc-icon{width:44px;height:44px;border-radius:50%;background:var(--primary-container);color:var(--on-primary-container);display:flex;align-items:center;justify-content:center;flex:none;position:relative;cursor:pointer;}
   .doc-icon.ocr-badge::after{content:'';position:absolute;bottom:-1px;right:-1px;width:10px;height:10px;border-radius:50%;background:var(--success);border:2px solid var(--paper-2);}
   .doc-body{flex:1;min-width:0;}
   .doc-title{font-weight:400;font-size:15px;margin:0 0 2px;cursor:pointer;}
   .offline-badge{display:inline-flex;vertical-align:middle;color:var(--success);margin-left:4px;}
   .offline-badge svg{display:block;}
+  .offline-badge.unavailable{color:var(--ink-soft);font-size:11px;font-weight:400;font-style:italic;}
   .doc-meta{font-size:12px;color:var(--ink-soft);margin:0;}
   .doc-snippet{font-size:12px;color:var(--ink-soft);margin:4px 0 0;background:var(--surface-container);padding:6px 9px;border-radius:8px;}
   .doc-snippet mark{background:var(--primary-container);color:var(--on-primary-container);padding:0 1px;border-radius:2px;}
@@ -243,11 +245,17 @@
   .share-row{display:flex;align-items:center;justify-content:space-between;background:var(--surface-container);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:8px;font-size:12.5px;}
 
   /* Camera modal */
-  .camera-wrap{position:relative;background:#000;border-radius:16px;overflow:hidden;margin-bottom:12px;}
-  .camera-wrap video, .camera-wrap canvas{width:100%;display:block;}
+  /* A fixed aspect-ratio (rather than sizing off the <video>'s own intrinsic dimensions) keeps
+     this box the same size from the very first paint — without it, the box uses the browser's
+     default 300x150 ratio until the stream's real resolution is known a moment after
+     getUserMedia resolves, then visibly jumps to match it. object-fit:cover fills the fixed box
+     from whatever resolution the camera actually negotiates, cropping rather than resizing. */
+  .camera-wrap{position:relative;background:#000;border-radius:16px;overflow:hidden;margin-bottom:12px;aspect-ratio:3/4;}
+  .camera-wrap video, .camera-wrap canvas{width:100%;height:100%;object-fit:cover;display:block;}
   .camera-controls{display:flex;gap:10px;margin-bottom:12px;}
   .camera-controls button{flex:1;}
   .capture-btn{background:var(--brass);color:var(--on-brass);border:none;border-radius:var(--radius-full);padding:13px;font-weight:500;font-size:14px;cursor:pointer;}
+  .scroll-hint{display:flex;align-items:center;justify-content:center;gap:4px;color:var(--ink-soft);font-size:12px;margin:0 0 14px;}
   .page-thumbs{display:flex;gap:8px;overflow-x:auto;margin-bottom:12px;padding-bottom:4px;}
   .page-thumb-wrap{position:relative;flex:none;}
   .page-thumb{width:56px;height:56px;border-radius:10px;object-fit:cover;display:block;}
@@ -492,7 +500,7 @@ const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry, 
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.05 · 05:12';
+const APP_VERSION = '2026.09.05 · 05:46';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -510,6 +518,7 @@ const ICONS = {
   eyeOff: '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line>',
   copy: '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>',
   key: '<circle cx="7.5" cy="15.5" r="5.5"></circle><path d="M21 2l-9.6 9.6"></path><path d="M15.5 7.5l3 3L22 7l-3-3"></path>',
+  clipboard: '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect><line x1="9" y1="12" x2="15" y2="12"></line><line x1="9" y1="16" x2="13" y2="16"></line>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line>',
   edit: '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>',
   share: '<circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>',
@@ -729,8 +738,15 @@ let guardArmed = false;
 let allowingExit = false;
 let lastExitWarningAt = 0;
 const EXIT_CONFIRM_WINDOW_MS = 2500;
+// Single source of truth for "nothing deeper is open" — every place that needs this exact
+// question (arming the exit guard, and the first-gesture hedge below) calls this instead of
+// repeating its own copy of the condition, which is exactly how the quickref screen fell through
+// the cracks the first time: two independent copies of this list, one of them missing an entry.
+function isIdleRootScreen(){
+  return !state.modal && !state.showArchived && state.screen !== 'settings' && state.screen !== 'quickref';
+}
 function armExitGuardIfIdle(){
-  if(!guardArmed && !state.modal && !state.showArchived && state.screen !== 'settings' && state.screen !== 'quickref'){
+  if(!guardArmed && isIdleRootScreen()){
     if(safePushHistoryState({seq: currentHistorySeq() + 1, guard: true})) guardArmed = true;
   }
 }
@@ -773,6 +789,18 @@ window.addEventListener('popstate', () => {
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.05 · 05:46',
+    items: [
+      "Quick Reference now has its own clipboard icon instead of reusing the key icon.",
+      '"View archived" moved to the bottom of the document list, out of the way of your actual documents.',
+      "Offline mode now lists every document you have, not just ones you've already opened — the ones without an offline copy are just dimmed and marked \"Not available offline\" until you're back online. Quick Reference is now available offline too.",
+      "Share now offers sharing the actual file (PDF or photo) through any app on your device, alongside the existing share-link option.",
+      "Capture page now always saves as a PDF, even for a single page.",
+      "The camera view no longer changes size a few seconds after opening, and now hints that title/category/save are further down.",
+      "Fixed a deeper cause of the inconsistent Back button: App Lock could silently leave the exit-confirmation guard un-armed after unlocking. Back at the main screen should now always ask before closing Vault."
+    ]
+  },
   {
     version: '2026.09.05 · 05:12',
     items: [
@@ -866,7 +894,7 @@ function maybeShowChangelog(){
 // page load. Removing the listener manually, only once it actually succeeds, means every
 // pointerdown gets a chance until the real first interaction on vault/settings finally lands.
 function armGuardOnFirstRealGesture(){
-  if(state.modal || state.showArchived || state.screen === 'settings' || state.screen === 'checking') return;
+  if(state.screen === 'checking' || !isIdleRootScreen()) return;
   document.removeEventListener('pointerdown', armGuardOnFirstRealGesture, {capture: true});
   if(safePushHistoryState({seq: currentHistorySeq() + 1, guard: true})) guardArmed = true;
 }
@@ -1339,11 +1367,15 @@ async function provisionVault(){
 }
 
 /* ---------- offline document cache ----------
-   Keeps a copy of a document's file blob AND its metadata (title, category, etc.) in IndexedDB
-   the moment it's successfully viewed, so both opening it again and simply seeing it in the list
-   work with no connection — including a fully-offline cold load (app closed and reopened with no
-   connection at all), not just a connection drop mid-session. The two are stored in separate
-   object stores so listing cached documents doesn't have to load every file's bytes to do it. */
+   Two separate object stores, deliberately out of sync with each other: metadata (title,
+   category, expiry, driveFileId, ...) gets written for EVERY document on every successful online
+   load (cacheAllDocumentMetadataOffline, below loadOfflineDocumentList) — that's what lets a
+   fully-offline cold load still list every document by name, not just ones already opened. A
+   file's actual blob only gets cached the moment that specific document is successfully viewed
+   (cacheDocumentOffline) — fetching every document's full bytes just because the vault loaded
+   would be wasteful and slow. state.offlineDocIds tracks which documents have a cached blob and
+   are therefore actually open-able offline; renderDocCard and viewDocument both check it to tell
+   "listed" apart from "viewable" rather than treating every offline card as equally open-able. */
 const OFFLINE_DB_NAME = 'vault-offline-cache';
 const OFFLINE_STORE = 'files';
 const OFFLINE_META_STORE = 'metadata';
@@ -1429,9 +1461,44 @@ async function loadOfflineDocumentList(){
     return docs;
   } catch(e){ console.warn('Could not load the offline document list', e); return []; }
 }
+// Keeps the metadata store in sync with EVERY document whenever the vault loads successfully
+// online — not just ones that happen to get viewed (cacheDocumentOffline, above, only ever writes
+// one doc at a time, paired with that same doc's file blob). Without this, a fully-offline cold
+// load could only ever list documents that had previously been opened, which reads as other
+// documents having silently vanished rather than merely "not cached for offline viewing" — the two
+// stores are meant to be independent (see the comment at the top of this section), but until now
+// only ever got written together.
+async function cacheAllDocumentMetadataOffline(docs){
+  try{
+    const db = await openOfflineDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(OFFLINE_META_STORE, 'readwrite');
+      const store = tx.objectStore(OFFLINE_META_STORE);
+      store.clear();
+      docs.forEach(doc => store.put(doc, doc.id));
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch(e){ console.warn('Could not update the offline document metadata cache', e); }
+}
+const OFFLINE_QUICKREFS_KEY = 'vault-offline-quickrefs';
+// Quick Reference has no Drive/blob dependency at all (it's plain Firestore data), so unlike
+// documents there's nothing further to fetch once the list itself is available — a plain
+// localStorage snapshot is enough to make it work fully offline, no IndexedDB needed for
+// something this small.
+function cacheQuickRefsOffline(quickRefs){
+  try{ localStorage.setItem(OFFLINE_QUICKREFS_KEY, JSON.stringify(quickRefs)); } catch(e){ console.warn('Could not cache Quick Reference entries for offline use', e); }
+}
+function loadOfflineQuickRefs(){
+  try{
+    const raw = localStorage.getItem(OFFLINE_QUICKREFS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch(e){ console.warn('Could not load offline Quick Reference entries', e); return []; }
+}
 function clearOfflineCache(){
   state.offlineDocIds = new Set();
   try{ indexedDB.deleteDatabase(OFFLINE_DB_NAME); } catch(e){ console.warn('Could not clear the offline document cache', e); }
+  try{ localStorage.removeItem(OFFLINE_QUICKREFS_KEY); } catch(e){ console.warn('Could not clear the offline Quick Reference cache', e); }
 }
 
 // Loads everything for the signed-in account. Called right after sign-in once state.user.uid
@@ -1489,6 +1556,8 @@ async function loadUserData(){
     state.shares = sharesSnap.docs.map(d => ({id: d.id, ...d.data()}));
     state.reminderSettings = reminderSnap.exists ? reminderSnap.data() : {emailDigestEnabled: false, pushEnabled: false};
     state.quickRefs = quickRefsSnap.docs.map(d => ({id: d.id, ...d.data()}));
+    cacheAllDocumentMetadataOffline(state.documents); // fire-and-forget — keeps the offline list complete
+    cacheQuickRefsOffline(state.quickRefs); // fire-and-forget — keeps Quick Reference usable offline
     syncPushSubscriptionIfNeeded(); // fire-and-forget — never delays the vault's own load
   } catch(e){
     console.error('Could not load vault data from the cloud', e);
@@ -1653,11 +1722,20 @@ async function ocrOnePdfPage(pdf, pageNum, onProgress){
 }
 
 /* ---------- render root ---------- */
+// Every branch below ends by calling armExitGuardIfIdle() — not just the handful of call sites
+// that transition INTO one of these screens. That call is already idempotent (a no-op once
+// guardArmed is true) and cheap, so doing it unconditionally on every single render() pass is a
+// safety net that makes the "Back always shows the exit warning at idle root" guarantee hold no
+// matter how state got here, rather than relying on every current and future code path that could
+// land on the vault screen to remember to call it — which is exactly the class of bug that let the
+// Quick Reference screen (missing from an exclusion list) and App Lock (tearing down a modal
+// directly, bypassing the history pop that would have re-armed the guard) both fall through
+// before this existed.
 function render(){
   const app = document.getElementById('app');
-  if(state.screen === 'checking') return renderChecking(app);
-  if(state.screen === 'login') return renderLogin(app);
-  if(state.screen === 'reconnect') return renderReconnect(app);
+  if(state.screen === 'checking'){ renderChecking(app); armExitGuardIfIdle(); return; }
+  if(state.screen === 'login'){ renderLogin(app); armExitGuardIfIdle(); return; }
+  if(state.screen === 'reconnect'){ renderReconnect(app); armExitGuardIfIdle(); return; }
   // The lock screen intercepts any signed-in screen — vault AND Settings, which can itself have
   // sensitive modals open (Change PIN, Delete Account, App-Lock setup) — rather than being its own
   // state.screen value, so it needs no history-layer bookkeeping of its own: it's a gate on
@@ -1674,11 +1752,14 @@ function render(){
     // path into the locked state, not just a later re-render.
     if(state.modal) clearTopLayerState();
     renderModal();
-    return renderLocked(app);
+    renderLocked(app);
+    armExitGuardIfIdle();
+    return;
   }
-  if(state.screen === 'settings') return renderSettings(app);
-  if(state.screen === 'quickref') return renderQuickRef(app);
+  if(state.screen === 'settings'){ renderSettings(app); armExitGuardIfIdle(); return; }
+  if(state.screen === 'quickref'){ renderQuickRef(app); armExitGuardIfIdle(); return; }
   renderVault(app);
+  armExitGuardIfIdle();
 }
 
 // Shown only for the brief moment before Firebase has answered "is anyone signed in" on a fresh
@@ -2225,14 +2306,14 @@ function renderVault(app){
     <header class="topbar">
       <div class="brand"><div class="brand-mark">${brandMarkSvg(20)}</div><div class="brand-name">Vault</div></div>
       <div class="topbar-actions">
-        <button class="icon-only-btn" id="openQuickRefBtn" aria-label="Quick Reference" title="Quick Reference">${icon('key',22)}</button>
+        <button class="icon-only-btn" id="openQuickRefBtn" aria-label="Quick Reference" title="Quick Reference">${icon('clipboard',22)}</button>
         <button class="icon-only-btn" id="openSettingsBtn" aria-label="Settings" title="Settings">${icon('settings',22)}</button>
       </div>
     </header>
     <div class="vault">
       ${state.isOfflineMode ? `
         <div class="reminder-card">
-          <span class="rtitle">You're offline — showing documents you've viewed before</span>
+          <span class="rtitle">You're offline — only documents you've viewed before can be opened</span>
           <button class="icon-btn" id="reconnectDriveBtn">Retry</button>
         </div>
       ` : !driveTokenValid() ? `
@@ -2266,8 +2347,6 @@ function renderVault(app){
           </div>
         </div>` : ''}
 
-      ${archivedCount ? `<button class="archive-toggle" id="archiveToggleBtn">${state.showArchived ? `${icon('back',14)} Back to active documents` : `View archived (${archivedCount})`}</button>` : ''}
-
       ${visibleDocs.length === 0 ? `
         <div class="empty-state">${state.showArchived ? 'No archived documents.' : 'No documents yet.<br>Add your first one below.'}</div>
       ` : filtered.length === 0 ? `
@@ -2285,6 +2364,7 @@ function renderVault(app){
         </div>
         ${isCollapsed ? '' : `<div class="doc-card-grid">${grouped[cat].map(d => renderDocCard(d)).join('')}</div>`}
       `; }).join('')}
+      ${archivedCount ? `<button class="archive-toggle" id="archiveToggleBtn">${state.showArchived ? `${icon('back',14)} Back to active documents` : `View archived (${archivedCount})`}</button>` : ''}
       <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
     ${!state.showArchived ? `
@@ -2437,11 +2517,16 @@ function renderDocCard(d, opts){
   const supersedesDoc = d.supersedes ? state.documents.find(x => x.id === d.supersedes) : null;
   const linkNote = supersededByDoc ? `<p class="doc-link-note">→ Replaced by ${escapeHtml(supersededByDoc.title)}</p>`
     : supersedesDoc ? `<p class="doc-link-note">→ Replaces ${escapeHtml(supersedesDoc.title)}</p>` : '';
+  // In offline mode, a document's Firestore metadata can be known (and worth listing, so it isn't
+  // misleadingly invisible) without its file bytes being cached — those are two separate stores,
+  // see the offline-cache comment above. Distinguish the two rather than letting every card look
+  // equally open-able when only some actually are.
+  const offlineUnavailable = state.isOfflineMode && !state.offlineDocIds.has(d.id);
   return `
-    <div class="doc-card ${d.archived ? 'is-archived' : ''}">
+    <div class="doc-card ${d.archived ? 'is-archived' : ''} ${offlineUnavailable ? 'is-offline-unavailable' : ''}">
       <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" data-open-doc="${d.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
       <div class="doc-body">
-        <p class="doc-title" data-open-doc="${d.id}" role="button" tabindex="0">${escapeHtml(d.title)}${state.offlineDocIds.has(d.id) ? `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>` : ''}</p>
+        <p class="doc-title" data-open-doc="${d.id}" role="button" tabindex="0">${escapeHtml(d.title)}${state.offlineDocIds.has(d.id) ? `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>` : offlineUnavailable ? `<span class="offline-badge unavailable">Not available offline</span>` : ''}</p>
         <p class="doc-meta">${opts.showCategory ? `${escapeHtml(meta.label)} · ` : ''}Added ${formatDate(d.addedAt)}${activeShares.length ? ' · shared with '+activeShares.length : ''}${d.archived ? ' · archived' : ''}</p>
         ${d.snippet ? `<p class="doc-snippet">${d.snippet}</p>` : ''}
         ${expiryBadge}
@@ -2850,11 +2935,12 @@ function renderModal(){
         <div class="sheet-handle" id="cameraHandle" aria-hidden="true"></div>
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>Capture a document</h3>
-        <p class="sub">Capture one page at a time. Multiple pages combine into a single PDF.</p>
+        <p class="sub">Capture one page at a time — saved as a single PDF either way.</p>
         <div class="camera-wrap"><video id="cameraVideo" autoplay playsinline></video></div>
         <div class="camera-controls">
           <button class="capture-btn" id="captureBtn">Capture page</button>
         </div>
+        <p class="scroll-hint">${icon('chevronDown',14)} Title, category, expiry &amp; save button below</p>
         ${state.capturedPages.length ? `<div class="page-thumbs">${state.capturedPages.map((p,i)=>`
           <div class="page-thumb-wrap">
             <img class="page-thumb" src="${p}">
@@ -2874,7 +2960,7 @@ function renderModal(){
         <input type="text" id="camReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml(pendingCamReminderDaysText)}" />
         <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once it's expired, you'll keep hearing about it until it's archived.</p>
         <div class="error-text" id="camErr" style="display:none;"></div>
-        <button class="primary" id="saveCamBtn" ${state.capturedPages.length && !pendingOcrRunning ? '' : 'disabled'}>Save ${state.capturedPages.length>1 ? 'as PDF' : ''} (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
+        <button class="primary" id="saveCamBtn" ${state.capturedPages.length && !pendingOcrRunning ? '' : 'disabled'}>Save as PDF (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
       </div>
     `;
     document.body.appendChild(overlay);
@@ -2901,8 +2987,11 @@ function renderModal(){
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>Share "${escapeHtml(doc.title)}"</h3>
-        <p class="sub">Generates a link that expires in 48 hours. Revoke it anytime.</p>
-        <button class="primary" id="genShareBtn">Generate share link</button>
+        <p class="sub">Send the actual file through any app on your device — Messages, Email, WhatsApp, whatever you pick from the share sheet.</p>
+        <button class="primary" id="shareFileBtn">${icon('share',18)} Share file</button>
+        <div class="error-text" id="shareFileErr" style="display:none;"></div>
+        <p class="sub" style="margin:20px 0 8px;">Or generate a link instead — expires in 48 hours, revoke it anytime.</p>
+        <button class="ghost" id="genShareBtn">Generate share link</button>
         <div id="shareResult">${justGenerated ? `
           <div class="share-link-box">vault.app/shared/${justGenerated.token}</div>
           <p class="sub" style="margin-top:-6px;">Send this link separately from anything you share verbally — that's what keeps it safe in transit.</p>
@@ -2920,6 +3009,7 @@ function renderModal(){
     `;
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('shareFileBtn').onclick = () => shareDocumentFile(doc.id);
     document.getElementById('genShareBtn').onclick = () => generateShare(doc.id);
     overlay.querySelectorAll('[data-revoke]').forEach(btn => { btn.onclick = () => revokeShare(btn.getAttribute('data-revoke')); });
   }
@@ -3190,7 +3280,10 @@ async function startCamera(){
     return;
   }
   try{
-    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    // aspectRatio is a request, not a guarantee — the displayed box stays a fixed size regardless
+    // (see .camera-wrap's CSS), this just steers the negotiated stream closer to that box so
+    // object-fit:cover has less to crop.
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment', aspectRatio:{ideal: 3/4}}});
     // The camera modal (or the whole app, via the app-lock teardown) can close while this permission
     // prompt is still pending — unlike every other async modal-content loader here (viewDocument,
     // renderPdfInto), this one used to skip re-checking relevance after its await, so a stream
@@ -3266,23 +3359,19 @@ async function saveCameraDocument(){
   saveBtn.textContent = 'Saving…';
 
   try{
-    let blob, mimeType;
-    if(state.capturedPages.length === 1){
-      blob = dataUrlToBlob(state.capturedPages[0]);
-      mimeType = 'image/jpeg';
-    } else {
-      const { jsPDF } = window.jspdf;
-      const pdf = new jsPDF();
-      state.capturedPages.forEach((img, i) => {
-        if(i > 0) pdf.addPage();
-        const props = pdf.getImageProperties(img);
-        const w = pdf.internal.pageSize.getWidth();
-        const h = (props.height * w) / props.width;
-        pdf.addImage(img, 'JPEG', 0, 0, w, h);
-      });
-      blob = dataUrlToBlob(pdf.output('datauristring'));
-      mimeType = 'application/pdf';
-    }
+    // Always a PDF, even for a single page — a scanned document should behave like one
+    // regardless of how many pages it took, not silently become a plain JPEG below 2 pages.
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF();
+    state.capturedPages.forEach((img, i) => {
+      if(i > 0) pdf.addPage();
+      const props = pdf.getImageProperties(img);
+      const w = pdf.internal.pageSize.getWidth();
+      const h = (props.height * w) / props.width;
+      pdf.addImage(img, 'JPEG', 0, 0, w, h);
+    });
+    const blob = dataUrlToBlob(pdf.output('datauristring'));
+    const mimeType = 'application/pdf';
 
     await finalizeAndStoreDocument({title, category, expiry, reminderDays, blob, mimeType, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
     stopCamera();
@@ -3357,6 +3446,13 @@ async function viewDocument(id){
   state.viewDocId = id;
   pushAppHistoryState();
   render();
+  if(state.isOfflineMode && !state.offlineDocIds.has(id)){
+    // Known upfront, no need to let a doomed fetch attempt run first — this document's metadata
+    // is cached (that's why it's listed at all) but its file bytes never were.
+    const contentEl = document.getElementById('viewFileContent');
+    if(contentEl) contentEl.innerHTML = `<p class="error-text">Not available offline — connect to view this document.</p>`;
+    return;
+  }
   try{
     const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
     const blob = await res.blob();
@@ -3537,6 +3633,39 @@ async function confirmDeleteDocument(){
 
 /* ---------- sharing ---------- */
 function openShareModal(docId){ state.modal='share'; state.shareDocId=docId; state.lastGeneratedShareId=null; pushAppHistoryState(); render(); }
+// Hands the actual file to the OS share sheet (Messages, Email, WhatsApp, whatever the user has),
+// rather than the simulated vault.app/shared/... link below, which nothing actually resolves —
+// this is real bytes, not a placeholder. Falls back to a plain download on browsers with no
+// navigator.share file support at all (most desktop browsers today).
+async function shareDocumentFile(docId){
+  const doc = state.documents.find(d => d.id === docId);
+  if(!doc) return;
+  const btn = document.getElementById('shareFileBtn');
+  const errEl = document.getElementById('shareFileErr');
+  if(errEl) errEl.style.display = 'none';
+  if(btn){ btn.disabled = true; btn.textContent = 'Preparing…'; }
+  try{
+    const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
+    const blob = await res.blob();
+    const file = new File([blob], safeFilename(doc.title, doc.mimeType), {type: doc.mimeType});
+    if(navigator.canShare && navigator.canShare({files: [file]})){
+      await navigator.share({files: [file], title: doc.title});
+    } else {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = safeFilename(doc.title, doc.mimeType);
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast("Sharing files isn't supported here — downloaded instead");
+    }
+  } catch(e){
+    if(e && e.name === 'AbortError') return; // user dismissed the native share sheet — not an error
+    console.error('Share file failed', e);
+    if(errEl){ errEl.textContent = friendlyCloudError(e); errEl.style.display = 'block'; }
+  } finally {
+    if(btn){ btn.disabled = false; btn.innerHTML = `${icon('share',18)} Share file`; }
+  }
+}
 async function generateShare(docId){
   const token = Array.from(crypto.getRandomValues(new Uint8Array(9))).map(b=>b.toString(36)).join('').slice(0,14);
   const expiresAt = new Date(Date.now()+48*3600*1000).toISOString();
@@ -3852,6 +3981,7 @@ async function enterOfflineVault(){
     state.documents = await loadOfflineDocumentList();
     await loadOfflineDocIds();
   }
+  if(state.quickRefs.length === 0) state.quickRefs = loadOfflineQuickRefs();
   collapseAllCategories();
   state.screen = 'vault';
   render();
