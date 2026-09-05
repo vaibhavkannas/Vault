@@ -407,13 +407,16 @@ function listPushSubscribers(){
     .filter(function(s){ return !!s.token; });
 }
 
+// Data-only (no `notification` block) — sending both let the platform auto-display the
+// `notification` half independently of the client's own onBackgroundMessage handler in sw.js
+// (which also calls showNotification), producing two separate on-screen notifications from a
+// single send. FCM data-payload values must all be strings, which title/body already are.
 function sendPushNotification(token, title, body, data){
   const payload = {
     message: {
       token: token,
-      notification: {title: title, body: body},
       webpush: {fcm_options: {link: VAULT_APP_URL}},
-      data: data || {}
+      data: Object.assign({title: title, body: body}, data || {})
     }
   };
   const res = UrlFetchApp.fetch(FCM_SEND_URL, {
@@ -462,14 +465,84 @@ function sendPushReminders(){
   console.log('Push reminders: sent to ' + sent + ' of ' + subscribers.length + ' subscriber(s).');
 }
 
-// Single entry point for the existing daily trigger (see createDailyDigestTrigger below) — email
-// and push subscribers are independent, independently-toggled sets, so this fans out to both
-// rather than needing a second trigger (which would re-risk the duplicate-trigger footgun
-// createDailyDigestTrigger already guards against, for a second manual setup+consent cycle with no
-// real benefit). Each channel's own try/catch keeps a failure in one from taking down the other.
+// ---------- Archived-document auto-delete ----------
+//
+// Opt-in only — archiveRetentionSubscribers/{uid} only exists for an account that picked
+// something other than "Never" in Settings (see setArchiveRetention in index.html). Deletes both
+// the Firestore record and the underlying Drive file once a document has been archived at least
+// that many days. Getting Drive access for the delete reuses handleMint(uid) — the exact same
+// per-user token-minting path Code.gs already runs for the client's own 'mint' calls — since
+// ScriptApp.getOAuthToken() only ever grants the PROJECT OWNER's own Drive access, never an
+// arbitrary user's; each user's Drive folder lives in their own account, not the owner's.
+function listArchiveRetentionSubscribers(){
+  return firestoreListAll('archiveRetentionSubscribers')
+    .map(function(d){
+      const fields = firestoreFieldsToObject(d.fields);
+      return {uid: d.name.split('/').pop(), archiveRetentionDays: fields.archiveRetentionDays};
+    })
+    .filter(function(s){ return !!s.archiveRetentionDays; });
+}
+
+function listArchivedDocumentsForUser(uid){
+  return firestoreListAll('users/' + uid + '/documents')
+    .map(function(d){
+      const obj = firestoreFieldsToObject(d.fields);
+      obj.id = d.name.split('/').pop();
+      return obj;
+    })
+    .filter(function(doc){ return doc.archived && doc.archivedAt; });
+}
+
+function daysSinceIso(isoString){
+  return Math.floor((Date.now() - new Date(isoString).getTime()) / 86400000);
+}
+
+function driveDeleteFileForUser(uid, fileId){
+  const mintResult = handleMint(uid);
+  if(mintResult.error) return false;
+  const res = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId, {
+    method: 'delete',
+    headers: {Authorization: 'Bearer ' + mintResult.accessToken},
+    muteHttpExceptions: true
+  });
+  return res.getResponseCode() === 200 || res.getResponseCode() === 404; // 404 = already gone
+}
+
+function runArchiveCleanup(){
+  const subscribers = listArchiveRetentionSubscribers();
+  let deleted = 0;
+  subscribers.forEach(function(sub){
+    try{
+      const overdue = listArchivedDocumentsForUser(sub.uid).filter(function(doc){
+        return daysSinceIso(doc.archivedAt) >= sub.archiveRetentionDays;
+      });
+      overdue.forEach(function(doc){
+        try{
+          if(doc.driveFileId) driveDeleteFileForUser(sub.uid, doc.driveFileId);
+          firestoreDelete('/users/' + sub.uid + '/documents/' + doc.id);
+          deleted++;
+        } catch(err){
+          console.error('Archive cleanup: failed to delete document ' + doc.id + ' for uid ' + sub.uid + ': ' + err);
+        }
+      });
+    } catch(err){
+      // One user's bad data or a transient failure must not abort everyone else's cleanup.
+      console.error('Archive cleanup failed for uid ' + sub.uid + ': ' + err);
+    }
+  });
+  console.log('Archive cleanup: deleted ' + deleted + ' document(s) across ' + subscribers.length + ' subscriber(s) with retention set.');
+}
+
+// Single entry point for the existing daily trigger (see createDailyDigestTrigger below) — email,
+// push, and archive-cleanup subscribers are all independent, independently-toggled sets, so this
+// fans out to all three rather than needing more triggers (which would re-risk the
+// duplicate-trigger footgun createDailyDigestTrigger already guards against, for extra manual
+// setup+consent cycles with no real benefit). Each one's own try/catch keeps a failure in one from
+// taking down the others.
 function runDailyDigest(){
   try{ sendEmailDigests(); } catch(err){ console.error('sendEmailDigests failed: ' + err); }
   try{ sendPushReminders(); } catch(err){ console.error('sendPushReminders failed: ' + err); }
+  try{ runArchiveCleanup(); } catch(err){ console.error('runArchiveCleanup failed: ' + err); }
 }
 
 // One-off setup — run manually, once, from the Apps Script editor. Never called from doPost.

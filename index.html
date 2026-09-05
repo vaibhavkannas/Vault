@@ -87,6 +87,9 @@
   .brand{display:flex;align-items:center;gap:10px;}
   .brand-mark{width:36px;height:36px;border-radius:28%;background:var(--brass);display:flex;align-items:center;justify-content:center;flex:none;}
   .brand-name{font-size:22px;font-weight:400;letter-spacing:0;}
+  .conn-indicator{width:8px;height:8px;border-radius:50%;flex:none;margin-left:-4px;background:var(--ink-soft);}
+  .conn-indicator.online{background:var(--success);}
+  .conn-indicator.offline{background:var(--danger);}
 
   .login-screen{padding:56px 28px 40px;text-align:center;}
   /* The app-lock screen (renderLocked) adds this on top of the base rule above so it's always the
@@ -103,7 +106,7 @@
   .google-btn:active{transform:scale(0.98);}
   .gicon{width:18px;height:18px;flex:none;}
   .demo-note{margin-top:16px;font-size:11.5px;color:var(--ink-soft);background:var(--surface-container);border-radius:12px;padding:10px 12px;text-align:left;line-height:1.5;}
-  .privacy-link{display:block;margin-top:14px;font-size:12px;color:var(--ink-soft);text-decoration:underline;}
+  .privacy-link{display:block;margin-top:14px;font-size:12px;color:var(--ink-soft);text-decoration:underline;background:none;border:none;padding:0;cursor:pointer;font-family:inherit;}
   /* In Settings' About section, .version-tag sits directly under .privacy-link as one left-aligned
      group, not as its own isolated centered footer (the .login-screen/checking/locked/vault-footer
      contexts it was designed for, where there's nothing beside it to align with) — override just
@@ -165,6 +168,12 @@
   .renewal-title{font-size:13px;font-weight:500;color:var(--ink);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .renewal-days{font-size:11.5px;font-weight:500;color:var(--success);}
   .renewal-card.urgent .renewal-days{color:var(--danger);}
+  .renewal-actions{display:flex;gap:2px;margin:6px 0 -4px -6px;}
+  /* .icon-only-btn.small (two classes) otherwise outranks a plain "button" element selector here,
+     so the intended 28px compact size never actually applied — matching its own specificity by
+     naming the class here too, rather than reaching for !important. */
+  .renewal-actions button.icon-only-btn{width:28px;height:28px;padding:0;}
+  .renewal-actions svg{width:14px;height:14px;}
 
   .doc-card{background:var(--paper-2);border-radius:var(--radius);padding:12px;margin-bottom:8px;display:flex;gap:11px;align-items:flex-start;box-shadow:var(--elevation-1);}
   .doc-card.is-archived{opacity:0.65;}
@@ -249,8 +258,6 @@
   .toast{position:fixed;bottom:max(24px, calc(env(safe-area-inset-bottom) + 8px));left:50%;transform:translateX(-50%);background:#333537;color:#f1f1f1;padding:12px 20px;border-radius:8px;font-size:13.5px;z-index:100;opacity:0;transition:opacity 0.25s ease, transform 0.25s ease;pointer-events:none;max-width:88%;text-align:center;box-shadow:var(--elevation-2);}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(-6px);}
 
-  .share-link-box{background:var(--surface-container);border-radius:var(--radius-sm);padding:12px;font-size:12px;word-break:break-all;color:var(--ink-soft);margin-bottom:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
-  .share-row{display:flex;align-items:center;justify-content:space-between;background:var(--surface-container);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:8px;font-size:12.5px;}
 
   /* Camera modal */
   /* A fixed aspect-ratio (rather than sizing off the <video>'s own intrinsic dimensions) keeps
@@ -369,10 +376,9 @@
    By design (per product decision): documents are stored as
    plain, Drive-viewable files, not encrypted — Google Sign-In is
    the only access gate, there is no separate passphrase.
-   Simulated: share links — the token/expiry are real and stored
-   in Firestore, but nothing resolves vault.app/shared/... since
-   there's no backend to serve a document to someone who isn't
-   signed into this account.
+   Sharing a document hands its real file to another app via the
+   Web Share API (or downloads it directly) — there is no link-
+   based sharing.
    ============================================================ */
 
 // PDF.js renders PDF pages onto <canvas> itself rather than relying on any browser's native PDF
@@ -513,11 +519,11 @@ const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps
 // what actually applies it) — shown to the user in the Add/Edit forms so "leave blank for the
 // default schedule" means something concrete instead of asking them to trust an invisible default.
 // Keep in sync by hand if that array ever changes.
-const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry, then 1, 7, and 30 days after';
+const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry';
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.05 · 13:10';
+const APP_VERSION = '2026.09.05 · 14:09';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -554,7 +560,7 @@ const ICONS = {
   heart: '<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" fill="currentColor" stroke="none"></path>',
   home: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline>'
 };
-const CATEGORY_ICON_KEYS = ['id','receipt','tool','car','umbrella','shield','doc','folder','star','heart','home'];
+const CATEGORY_ICON_KEYS = ['id','receipt','tool','car','umbrella','shield','doc','folder','star','heart','home','calendar','key','clipboard','camera','share'];
 
 function icon(key, size){
   size = size || 20;
@@ -616,7 +622,6 @@ const state = {
   vaultFolderId: null,  // Drive folder ID of the "Vault" folder at Drive root
   categories: [],        // [{id, label, icon, driveFolderId, order}]
   documents: [],      // {id,title,category,expiry,driveFileId,mimeType,size,ocrText,addedAt,archived}
-  shares: [],
   modal: null,
   shareDocId: null,
   editDocId: null,
@@ -627,7 +632,6 @@ const state = {
   pendingChangelogItems: null, // set by maybeShowChangelog() right before showing the 'changelog' modal
   vaultWasAlreadyProvisioned: false, // set in loadUserData(); read by maybeShowChangelog()
   viewObjectUrl: null, // tracks the current in-app viewer's blob URL so it can be revoked on close
-  lastGeneratedShareId: null, // drives the "here's your link" box after Generate — see generateShare()
   searchQuery: '',
   collapsedCats: {},
   showArchived: false,
@@ -716,7 +720,7 @@ function clearTopLayerState(){
     stopCamera();
     if(state.viewObjectUrl){ URL.revokeObjectURL(state.viewObjectUrl); state.viewObjectUrl = null; }
     state.modal = null; state.shareDocId = null; state.editDocId = null; state.deleteDocId = null;
-    state.editCategoryId = null; state.viewDocId = null; state.renewDocId = null; state.editQuickRefId = null; state.pendingChangelogItems = null; state.lastGeneratedShareId = null; state.capturedPages = [];
+    state.editCategoryId = null; state.viewDocId = null; state.renewDocId = null; state.editQuickRefId = null; state.pendingChangelogItems = null; state.capturedPages = [];
     pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false;
   } else if(state.showArchived){
     state.showArchived = false; state.searchQuery = '';
@@ -810,7 +814,7 @@ const WELCOME_FEATURES = [
   {icon: 'search', title: 'Search inside your documents', desc: "OCR reads scanned text on-device, so you can search for what's written inside a document, not just its title."},
   {icon: 'calendar', title: "Never miss a renewal", desc: "Set an expiry date and get reminded by email or push notification before — and after — it lapses."},
   {icon: 'clipboard', title: 'Quick Reference', desc: "A separate spot for account numbers, codes, or passwords you'll want to copy in one tap — independent of any document."},
-  {icon: 'share', title: 'Share your way', desc: "Send the actual file through any app on your device, or generate a temporary link instead."},
+  {icon: 'share', title: 'Share your way', desc: "Send the actual file through any app on your device — Messages, Email, WhatsApp, whatever you pick from the share sheet."},
   {icon: 'download', title: 'Works offline', desc: "Once you've opened a document, it stays viewable with no connection — the rest of your vault still lists everything you have."}
 ];
 // User-facing "what's new" — shown once, the first time someone who's used Vault before opens it
@@ -818,6 +822,27 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.05 · 14:09',
+    items: [
+      "Fixed push notifications sometimes showing twice (once from the browser, once from the installed app) — needs the one-time backend update below to fully take effect.",
+      "Reminder text in Settings now correctly says a document nags you every day once it's expired, instead of describing specific before/after milestones that no longer matched the real behavior.",
+      "Removed share links, since they were unreliable (\"not found\" errors) — Share now only offers handing the real file (PDF or photo) to another app, or downloading it.",
+      "Fixed Drive folders getting duplicated if you delete your account and sign back in later — Vault now reuses an existing \"Vault\" folder and category folder instead of creating new ones, and Sync now finds documents across any duplicate folders left over from before this fix.",
+      "Deleting your account now offers to download a backup zip of all your documents first (checked by default — uncheck to skip), and tells you clearly if anything didn't fully clean up instead of staying silent about it.",
+      "Signing in is now faster on a device that's already used Vault before, and a blocked Google sign-in popup now shows a clear message instead of just hanging.",
+      "Renewal cards now have quick Archive / Renew buttons right on the card, instead of requiring you to open the document first.",
+      "Fixed the first-time welcome guide incorrectly reappearing every time you opened Vault offline.",
+      "You can now download or share any document that's available offline, even with no internet connection.",
+      "Biometric unlock can now be turned on right after setting your PIN, in the same step — no more closing and reopening Settings first.",
+      "Fixed slide-in panels sometimes closing accidentally when your finger brushed across them while scrolling — only dragging the little handle at the top now closes them.",
+      "Added a simple online/offline indicator next to the Vault name.",
+      "Privacy Policy now opens as a panel inside the app instead of a separate page — fixes it ever closing the app or landing you on the wrong screen when you went back.",
+      "A downloaded backup zip is now organized into the same category folders as Drive, so re-uploading and syncing it lines back up correctly.",
+      "Added icons for calendar, key, clipboard, camera, and share to choose from for categories.",
+      "New: Settings can now auto-delete archived documents after a set time (Never / 30 / 90 / 365 days) — needs the one-time backend update below to actually run the cleanup."
+    ]
+  },
   {
     version: '2026.09.05 · 13:10',
     items: [
@@ -1138,6 +1163,32 @@ async function toggleEmailDigest(){
   }
 }
 
+// null/0 = never (the default — archiving an old behavior promise this deliberately doesn't
+// change unless a user opts in). The actual deletion runs server-side, off the same daily Apps
+// Script trigger the reminder digest already uses. Code.gs has no generic way to enumerate every
+// signed-up account, only specific top-level "registries" of opted-in uids (emailDigestSubscribers,
+// pushSubscribers) — archiveRetentionSubscribers/{uid} is the same pattern, storing the retention
+// window itself so the daily job doesn't need a second read to find out how long.
+async function setArchiveRetention(days){
+  const previous = state.reminderSettings;
+  const value = days || null;
+  state.reminderSettings = {...state.reminderSettings, archiveRetentionDays: value, updatedAt: new Date().toISOString()};
+  render();
+  try{
+    const batch = db.batch();
+    batch.set(userDoc().collection('meta').doc('reminderSettings'), state.reminderSettings, {merge: true});
+    const subRef = db.collection('archiveRetentionSubscribers').doc(state.user.uid);
+    if(value) batch.set(subRef, {archiveRetentionDays: value, updatedAt: state.reminderSettings.updatedAt});
+    else batch.delete(subRef);
+    await batch.commit();
+  } catch(e){
+    console.error('Failed to update archive auto-delete setting', e);
+    state.reminderSettings = previous;
+    render();
+    toast(friendlyCloudError(e));
+  }
+}
+
 function isPushSupported(){
   return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 }
@@ -1281,6 +1332,13 @@ async function syncPushSubscriptionIfNeeded(){
 
 /* ---------- Google Drive ---------- */
 function driveTokenValid(){ return !!(state.driveAccessToken && state.driveTokenExpiresAt && Date.now() < state.driveTokenExpiresAt); }
+// A simple, always-visible signal for "is the app actually reachable right now" — combines the
+// browser's own connectivity signal with the app's own offline-mode flag, since either one alone
+// can be wrong in different ways (navigator.onLine can read true on a captive portal with no real
+// route out; isOfflineMode only ever gets set during a cold load, not a mid-session drop).
+function isAppOnline(){ return navigator.onLine && !state.isOfflineMode; }
+window.addEventListener('online', () => render());
+window.addEventListener('offline', () => render());
 // Five call sites (sign-in, reconnect, silent restore, and two background-refresh paths) all
 // commit a fresh Drive token response into state the same way — one helper instead of five copies
 // that could quietly drift apart (e.g. the 55-minute fallback margin getting updated in one place
@@ -1324,6 +1382,34 @@ async function driveCreateFolder(name, parentId){
   });
   const json = await res.json();
   return json.id;
+}
+// Finds a non-trashed folder by exact name (within a given parent, or Drive's root if none given)
+// — used so re-provisioning never blindly creates a duplicate when a same-named folder already
+// exists (e.g. deleting the Vault account and signing up again used to always create a brand-new
+// "Vault" folder, leaving the previous one behind even when it was still sitting right there).
+async function driveFindFolder(name, parentId){
+  const escaped = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const parentClause = parentId ? `'${parentId}' in parents` : `'root' in parents`;
+  const q = encodeURIComponent(`${parentClause} and name='${escaped}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`);
+  const json = await res.json();
+  return (json.files && json.files.length) ? json.files[0].id : null;
+}
+async function driveFindOrCreateFolder(name, parentId){
+  const existing = await driveFindFolder(name, parentId);
+  return existing || driveCreateFolder(name, parentId);
+}
+// Like driveFindFolder, but returns every non-trashed match instead of just the first — used by
+// runSyncFromDrive to also pick up files from a duplicate-named folder (Drive allows more than one
+// folder with the same name; a re-uploaded backup folder is exactly this case), not just the one
+// category folder ID already on file.
+async function driveFindAllFolderIdsByName(name, parentId){
+  const escaped = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const parentClause = parentId ? `'${parentId}' in parents` : `'root' in parents`;
+  const q = encodeURIComponent(`${parentClause} and name='${escaped}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`);
+  const json = await res.json();
+  return (json.files || []).map(f => f.id);
 }
 
 // Files are stored as their real type (image/PDF) — not encrypted, per product decision — so
@@ -1443,11 +1529,11 @@ function userDoc(){ return db.collection('users').doc(state.user.uid); }
 // plus one subfolder per default category, and records everything in Firestore so this never
 // has to run again for this account.
 async function provisionVault(){
-  const vaultFolderId = await driveCreateFolder('Vault');
+  const vaultFolderId = await driveFindOrCreateFolder('Vault');
   const categories = [];
   for(let i=0; i<DEFAULT_CATEGORIES.length; i++){
     const c = DEFAULT_CATEGORIES[i];
-    const driveFolderId = await driveCreateFolder(c.label, vaultFolderId);
+    const driveFolderId = await driveFindOrCreateFolder(c.label, vaultFolderId);
     categories.push({id:c.id, label:c.label, icon:c.icon, driveFolderId, order:i});
   }
   await userDoc().collection('meta').doc('vault').set({vaultFolderId, createdAt: new Date().toISOString()});
@@ -1606,38 +1692,44 @@ async function loadUserData(){
   const uid = state.user.uid;
   const loadDoc = () => db.collection('users').doc(uid);
   const stillCurrent = () => !!state.user && state.user.uid === uid;
+  // Whether this exact account has ever been seen as provisioned before, independent of Firestore
+  // being reachable right now — read only as a fallback in the catch block below, for a fully
+  // offline load where the real Firestore check never gets a chance to run at all (see the write
+  // side, right after alreadyProvisioned is actually determined).
+  const everProvisionedFallback = () => { try{ return localStorage.getItem('vault-ever-provisioned-' + uid) === 'true'; } catch(e){ return false; } };
   try{
-    // metaSnap.data().vaultFolderId is checked, not just metaSnap.exists — an account from
-    // before this cloud-storage redesign has an old-shape meta/vault doc (passphrase salt and
-    // canary, no vaultFolderId), which would otherwise be mistaken for an already-provisioned
-    // vault and skip folder/category creation entirely.
-    const metaSnap = await loadDoc().collection('meta').doc('vault').get();
-    if(!stillCurrent()) return;
-    const alreadyProvisioned = metaSnap.exists && metaSnap.data().vaultFolderId;
-    // Read by maybeShowChangelog() — a vault provisioned for the first time on this exact call has
-    // no "since you last used Vault" to speak of, whatever's on screen now is its whole history.
-    state.vaultWasAlreadyProvisioned = !!alreadyProvisioned;
-    if(alreadyProvisioned){
-      state.vaultFolderId = metaSnap.data().vaultFolderId;
-    } else {
-      // Needs state.driveAccessToken already set (it creates Drive folders) — the one read below
-      // that can't run alongside the others, since it's the only one Drive-dependent at all.
-      await provisionVault();
-      if(!stillCurrent()) return;
-    }
-    // documents/shares/reminderSettings never depended on any of the above finishing, or on each
-    // other — only categories does, and only when already provisioned (otherwise provisionVault()
-    // just set state.categories itself, above). Firing all of these together rather than one
-    // after another turns "wait for the sum of every round trip" into "wait for whichever one
-    // Firestore answers last" — the single biggest thing slowing down every sign-in and reopen.
-    const [catsSnap, docsSnap, sharesSnap, reminderSnap, quickRefsSnap] = await Promise.all([
-      alreadyProvisioned ? loadDoc().collection('categories').orderBy('order').get() : Promise.resolve(null),
+    // metaSnap doesn't depend on anything below, and nothing below except categories depends on
+    // it — it used to be awaited alone, before even issuing the other four reads, which cost a
+    // full extra round trip on every sign-in/reopen for no reason. Firing it in the same wave
+    // turns "meta, then everything else" into "everything (except categories) at once."
+    const [metaSnap, docsSnap, reminderSnap, quickRefsSnap] = await Promise.all([
+      loadDoc().collection('meta').doc('vault').get(),
       loadDoc().collection('documents').orderBy('addedAt', 'desc').get(),
-      loadDoc().collection('shares').get(),
       loadDoc().collection('meta').doc('reminderSettings').get(),
       loadDoc().collection('quickRefs').orderBy('addedAt', 'desc').get()
     ]);
     if(!stillCurrent()) return;
+    // metaSnap.data().vaultFolderId is checked, not just metaSnap.exists — an account from
+    // before this cloud-storage redesign has an old-shape meta/vault doc (passphrase salt and
+    // canary, no vaultFolderId), which would otherwise be mistaken for an already-provisioned
+    // vault and skip folder/category creation entirely.
+    const alreadyProvisioned = metaSnap.exists && metaSnap.data().vaultFolderId;
+    // Read by maybeShowChangelog() — a vault provisioned for the first time on this exact call has
+    // no "since you last used Vault" to speak of, whatever's on screen now is its whole history.
+    state.vaultWasAlreadyProvisioned = !!alreadyProvisioned;
+    // Mirror to localStorage too — see everProvisionedFallback() above and the catch block below.
+    if(alreadyProvisioned){ try{ localStorage.setItem('vault-ever-provisioned-' + uid, 'true'); } catch(e){} }
+    let catsSnap = null;
+    if(alreadyProvisioned){
+      state.vaultFolderId = metaSnap.data().vaultFolderId;
+      catsSnap = await loadDoc().collection('categories').orderBy('order').get();
+      if(!stillCurrent()) return;
+    } else {
+      // Needs state.driveAccessToken already set (it creates Drive folders) — the one read that
+      // can't run alongside the others above, since it's the only one Drive-dependent at all.
+      await provisionVault();
+      if(!stillCurrent()) return;
+    }
     if(catsSnap) state.categories = catsSnap.docs.map(d => ({id:d.id, ...d.data()}));
     // Same reasoning: a document written under the old encrypted schema has no plain `title`/
     // `driveFileId` fields this version relies on. Skip anything that doesn't look like the
@@ -1647,7 +1739,6 @@ async function loadUserData(){
       if(!ok) console.warn('Skipping document with an outdated/incompatible shape', d.id);
       return ok;
     });
-    state.shares = sharesSnap.docs.map(d => ({id: d.id, ...d.data()}));
     state.reminderSettings = reminderSnap.exists ? reminderSnap.data() : {emailDigestEnabled: false, pushEnabled: false};
     state.quickRefs = quickRefsSnap.docs.map(d => ({id: d.id, ...d.data()}));
     cacheAllDocumentMetadataOffline(state.documents); // fire-and-forget — keeps the offline list complete
@@ -1655,6 +1746,12 @@ async function loadUserData(){
     syncPushSubscriptionIfNeeded(); // fire-and-forget — never delays the vault's own load
   } catch(e){
     console.error('Could not load vault data from the cloud', e);
+    // The real Firestore check above never got to run (or didn't finish) — e.g. a fully offline
+    // load. Without this fallback, state.vaultWasAlreadyProvisioned would be left at its unset
+    // default (false), which maybeShowChangelog() reads as "brand-new account," incorrectly
+    // showing the welcome guide on every single offline open regardless of how long this account
+    // has actually used Vault.
+    if(stillCurrent()) state.vaultWasAlreadyProvisioned = everProvisionedFallback();
     if(stillCurrent()) toast('Could not load your vault — check your connection and try again.');
   }
   if(stillCurrent()) await loadOfflineDocIds();
@@ -1936,10 +2033,11 @@ function renderLogin(app){
       <div class="error-text" id="loginErr" style="display:none;"></div>
       ${isStandalonePwa() ? `<div class="demo-note">Signing in from the installed app but stuck? Open this site in your regular browser and sign in there once — the installed app will pick up the same sign-in automatically the next time you open it.</div>` : ''}
       <div class="demo-note">Your documents are stored as regular files in your own Google Drive, under a "Vault" folder, and organized by category. This app can only see the files and folders it creates there.</div>
-      <a class="privacy-link" href="./privacy.html" target="_blank" rel="noopener">Privacy Policy</a>
+      <button type="button" class="privacy-link" id="privacyLinkBtn">Privacy Policy</button>
       <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
   `;
+  document.getElementById('privacyLinkBtn').onclick = () => { state.modal = 'privacy'; pushAppHistoryState(); render(); };
   document.getElementById('googleBtn').onclick = async () => {
     const btn = document.getElementById('googleBtn');
     const errEl = document.getElementById('loginErr');
@@ -1964,7 +2062,14 @@ function renderLogin(app){
       state.user = {name: result.user.displayName, email: result.user.email, uid: result.user.uid, photoURL: result.user.photoURL};
       const tokenResp = await acquireDriveAccess();
       applyDriveTokenResponse(tokenResp);
-      btn.textContent = 'Setting up your vault…';
+      // "Setting up" wrongly implied first-time provisioning on every single sign-in, including a
+      // perfectly normal returning user re-authenticating after a sign-out. We don't know yet
+      // whether this account has ever been provisioned (that's only certain once loadUserData()
+      // itself checks Firestore), but a prior successful load on this exact device already left a
+      // local record of it — good enough to get the common case right.
+      let knownProvisioned = false;
+      try{ knownProvisioned = localStorage.getItem('vault-ever-provisioned-' + state.user.uid) === 'true'; } catch(e){}
+      btn.textContent = knownProvisioned ? 'Loading your vault…' : 'Setting up your vault…';
       await loadUserData();
       collapseAllCategories();
       state.screen = 'vault';
@@ -1975,8 +2080,18 @@ function renderLogin(app){
       console.error('Sign-in failed', e);
       btn.disabled = false;
       btn.textContent = 'Sign in with Google';
-      errEl.textContent = 'Sign-in failed — please try again.';
-      errEl.style.display = 'block';
+      // A blocked popup is a distinct, actionable case — the generic "please try again" message
+      // sends the user in a loop retrying the exact same thing that will fail again until they
+      // know to allow popups first. A user-cancelled popup isn't a failure worth alarming over.
+      if(e && e.code === 'auth/popup-blocked'){
+        errEl.textContent = "Your browser blocked the sign-in popup — allow popups for this site, then try again.";
+      } else if(e && (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request')){
+        errEl.textContent = '';
+        errEl.style.display = 'none';
+      } else {
+        errEl.textContent = 'Sign-in failed — please try again.';
+      }
+      if(errEl.textContent) errEl.style.display = 'block';
     } finally {
       authFlowInProgress = false;
     }
@@ -2092,6 +2207,16 @@ function renderSettings(app){
             <span class="field-hint" style="margin:0;">Not supported</span>
           ` : switchHtml('pushSwitch', isPushEnabled(), isPushDenied(), 'Push notifications')}
         </div>
+        <div class="settings-row">
+          <span>Auto-delete archived documents</span>
+          <select id="archiveRetentionSelect" style="width:auto;margin-bottom:0;padding:8px 10px;" aria-label="Auto-delete archived documents after">
+            <option value="" ${!state.reminderSettings.archiveRetentionDays ? 'selected' : ''}>Never</option>
+            <option value="30" ${state.reminderSettings.archiveRetentionDays===30 ? 'selected' : ''}>After 30 days</option>
+            <option value="90" ${state.reminderSettings.archiveRetentionDays===90 ? 'selected' : ''}>After 90 days</option>
+            <option value="365" ${state.reminderSettings.archiveRetentionDays===365 ? 'selected' : ''}>After 1 year</option>
+          </select>
+        </div>
+        ${state.reminderSettings.archiveRetentionDays ? `<p class="field-hint">Permanently deletes an archived document — file, record, and all — this long after you archived it. This cannot be undone.</p>` : ''}
       </div>
 
       <div class="settings-section">
@@ -2130,13 +2255,14 @@ function renderSettings(app){
 
       <div class="settings-section">
         <h4>About</h4>
-        <a class="privacy-link" href="./privacy.html" target="_blank" rel="noopener">Privacy Policy</a>
+        <button type="button" class="privacy-link" id="privacyLinkBtn">Privacy Policy</button>
         <div class="version-tag">Version ${APP_VERSION}</div>
       </div>
     </div>
   `;
 
   document.getElementById('backToVaultBtn').onclick = () => goBackOneLayer();
+  document.getElementById('privacyLinkBtn').onclick = () => { state.modal = 'privacy'; pushAppHistoryState(); render(); };
 
   document.querySelectorAll('[data-theme-choice]').forEach(btn => {
     btn.onclick = () => { applyTheme(btn.getAttribute('data-theme-choice')); render(); };
@@ -2171,6 +2297,8 @@ function renderSettings(app){
   if(emailDigestSwitch) emailDigestSwitch.onchange = toggleEmailDigest;
   const pushSwitch = document.getElementById('pushSwitch');
   if(pushSwitch) pushSwitch.onchange = togglePushNotifications;
+  const archiveRetentionSelect = document.getElementById('archiveRetentionSelect');
+  if(archiveRetentionSelect) archiveRetentionSelect.onchange = () => setArchiveRetention(+archiveRetentionSelect.value || null);
 
   document.getElementById('addCategoryBtn').onclick = openAddCategoryModal;
   document.querySelectorAll('[data-rename-cat]').forEach(btn => {
@@ -2380,7 +2508,7 @@ function renderVault(app){
 
   app.innerHTML = `
     <header class="topbar">
-      <div class="brand"><div class="brand-mark">${brandMarkSvg(20)}</div><div class="brand-name">Vault</div></div>
+      <div class="brand"><div class="brand-mark">${brandMarkSvg(20)}</div><div class="brand-name">Vault</div><span class="conn-indicator ${isAppOnline() ? 'online' : 'offline'}" title="${isAppOnline() ? 'Online' : 'Offline'}" aria-label="${isAppOnline() ? 'Online' : 'Offline'}"></span></div>
       <div class="topbar-actions">
         <button class="icon-only-btn" id="openQuickRefBtn" aria-label="Quick Reference" title="Quick Reference">${icon('clipboard',22)}</button>
         <button class="icon-only-btn" id="openSettingsBtn" aria-label="Settings" title="Settings">${icon('settings',22)}</button>
@@ -2418,6 +2546,10 @@ function renderVault(app){
               <div class="renewal-card ${d.days<=7?'urgent':''}" data-renewal-doc="${d.id}" role="button" tabindex="0">
                 <div class="renewal-title">${escapeHtml(d.title)}</div>
                 <div class="renewal-days">${d.days<0?'Expired':d.days===0?'Due today':d.days+' day'+(d.days===1?'':'s')+' left'}</div>
+                <div class="renewal-actions">
+                  <button class="icon-only-btn small" data-renewal-archive="${d.id}" aria-label="Archive ${escapeHtml(d.title)}" title="Archive">${icon('archive',14)}</button>
+                  ${d.days<0 ? `<button class="icon-only-btn small" data-renewal-renew="${d.id}" aria-label="Renew ${escapeHtml(d.title)}" title="Renew">${icon('restore',14)}</button>` : ''}
+                </div>
               </div>
             `).join('')}
           </div>
@@ -2514,6 +2646,12 @@ function renderVault(app){
     el.onclick = open;
     el.onkeydown = (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } };
   });
+  document.querySelectorAll('[data-renewal-archive]').forEach(btn => {
+    btn.onclick = (e) => { e.stopPropagation(); toggleArchive(btn.getAttribute('data-renewal-archive')); };
+  });
+  document.querySelectorAll('[data-renewal-renew]').forEach(btn => {
+    btn.onclick = (e) => { e.stopPropagation(); openRenewExpiredModal(btn.getAttribute('data-renewal-renew')); };
+  });
 
   // A pinned document's card renders twice — once in the Pinned section, once again in its own
   // category section — so wiring by id (getElementById only ever finds the first match in document
@@ -2585,7 +2723,6 @@ function renderDocCard(d, opts){
     const style = isExpired ? 'background:var(--danger-bg);color:var(--danger);' : days<=7 ? 'background:var(--danger-bg);color:var(--danger);' : days<=30 ? 'background:var(--warning-bg);color:var(--warning);' : 'background:var(--success-bg);color:var(--success);';
     expiryBadge = `<span class="doc-expiry" style="${style}">${isExpired ? 'Expired' : 'Expires'} ${formatExpiryDate(d.expiry)}</span>`;
   }
-  const activeShares = state.shares.filter(s => s.docId===d.id && !s.revoked && new Date(s.expiresAt)>new Date());
   const menuOpen = state.openActionMenu === d.id;
   // Denormalized both directions (see confirmRenewExpired) so either end of the pair can show a
   // note with no extra lookup beyond the already-loaded state.documents list.
@@ -2603,7 +2740,7 @@ function renderDocCard(d, opts){
       <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" data-open-doc="${d.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
       <div class="doc-body">
         <p class="doc-title" data-open-doc="${d.id}" role="button" tabindex="0">${escapeHtml(d.title)}${state.offlineDocIds.has(d.id) ? `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>` : offlineUnavailable ? `<span class="offline-badge unavailable">Not available offline</span>` : ''}</p>
-        <p class="doc-meta">${opts.showCategory ? `${escapeHtml(meta.label)} · ` : ''}Added ${formatDate(d.addedAt)}${activeShares.length ? ' · shared with '+activeShares.length : ''}${d.archived ? ' · archived' : ''}</p>
+        <p class="doc-meta">${opts.showCategory ? `${escapeHtml(meta.label)} · ` : ''}Added ${formatDate(d.addedAt)}${d.archived ? ' · archived' : ''}</p>
         ${d.snippet ? `<p class="doc-snippet">${d.snippet}</p>` : ''}
         ${expiryBadge}
         ${linkNote}
@@ -2687,16 +2824,16 @@ function enableSwipeToDismiss(sheet, handle){
     dragging = false;
   };
 
-  sheet.addEventListener('pointerdown', (e) => {
-    // Only a gesture that STARTS with nothing left to scroll up to can ever be a dismiss
-    // attempt — if it doesn't, don't even arm this pointer, so normal scrolling inside the
-    // content is left completely untouched for its whole duration.
-    if(sheet.scrollTop > 0) return;
-    begin(e);
-  });
+  // Deliberately NOT attached to the whole sheet — it used to arm from a pointerdown anywhere in
+  // the content area (gated only on being scrolled to the top), so an ordinary tap-and-drag on a
+  // button or list item up there could get misread as the start of a dismiss gesture. Only a
+  // press starting on the dedicated handle can ever begin this now; pointermove/pointerup below
+  // stay on `sheet` (not `handle`) since the drag naturally leaves the small handle bar within the
+  // first moment of downward movement, and both still fire from there via ordinary event bubbling
+  // — `handle` is inside `sheet`, so nothing about the rest of the gesture needs to change.
   if(handle){
     handle.addEventListener('pointerdown', (e) => {
-      e.stopPropagation(); // this already begins the gesture directly — don't also run sheet's own listener above
+      e.stopPropagation();
       begin(e);
     });
   }
@@ -2819,7 +2956,7 @@ function renderModal(){
         <div class="suggest-note" id="expirySuggestNote" style="display:none;"></div>
         <label class="field-label">Remind me (days before expiry, optional)</label>
         <input type="text" id="docReminderDays" placeholder="e.g. 90, 30, 7" />
-        <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once it's expired, you'll keep hearing about it until it's archived.</p>
+        <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
         <div class="error-text" id="addErr" style="display:none;"></div>
         <button class="primary" id="saveDocBtn">Save document</button>
       </div>
@@ -2882,7 +3019,7 @@ function renderModal(){
         <input type="date" id="editExpiry" value="${escapeHtml(doc.expiry || '')}" />
         <label class="field-label">Remind me (days before expiry, optional)</label>
         <input type="text" id="editReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml((doc.reminderDays || []).join(', '))}" />
-        <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once it's expired, you'll keep hearing about it until it's archived.</p>
+        <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
         <div class="error-text" id="editErr" style="display:none;"></div>
         <button class="primary" id="saveEditBtn">Save changes</button>
       </div>
@@ -2947,6 +3084,62 @@ function renderModal(){
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('dismissWelcomeBtn').onclick = closeModal;
+  }
+
+  if(state.modal === 'privacy'){
+    // An in-app dialog, not a link to a separate privacy.html page — that used to be a genuine
+    // cross-document navigation (target="_blank", so usually a real separate tab, but some
+    // installed-PWA/WebView contexts collapse that to the same document), which could leave this
+    // page's own back-button bookkeeping out of sync with the real browser history stack on
+    // return. privacy.html itself still exists as a standalone page (it's what's registered as
+    // the app's privacy policy URL on the OAuth consent screen), just no longer linked to from
+    // inside the app.
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Privacy Policy</h3>
+        <p class="sub">Last updated: September 5, 2026</p>
+        <p class="sub">Vault is a personal document storage app. This explains what data it accesses, where it's stored, and how you're in control of it.</p>
+        <div class="section-title" style="margin-top:20px;">What Vault accesses, and why</div>
+        <ul class="changelog-list">
+          <li><strong>Your basic Google profile</strong> (name, email address, profile photo) — used only to identify you within the app and show your account in the interface.</li>
+          <li><strong>Files and folders Vault itself creates in your Google Drive</strong> — Vault can only see and manage the "Vault" folder and files it creates there. It cannot see, list, or modify any other file in your Drive.</li>
+          <li><strong>Your overall Drive storage quota</strong> (read-only) — used only to show the storage-usage bar in Settings. This does not let Vault see the names or contents of your other files.</li>
+        </ul>
+        <p class="quickref-caution">Vault never requests access to your full Google Drive, Gmail, contacts, or any other Google data beyond what's listed above.</p>
+        <div class="section-title" style="margin-top:20px;">Where your data lives</div>
+        <ul class="changelog-list">
+          <li><strong>Your actual documents</strong> (photos, scans, PDFs) are stored as ordinary files in your own Google Drive, under the "Vault" folder Vault creates there. They are never copied to any other server.</li>
+          <li><strong>Document details</strong> (titles, categories, expiry dates, and similar metadata — not the files themselves) are stored in Google Cloud Firestore, under an account record tied to your unique Google user ID.</li>
+          <li><strong>Persistent Drive access</strong>: so you don't have to re-approve access every time you open Vault, a Drive refresh token is stored server-side in a Google Apps Script project, associated with your account ID. This runs entirely on Google's own infrastructure and is never shared with any other party.</li>
+          <li><strong>Text recognition (OCR)</strong>, used to help fill in details automatically when you add a document, runs entirely inside your browser using open-source software. Your document images are never uploaded to any OCR or AI service.</li>
+        </ul>
+        <div class="section-title" style="margin-top:20px;">What Vault does not do</div>
+        <ul class="changelog-list">
+          <li>No analytics, tracking, or advertising of any kind.</li>
+          <li>No selling, renting, or sharing of your data with third parties.</li>
+          <li>No human ever reviews your documents.</li>
+        </ul>
+        <div class="section-title" style="margin-top:20px;">Sharing a document</div>
+        <p class="sub">Vault can hand a document's actual file to any app on your device via your device's own share sheet, or download it directly. Sharing a document never grants anyone broader access to the rest of your Vault.</p>
+        <div class="section-title" style="margin-top:20px;">Your controls</div>
+        <ul class="changelog-list">
+          <li><strong>Sign out</strong> any time from the Settings screen.</li>
+          <li><strong>Revoke Drive access</strong> any time from your Google Account's <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">third-party access page</a> — this immediately invalidates Vault's stored access.</li>
+          <li><strong>Delete everything</strong> — Settings includes a permanent delete option that removes all of your document records, your Vault folder in Drive, and your account, in one step.</li>
+        </ul>
+        <div class="section-title" style="margin-top:20px;">Children's privacy</div>
+        <p class="sub">Vault is not directed at children and does not knowingly collect data from children.</p>
+        <div class="section-title" style="margin-top:20px;">Changes to this policy</div>
+        <p class="sub">If this policy changes, the "last updated" date above will change too. Continued use of Vault after an update means you accept the revised policy.</p>
+        <div class="section-title" style="margin-top:20px;">Contact</div>
+        <p class="sub">Questions about this policy or your data can be sent to <a href="mailto:vaibhavkanna1997@gmail.com">vaibhavkanna1997@gmail.com</a>.</p>
+        <button class="primary" id="closePrivacyBtn" style="margin-top:20px;">Close</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('closePrivacyBtn').onclick = closeModal;
   }
 
   if(state.modal === 'quickRefForm'){
@@ -3057,7 +3250,7 @@ function renderModal(){
         <div class="suggest-note" id="camExpirySuggestNote" style="display:none;"></div>
         <label class="field-label">Remind me (days before expiry, optional)</label>
         <input type="text" id="camReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml(pendingCamReminderDaysText)}" />
-        <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once it's expired, you'll keep hearing about it until it's archived.</p>
+        <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
         <div class="error-text" id="camErr" style="display:none;"></div>
         <button class="primary" id="saveCamBtn" ${state.capturedPages.length && !pendingOcrRunning ? '' : 'disabled'}>Save as PDF (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
       </div>
@@ -3080,8 +3273,6 @@ function renderModal(){
   if(state.modal === 'share'){
     const doc = state.documents.find(d => d.id === state.shareDocId);
     if(!doc){ goBackOneLayer(); return; }
-    const activeShares = state.shares.filter(s => s.docId === state.shareDocId);
-    const justGenerated = state.shares.find(s => s.id === state.lastGeneratedShareId);
     overlay.innerHTML = `
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
@@ -3089,28 +3280,11 @@ function renderModal(){
         <p class="sub">Send the actual file through any app on your device — Messages, Email, WhatsApp, whatever you pick from the share sheet.</p>
         <button class="primary" id="shareFileBtn">${icon('share',18)} Share file</button>
         <div class="error-text" id="shareFileErr" style="display:none;"></div>
-        <p class="sub" style="margin:20px 0 8px;">Or generate a link instead — expires in 48 hours, revoke it anytime.</p>
-        <button class="ghost" id="genShareBtn">Generate share link</button>
-        <div id="shareResult">${justGenerated ? `
-          <div class="share-link-box">vault.app/shared/${justGenerated.token}</div>
-          <p class="sub" style="margin-top:-6px;">Send this link separately from anything you share verbally — that's what keeps it safe in transit.</p>
-        ` : ''}</div>
-        ${activeShares.length ? `
-          <div class="section-title" style="margin-top:20px;">Active and past shares</div>
-          ${activeShares.map(s => `
-            <div class="share-row">
-              <span>${s.revoked ? 'Revoked' : (new Date(s.expiresAt) > new Date() ? 'Active · expires ' + formatDate(s.expiresAt) : 'Expired')}</span>
-              ${!s.revoked && new Date(s.expiresAt) > new Date() ? `<button class="icon-btn danger" data-revoke="${s.id}">Revoke</button>` : ''}
-            </div>
-          `).join('')}
-        ` : ''}
       </div>
     `;
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('shareFileBtn').onclick = () => shareDocumentFile(doc.id);
-    document.getElementById('genShareBtn').onclick = () => generateShare(doc.id);
-    overlay.querySelectorAll('[data-revoke]').forEach(btn => { btn.onclick = () => revokeShare(btn.getAttribute('data-revoke')); });
   }
 
   if(state.modal === 'addCategory'){
@@ -3162,12 +3336,27 @@ function renderModal(){
       await setAppLockPin(pin);
       return true;
     };
+    // Captured once, at modal-open time — setAppLockPin() never touches biometric config, so
+    // whether biometric setup is worth offering can't change out from under this while the modal
+    // is open. Used by the save handler below to decide whether to stay open afterward.
+    let bioSetupOfferedThisModal = false;
     document.getElementById('saveLockPinBtn').onclick = async () => {
-      if(await trySavePin()){ toast(alreadyEnabled ? 'PIN updated' : 'App lock turned on'); closeModal(); }
+      if(!(await trySavePin())) return;
+      toast(alreadyEnabled ? 'PIN updated' : 'App lock turned on');
+      if(bioSetupOfferedThisModal){
+        // Stay open — biometric is available and not yet configured, and the "Also set up
+        // biometric unlock" button (already visible below) now works immediately since the PIN it
+        // requires is saved. This used to close unconditionally right here, which meant the only
+        // way to ever reach biometric setup was reopening this same modal via "Change PIN"
+        // afterward — both for first-time setup and for re-enabling after turning it off.
+        return;
+      }
+      closeModal();
     };
     biometricUnlockAvailable().then(available => {
+      bioSetupOfferedThisModal = available && !hasBiometricUnlockConfigured();
       const section = document.getElementById('bioSetupSection');
-      if(section && available && !hasBiometricUnlockConfigured()) section.style.display = 'block';
+      if(section && bioSetupOfferedThisModal) section.style.display = 'block';
     });
     const setupBioBtn = document.getElementById('setupBioBtn');
     if(setupBioBtn) setupBioBtn.onclick = async () => {
@@ -3221,6 +3410,12 @@ function renderModal(){
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>Delete account &amp; vault</h3>
         <p class="sub">This permanently deletes every document, the Vault folder in your Drive, and revokes this app's sign-in for your account. This cannot be undone.</p>
+        ${state.documents.length ? `
+          <label class="settings-row" style="cursor:pointer;">
+            <span>Download a backup of my documents first</span>
+            <input type="checkbox" id="deleteBackupFirst" checked style="width:auto;margin:0;flex:none;" />
+          </label>
+        ` : ''}
         <label class="field-label">Type DELETE to confirm</label>
         <input type="text" id="deleteConfirmPhrase" placeholder="DELETE" />
         <div class="error-text" id="deleteAccountErr" style="display:none;"></div>
@@ -3615,21 +3810,39 @@ async function renderPdfInto(contentEl, blob, id){
   contentEl.appendChild(wrap);
 }
 
+// Fetches a document's actual bytes from Drive when reachable, falling back to the offline cache
+// when it isn't (or short-circuiting immediately when we already know we're offline and this one
+// was never cached) — the same fallback viewDocument() already had, now shared so downloading and
+// sharing a document work offline too instead of unconditionally attempting a doomed Drive fetch.
+async function getDocumentBlob(doc){
+  if(state.isOfflineMode && !state.offlineDocIds.has(doc.id)){
+    const err = new Error("Not available offline — connect to download or share this document.");
+    err.code = 'OFFLINE_NOT_CACHED';
+    throw err;
+  }
+  try{
+    const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
+    return {blob: await res.blob(), mimeType: doc.mimeType};
+  } catch(e){
+    const cached = await getOfflineDocument(doc.id);
+    if(cached) return {blob: cached.blob, mimeType: cached.mimeType || doc.mimeType};
+    throw e;
+  }
+}
 async function downloadDocument(id){
   const doc = state.documents.find(d => d.id === id);
   if(!doc) return;
   render();
   try{
-    const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
-    const blob = await res.blob();
+    const {blob, mimeType} = await getDocumentBlob(doc);
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = safeFilename(doc.title, doc.mimeType);
+    a.href = url; a.download = safeFilename(doc.title, mimeType);
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch(e){
     console.error('Download failed', e);
-    toast(friendlyCloudError(e));
+    toast(e && e.code === 'OFFLINE_NOT_CACHED' ? e.message : friendlyCloudError(e));
   }
 }
 
@@ -3637,9 +3850,13 @@ async function toggleArchive(id){
   const doc = state.documents.find(d => d.id === id);
   if(!doc) return;
   doc.archived = !doc.archived;
+  // Needed so an optional "auto-delete archived documents after N days" setting has something to
+  // measure age from — restoring clears it back to null rather than leaving a stale date behind
+  // from a previous archive.
+  doc.archivedAt = doc.archived ? new Date().toISOString() : null;
   render();
   toast(doc.archived ? 'Archived' : 'Restored');
-  try{ await userDoc().collection('documents').doc(id).update({archived: doc.archived}); }
+  try{ await userDoc().collection('documents').doc(id).update({archived: doc.archived, archivedAt: doc.archivedAt}); }
   catch(e){ console.error('Failed to update archive state', e); }
 }
 
@@ -3657,22 +3874,23 @@ async function confirmRenewExpired(){
   const replacementDoc = replacementId ? state.documents.find(d => d.id === replacementId) : null;
   const btn = document.getElementById('confirmRenewBtn');
   if(btn){ btn.disabled = true; btn.textContent = 'Archiving…'; }
-  const previousArchived = doc.archived, previousSupersededBy = doc.supersededBy || null;
+  const previousArchived = doc.archived, previousArchivedAt = doc.archivedAt || null, previousSupersededBy = doc.supersededBy || null;
   const previousSupersedes = replacementDoc ? (replacementDoc.supersedes || null) : null;
   doc.archived = true;
+  doc.archivedAt = new Date().toISOString();
   if(replacementDoc){ doc.supersededBy = replacementDoc.id; replacementDoc.supersedes = doc.id; }
   try{
     const batch = db.batch();
     batch.update(userDoc().collection('documents').doc(doc.id), replacementDoc
-      ? {archived: true, supersededBy: replacementDoc.id}
-      : {archived: true});
+      ? {archived: true, archivedAt: doc.archivedAt, supersededBy: replacementDoc.id}
+      : {archived: true, archivedAt: doc.archivedAt});
     if(replacementDoc) batch.update(userDoc().collection('documents').doc(replacementDoc.id), {supersedes: doc.id});
     await batch.commit();
     closeModal();
     toast('Archived');
   } catch(e){
     console.error('Failed to archive with renewal link', e);
-    doc.archived = previousArchived; doc.supersededBy = previousSupersededBy;
+    doc.archived = previousArchived; doc.archivedAt = previousArchivedAt; doc.supersededBy = previousSupersededBy;
     if(replacementDoc) replacementDoc.supersedes = previousSupersedes;
     render();
     if(btn){ btn.disabled = false; btn.textContent = 'Archive this document'; }
@@ -3718,24 +3936,20 @@ async function confirmDeleteDocument(){
   const id = state.deleteDocId;
   const doc = state.documents.find(d => d.id === id);
   state.documents = state.documents.filter(d => d.id !== id);
-  const removedShares = state.shares.filter(s => s.docId === id);
-  state.shares = state.shares.filter(s => s.docId !== id);
   closeModal();
   toast('Document deleted');
   removeOfflineDocument(id);
   try{
     await userDoc().collection('documents').doc(id).delete();
-    for(const s of removedShares) await userDoc().collection('shares').doc(s.id).delete();
     if(doc && doc.driveFileId) await driveDelete(doc.driveFileId);
   } catch(e){ console.error('Failed to remove document from storage', e); }
 }
 
 /* ---------- sharing ---------- */
-function openShareModal(docId){ state.modal='share'; state.shareDocId=docId; state.lastGeneratedShareId=null; pushAppHistoryState(); render(); }
-// Hands the actual file to the OS share sheet (Messages, Email, WhatsApp, whatever the user has),
-// rather than the simulated vault.app/shared/... link below, which nothing actually resolves —
-// this is real bytes, not a placeholder. Falls back to a plain download on browsers with no
-// navigator.share file support at all (most desktop browsers today).
+function openShareModal(docId){ state.modal='share'; state.shareDocId=docId; pushAppHistoryState(); render(); }
+// Hands the actual file to the OS share sheet (Messages, Email, WhatsApp, whatever the user has).
+// The fake vault.app/shared/... link feature that used to sit alongside this was removed entirely
+// — there was never a backend that could actually resolve it for an unauthenticated recipient.
 async function shareDocumentFile(docId){
   const doc = state.documents.find(d => d.id === docId);
   if(!doc) return;
@@ -3744,15 +3958,14 @@ async function shareDocumentFile(docId){
   if(errEl) errEl.style.display = 'none';
   if(btn){ btn.disabled = true; btn.textContent = 'Preparing…'; }
   try{
-    const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
-    const blob = await res.blob();
-    const file = new File([blob], safeFilename(doc.title, doc.mimeType), {type: doc.mimeType});
+    const {blob, mimeType} = await getDocumentBlob(doc);
+    const file = new File([blob], safeFilename(doc.title, mimeType), {type: mimeType});
     if(navigator.canShare && navigator.canShare({files: [file]})){
       await navigator.share({files: [file], title: doc.title});
     } else {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = safeFilename(doc.title, doc.mimeType);
+      a.href = url; a.download = safeFilename(doc.title, mimeType);
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       toast("Sharing files isn't supported here — downloaded instead");
@@ -3760,29 +3973,10 @@ async function shareDocumentFile(docId){
   } catch(e){
     if(e && e.name === 'AbortError') return; // user dismissed the native share sheet — not an error
     console.error('Share file failed', e);
-    if(errEl){ errEl.textContent = friendlyCloudError(e); errEl.style.display = 'block'; }
+    if(errEl){ errEl.textContent = e && e.code === 'OFFLINE_NOT_CACHED' ? e.message : friendlyCloudError(e); errEl.style.display = 'block'; }
   } finally {
     if(btn){ btn.disabled = false; btn.innerHTML = `${icon('share',18)} Share file`; }
   }
-}
-async function generateShare(docId){
-  const token = Array.from(crypto.getRandomValues(new Uint8Array(9))).map(b=>b.toString(36)).join('').slice(0,14);
-  const expiresAt = new Date(Date.now()+48*3600*1000).toISOString();
-  const share = {id: 'share_'+Date.now(), docId, token, expiresAt, revoked:false};
-  state.shares.unshift(share);
-  // Drive the "here's your link" box off state instead of writing straight into #shareResult:
-  // renderModal() below does a full innerHTML rebuild of the modal, which would otherwise wipe
-  // out anything written directly into that node a moment earlier.
-  state.lastGeneratedShareId = share.id;
-  renderModal();
-  try{ await userDoc().collection('shares').doc(share.id).set(share); } catch(e){ console.error('Failed to save share', e); }
-}
-async function revokeShare(shareId){
-  const s = state.shares.find(s => s.id === shareId);
-  if(s) s.revoked = true;
-  renderModal();
-  toast('Share revoked');
-  if(s){ try{ await userDoc().collection('shares').doc(s.id).set(s); } catch(e){ console.error('Failed to save revoked share', e); } }
 }
 
 /* ---------- Drive reconnect ----------
@@ -3898,7 +4092,20 @@ async function runSyncFromDrive(){
   try{
     const knownIds = new Set(state.documents.map(d => d.driveFileId));
     for(const cat of state.categories){
-      const q = encodeURIComponent(`'${cat.driveFolderId}' in parents and trashed=false`);
+      // Matching by driveFolderId alone misses a very real case: re-uploading an exported backup's
+      // category folder (e.g. from the "Download" zip in Settings, unzipped and dragged back into
+      // Drive) creates a NEW, separate folder with the same name rather than merging into the
+      // existing one — Drive allows duplicate folder names, and there's no way to "re-attach" an
+      // upload to a specific existing folder ID by name alone. Checking for any other same-named
+      // folder directly under the Vault root (besides the one already on file) and pulling from
+      // those too is what makes that reasonably work, as long as the name matches exactly.
+      const folderIds = new Set([cat.driveFolderId]);
+      try{
+        const extraIds = await driveFindAllFolderIdsByName(cat.label, state.vaultFolderId);
+        extraIds.forEach(id => folderIds.add(id));
+      } catch(e){ console.error('Could not check for other same-named category folders', e); }
+      for(const folderId of folderIds){
+      const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
       const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,size)`);
       const json = await res.json();
       for(const f of (json.files || [])){
@@ -3923,6 +4130,7 @@ async function runSyncFromDrive(){
         state.documents.unshift(doc);
         knownIds.add(f.id);
         importedCount++;
+      }
       }
     }
     toast(importedCount ? `Imported ${importedCount} file${importedCount===1?'':'s'} from Drive` : 'Nothing new to import');
@@ -3962,23 +4170,27 @@ function exportDocumentListCsv(){
   toast('Exported document list');
 }
 
-// A single portable copy of everything — active and archived alike, since the point of a backup
-// is completeness, not just what's currently in view — zipped client-side (JSZip) rather than
-// triggering one download per file, which browsers commonly throttle or block outright past a
-// handful in quick succession. One bad/unreachable file is skipped, not fatal to the rest.
-async function exportAllDocuments(){
-  if(!state.documents.length){ toast('No documents to export'); return; }
-  const btn = document.getElementById('exportAllBtn');
-  const statusEl = document.getElementById('exportAllStatus');
-  if(btn) btn.disabled = true;
+// Builds the full backup zip and returns its Blob (plus how many documents made it in) without
+// touching any specific DOM element — shared between the Settings "Download" button and the
+// optional pre-delete-account backup step, each of which handles its own UI feedback differently.
+// Active and archived documents alike, since the point of a backup is completeness, not just
+// what's currently in view. One bad/unreachable file is skipped, not fatal to the rest.
+async function buildDocumentsZipBlob(onProgress){
   const zip = new JSZip();
-  const usedNames = new Set();
+  // Per-category, not one global set — mirroring Drive's own layout means uniqueness only needs
+  // to hold within a folder, same as Drive itself only requires. Folder names come from the exact
+  // same category labels Drive already uses, so re-uploading a category's files (not the folder
+  // itself — see runSyncFromDrive's own name-matching fallback) into the matching Vault subfolder
+  // in Drive is what makes Sync able to pick this backup back up later.
+  const usedNamesByCategory = {};
   let done = 0, failed = 0;
   for(const doc of state.documents){
-    if(statusEl) statusEl.textContent = `Fetching ${done + failed + 1} of ${state.documents.length}…`;
+    if(onProgress) onProgress(done + failed + 1, state.documents.length);
     try{
       const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
       const blob = await res.blob();
+      const catLabel = categoryFor(doc.category).label;
+      const usedNames = usedNamesByCategory[catLabel] || (usedNamesByCategory[catLabel] = new Set());
       let name = safeFilename(doc.title, doc.mimeType);
       if(usedNames.has(name)){
         // Two documents can share a title (or the same sanitized filename) — number the later one
@@ -3989,13 +4201,30 @@ async function exportAllDocuments(){
         name = candidate;
       }
       usedNames.add(name);
-      zip.file(name, blob);
+      zip.file(`${catLabel}/${name}`, blob);
       done++;
     } catch(e){
       console.error('Export: could not fetch ' + doc.title, e);
       failed++;
     }
   }
+  if(!done) return {blob: null, done, failed};
+  const blob = await zip.generateAsync({type: 'blob'});
+  return {blob, done, failed};
+}
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function exportAllDocuments(){
+  if(!state.documents.length){ toast('No documents to export'); return; }
+  const btn = document.getElementById('exportAllBtn');
+  const statusEl = document.getElementById('exportAllStatus');
+  if(btn) btn.disabled = true;
+  const {blob, done, failed} = await buildDocumentsZipBlob((i, total) => { if(statusEl) statusEl.textContent = `Fetching ${i} of ${total}…`; });
   if(!done){
     if(btn) btn.disabled = false;
     if(statusEl) statusEl.textContent = '';
@@ -4003,12 +4232,7 @@ async function exportAllDocuments(){
     return;
   }
   if(statusEl) statusEl.textContent = 'Building zip…';
-  const content = await zip.generateAsync({type: 'blob'});
-  const url = URL.createObjectURL(content);
-  const a = document.createElement('a');
-  a.href = url; a.download = `vault-export-${new Date().toISOString().slice(0,10)}.zip`;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadBlob(blob, `vault-export-${new Date().toISOString().slice(0,10)}.zip`);
   if(btn) btn.disabled = false;
   if(statusEl) statusEl.textContent = '';
   toast(failed ? `Exported ${done} of ${state.documents.length} — ${failed} couldn't be fetched` : `Exported ${done} document${done===1?'':'s'}`);
@@ -4018,7 +4242,7 @@ async function exportAllDocuments(){
 function resetToLoggedOutState(){
   Object.assign(state, {
     screen: 'login', user: null, driveAccessToken: null, driveTokenExpiresAt: null,
-    vaultFolderId: null, categories: [], documents: [], shares: [], modal: null,
+    vaultFolderId: null, categories: [], documents: [], modal: null,
     searchQuery: '', showArchived: false, collapsedCats: {}, openActionMenu: null, isOfflineMode: false
   });
   // Deliberately not touching history/guard bookkeeping here: an earlier version force-reset a
@@ -4040,9 +4264,27 @@ function openDeleteAccountModal(){ state.modal = 'deleteAccount'; pushAppHistory
 async function deleteEverything(){
   const btn = document.getElementById('confirmDeleteAccountBtn');
   const errEl = document.getElementById('deleteAccountErr');
-  if(btn){ btn.disabled = true; btn.textContent = 'Deleting…'; }
+  const backupCheckbox = document.getElementById('deleteBackupFirst');
+  const wantsBackup = backupCheckbox ? backupCheckbox.checked : false;
+  if(btn){ btn.disabled = true; btn.textContent = wantsBackup ? 'Backing up…' : 'Deleting…'; }
+  // Checked by default (see the deleteAccount modal) — an irreversible action is exactly where
+  // opt-out is the safer default, not opt-in. A failed backup blocks the delete entirely rather
+  // than silently proceeding anyway; the user can still uncheck it and confirm again if they'd
+  // rather skip the backup than fix whatever broke it.
+  if(wantsBackup && state.documents.length){
+    const {blob, done, failed} = await buildDocumentsZipBlob((i, total) => { if(btn) btn.textContent = `Backing up ${i} of ${total}…`; });
+    if(!done){
+      if(btn){ btn.disabled = false; btn.textContent = 'Permanently delete everything'; }
+      errEl.textContent = "Couldn't back up your documents — check your connection, or uncheck the backup option to delete without one.";
+      errEl.style.display = 'block';
+      return;
+    }
+    downloadBlob(blob, `vault-export-${new Date().toISOString().slice(0,10)}.zip`);
+    if(failed) toast(`Backed up ${done} of ${state.documents.length} documents — ${failed} couldn't be fetched`);
+    if(btn) btn.textContent = 'Deleting…';
+  }
   try{
-    for(const colName of ['documents','shares','categories','quickRefs']){
+    for(const colName of ['documents','categories','quickRefs']){
       const snap = await userDoc().collection(colName).get();
       const batch = db.batch();
       snap.docs.forEach(d => batch.delete(d.ref));
@@ -4052,11 +4294,19 @@ async function deleteEverything(){
     await userDoc().collection('meta').doc('reminderSettings').delete();
     await db.collection('emailDigestSubscribers').doc(state.user.uid).delete();
     await db.collection('pushSubscribers').doc(state.user.uid).delete();
+    await db.collection('archiveRetentionSubscribers').doc(state.user.uid).delete();
+    // Best-effort, but no longer a SILENT best-effort — a failure here used to be swallowed to
+    // just a console.error while the UI still claimed unconditional success, leaving an orphaned
+    // Drive folder with no indication anything was left behind.
+    let driveFolderDeleteFailed = false;
     if(state.vaultFolderId){
-      try{ await driveDelete(state.vaultFolderId); } catch(e){ console.error('Could not delete the Drive Vault folder', e); }
+      try{ await driveDelete(state.vaultFolderId); } catch(e){ console.error('Could not delete the Drive Vault folder', e); driveFolderDeleteFailed = true; }
     }
+    try{ localStorage.removeItem('vault-ever-provisioned-' + state.user.uid); } catch(e){}
     await auth.currentUser.delete();
-    toast('Account and vault deleted');
+    toast(driveFolderDeleteFailed
+      ? 'Account deleted — your Drive "Vault" folder could not be removed automatically; delete it manually from Drive if you want it gone.'
+      : 'Account and vault deleted');
     clearOfflineCache();
     resetToLoggedOutState();
     render();

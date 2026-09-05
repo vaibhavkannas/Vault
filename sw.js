@@ -13,13 +13,18 @@ firebase.initializeApp({
 });
 const messaging = firebase.messaging();
 
+// Data-only messages (Code.gs sends no `notification` field at all) so this handler is the ONE
+// and only thing that ever calls showNotification() — a message carrying both `notification` and
+// `data` blocks left the platform free to auto-display the `notification` half on its own,
+// independent of this handler also firing, producing two separate on-screen notifications from a
+// single send. Reading title/body out of `data` instead sidesteps that entirely.
 messaging.onBackgroundMessage((payload) => {
-  const title = (payload.notification && payload.notification.title) || 'Vault';
-  self.registration.showNotification(title, {
-    body: payload.notification && payload.notification.body,
+  const data = payload.data || {};
+  self.registration.showNotification(data.title || 'Vault', {
+    body: data.body,
     icon: './icon.svg',
     badge: './icon.svg',
-    data: payload.data || {}
+    data
   });
 });
 
