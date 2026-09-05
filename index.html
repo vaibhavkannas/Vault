@@ -270,6 +270,10 @@
   .field-hint{font-size:11.5px;color:var(--ink-soft);margin:-8px 0 12px;line-height:1.4;}
   .changelog-list{margin:0 0 20px;padding-left:20px;font-size:13.5px;color:var(--ink);line-height:1.6;}
   .changelog-list li{margin-bottom:8px;}
+  .welcome-feature{display:flex;gap:12px;align-items:flex-start;margin-bottom:18px;}
+  .welcome-feature-icon{width:38px;height:38px;border-radius:50%;background:var(--primary-container);color:var(--on-primary-container);display:flex;align-items:center;justify-content:center;flex:none;}
+  .welcome-feature-title{font-weight:500;font-size:14px;margin:0 0 2px;}
+  .welcome-feature-desc{font-size:12.5px;color:var(--ink-soft);margin:0;line-height:1.4;}
 
   /* Dark mode: system preference by default, data-theme attribute forces either way.
      Values follow Material 3's dark color roles — surfaces stay near-black rather than
@@ -503,7 +507,7 @@ const DEFAULT_REMINDER_SCHEDULE_LABEL = '14, 7, 3, 1, and 0 days before expiry, 
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.05 · 06:16';
+const APP_VERSION = '2026.09.05 · 06:22';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -787,11 +791,29 @@ window.addEventListener('popstate', () => {
   armExitGuardIfIdle();
 });
 
+// Shown once, right after a brand-new account's very first successful load — maybeShowChangelog()
+// below is what decides "brand new" vs. "returning" (a fresh vault has nothing to catch up on via
+// the changelog, so that's exactly the moment to introduce the app itself instead). Icon key +
+// title + one-line description, in the order a new user would actually want to discover them.
+const WELCOME_FEATURES = [
+  {icon: 'camera', title: 'Add documents your way', desc: "Upload a file, or scan one with your camera — multiple pages become a single PDF automatically."},
+  {icon: 'search', title: 'Search inside your documents', desc: "OCR reads scanned text on-device, so you can search for what's written inside a document, not just its title."},
+  {icon: 'calendar', title: "Never miss a renewal", desc: "Set an expiry date and get reminded by email or push notification before — and after — it lapses."},
+  {icon: 'clipboard', title: 'Quick Reference', desc: "A separate spot for account numbers, codes, or passwords you'll want to copy in one tap — independent of any document."},
+  {icon: 'share', title: 'Share your way', desc: "Send the actual file through any app on your device, or generate a temporary link instead."},
+  {icon: 'download', title: 'Works offline', desc: "Once you've opened a document, it stays viewable with no connection — the rest of your vault still lists everything you have."}
+];
 // User-facing "what's new" — shown once, the first time someone who's used Vault before opens it
 // after a push that actually changed something visible. Append a new entry (newest first) whenever
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.05 · 06:22',
+    items: [
+      "New accounts now see a short welcome guide on first open, introducing what Vault can do — you won't see this yourself since it only shows once, on an account's very first login."
+    ]
+  },
   {
     version: '2026.09.05 · 06:16',
     items: [
@@ -861,10 +883,16 @@ function maybeShowChangelog(){
   changelogCheckedThisSession = true;
   try{
     // A vault provisioned for the very first time on this exact call has nothing to catch up on —
-    // whatever they're seeing right now IS their baseline. Record silently and move on, rather than
-    // showing a new sign-up a list of changes to a version of the app they never used.
+    // whatever they're seeing right now IS their baseline, so recording it silently (rather than
+    // showing a new sign-up a list of changes to a version of the app they never used) is still
+    // correct. But this exact moment — and only this moment, never again for this account — is
+    // also precisely when introducing the app itself is actually useful, so show that instead of
+    // just returning.
     if(!state.vaultWasAlreadyProvisioned){
       localStorage.setItem('vault-last-seen-version', APP_VERSION);
+      state.modal = 'welcome';
+      pushAppHistoryState();
+      renderModal();
       return;
     }
     const lastSeen = localStorage.getItem('vault-last-seen-version');
@@ -2857,6 +2885,29 @@ function renderModal(){
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('dismissChangelogBtn').onclick = closeModal;
+  }
+
+  if(state.modal === 'welcome'){
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Welcome to Vault</h3>
+        <p class="sub">Everything you need to keep your important documents organized, safe, and one tap away.</p>
+        ${WELCOME_FEATURES.map(f => `
+          <div class="welcome-feature">
+            <div class="welcome-feature-icon">${icon(f.icon,20)}</div>
+            <div>
+              <p class="welcome-feature-title">${escapeHtml(f.title)}</p>
+              <p class="welcome-feature-desc">${escapeHtml(f.desc)}</p>
+            </div>
+          </div>
+        `).join('')}
+        <button class="primary" id="dismissWelcomeBtn">Let's go</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('dismissWelcomeBtn').onclick = closeModal;
   }
 
   if(state.modal === 'quickRefForm'){
