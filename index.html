@@ -592,7 +592,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.06 · 07:52';
+const APP_VERSION = '2026.09.06 · 10:23';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -918,6 +918,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.06 · 10:23',
+    items: [
+      "Sign-in is faster — Vault used to fetch your Drive access and your documents/settings one after the other; it now fetches both at the same time, so sign-in only takes as long as the slower of the two instead of both added together."
+    ]
+  },
   {
     version: '2026.09.06 · 07:52',
     items: [
@@ -1977,9 +1983,26 @@ async function migrateAndLoadQuickRefs(loadDoc){
   }
 }
 
+// The meta/documents/reminderSettings reads loadUserData() needs — pulled out on its own so a
+// caller that's ALSO about to await a slow, unrelated network call (the Drive token mint/consent
+// exchange, an Apps Script Web App round trip) can fire both at once instead of one after the
+// other. Neither depends on the other for a returning user; only categories/Quick Reference
+// further down in loadUserData() actually need the Drive token, and by then it's long done.
+function prefetchUserMetaReads(uid){
+  const loadDoc = () => db.collection('users').doc(uid);
+  return Promise.all([
+    loadDoc().collection('meta').doc('vault').get(),
+    loadDoc().collection('documents').orderBy('addedAt', 'desc').get(),
+    loadDoc().collection('meta').doc('reminderSettings').get()
+  ]);
+}
+
 // Loads everything for the signed-in account. Called right after sign-in once state.user.uid
 // and a valid Drive token are both ready — provisioning a brand-new account needs Drive access.
-async function loadUserData(){
+// `prefetchedReads` is an OPTIONAL in-flight Promise from prefetchUserMetaReads(), started by the
+// caller before (not after) it awaited the Drive token — see the sign-in paths that pass one.
+// Omitted, this fires the same reads itself, same as before.
+async function loadUserData(prefetchedReads){
   // Captured once, up front: state.user can go null mid-flight (a sign-out racing this same call,
   // e.g. from the periodic background token-refresh timer) — every read below goes through this
   // fixed uid, and every write to state at the end re-checks it's still the active session, rather
@@ -2000,11 +2023,7 @@ async function loadUserData(){
     // turns "meta, then everything else" into "everything (except categories, and Quick Reference
     // — see below) at once." Quick Reference isn't read here at all anymore: it now lives in Drive,
     // which needs state.vaultFolderId settled first, so migrateAndLoadQuickRefs() runs further down.
-    const [metaSnap, docsSnap, reminderSnap] = await Promise.all([
-      loadDoc().collection('meta').doc('vault').get(),
-      loadDoc().collection('documents').orderBy('addedAt', 'desc').get(),
-      loadDoc().collection('meta').doc('reminderSettings').get()
-    ]);
+    const [metaSnap, docsSnap, reminderSnap] = await (prefetchedReads || prefetchUserMetaReads(uid));
     if(!stillCurrent()) return;
     // metaSnap.data().vaultFolderId is checked, not just metaSnap.exists — an account from
     // before this cloud-storage redesign has an old-shape meta/vault doc (passphrase salt and
@@ -2393,6 +2412,11 @@ function renderLogin(app){
     try{
       const result = await auth.signInWithPopup(provider);
       state.user = {name: result.user.displayName, email: result.user.email, uid: result.user.uid, photoURL: result.user.photoURL};
+      // Fired alongside acquireDriveAccess() below rather than after it — see prefetchUserMetaReads.
+      // This is the path a person actually watches and judges "how fast is sign-in" by, so it's the
+      // highest-value place for the two independent network legs to run concurrently instead of
+      // back to back.
+      const metaReadsPromise = prefetchUserMetaReads(state.user.uid);
       const tokenResp = await acquireDriveAccess();
       applyDriveTokenResponse(tokenResp);
       // "Setting up" wrongly implied first-time provisioning on every single sign-in, including a
@@ -2403,7 +2427,7 @@ function renderLogin(app){
       let knownProvisioned = false;
       try{ knownProvisioned = localStorage.getItem('vault-ever-provisioned-' + state.user.uid) === 'true'; } catch(e){}
       btn.textContent = knownProvisioned ? 'Loading your vault…' : 'Setting up your vault…';
-      await loadUserData();
+      await loadUserData(metaReadsPromise);
       collapseAllCategories();
       state.screen = 'vault';
       render();
@@ -2460,10 +2484,15 @@ async function completeReconnect(){
   btn.disabled = true;
   btn.textContent = 'Connecting…';
   try{
+    // Fired alongside the consent popup exchange below rather than after it — see
+    // prefetchUserMetaReads. The popup itself needs the user's own click to open at all, but the
+    // Firestore reads don't depend on its result, so there's no reason to wait for it to resolve
+    // before even starting them.
+    const metaReadsPromise = prefetchUserMetaReads(state.user.uid);
     const tokenResp = await grantDriveAccessOneTime();
     applyDriveTokenResponse(tokenResp);
     btn.textContent = 'Loading your vault…';
-    await loadUserData();
+    await loadUserData(metaReadsPromise);
     collapseAllCategories();
     state.screen = 'vault';
     render();
@@ -5404,9 +5433,15 @@ auth.onAuthStateChanged(async (user) => {
     // mintDriveAccessToken() alone (not acquireDriveAccess()) — a cold open should never pop a
     // consent screen unprompted; NO_GRANT/GRANT_REVOKED routes to the "Welcome back" screen
     // instead, where the user's own tap is what makes the popup a real, gesture-backed one.
-    const tokenResp = await mintDriveAccessToken();
+    // Fired in parallel with the Firestore reads loadUserData() needs (see prefetchUserMetaReads)
+    // instead of one after the other — the two hit independent backends with no dependency
+    // between them for a returning user, so there's no reason the slower of the two (typically
+    // the Apps Script round trip) should delay the other from even starting.
+    const tokenPromise = mintDriveAccessToken();
+    const metaReadsPromise = prefetchUserMetaReads(user.uid);
+    const tokenResp = await tokenPromise;
     applyDriveTokenResponse(tokenResp);
-    await loadUserData();
+    await loadUserData(metaReadsPromise);
     collapseAllCategories();
     state.screen = 'vault';
     render();
