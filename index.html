@@ -234,6 +234,12 @@
   .chip-btn.danger{background:var(--danger-bg);color:var(--danger);}
   .doc-link-note{font-size:11.5px;color:var(--ink-soft);margin:4px 0 0;}
   .icon-btn{border:1px solid var(--line);background:var(--paper-2);border-radius:var(--radius-sm);padding:6px 10px;font-size:11.5px;cursor:pointer;color:var(--ink);}
+  /* A native <input type="date"> has no visible way to clear it once set on several mobile
+     browsers (no built-in × the way desktop Chrome shows one) — this pairs an explicit Clear
+     button alongside it everywhere an expiry date is entered. */
+  .expiry-row{display:flex;gap:8px;align-items:center;}
+  .expiry-row input[type="date"]{margin-bottom:0;flex:1;min-width:0;}
+  .expiry-row .icon-btn{flex:none;white-space:nowrap;}
   svg.icon{flex:none;display:block;}
   .icon-btn.danger{color:var(--danger);border-color:var(--danger-bg);}
   .icon-btn:disabled{opacity:0.5;cursor:default;}
@@ -593,7 +599,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.06 · 10:48';
+const APP_VERSION = '2026.09.06 · 11:43';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -919,6 +925,16 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.06 · 11:43',
+    items: [
+      "Found and fixed the real cause of the app-wide flash on every click: opening/closing a screen like Add, Edit or the document viewer was animating a full-screen transition meant only for switching between Vault/Settings/Quick Reference. Only genuine screen switches animate now.",
+      "\"Remind me\" is now fully hidden (not just grayed out) until you enter an expiry date, and there's now a Clear button next to the expiry date field, since some phones don't offer any way to clear a date once it's set.",
+      "Document scans should look noticeably sharper now, and on phones/browsers that support it, uses your camera's higher-resolution photo mode instead of its video-preview resolution.",
+      "Fixed OCR (text scanning) becoming much slower after the recent camera quality improvement — it now runs on an appropriately sized copy of the photo instead of the full high-resolution capture, which made no difference to accuracy but a big difference to speed.",
+      "Improved automatic edge detection for camera scans to handle real photos (lighting, shadows, backgrounds) much better than the first version."
+    ]
+  },
   {
     version: '2026.09.06 · 10:48',
     items: [
@@ -2198,9 +2214,34 @@ function guessCategory(ocrText){
 }
 
 /* ---------- OCR ---------- */
+// Tesseract's runtime scales with pixel count, not text complexity — recognition accuracy gets no
+// real benefit past a couple thousand pixels on the long edge, so feeding it a much larger capture
+// (needed for on-screen/print clarity, not for OCR) just burns CPU time for nothing. Runs OCR
+// against a downscaled COPY; the original full-resolution dataUrl this was called with is what
+// actually gets stored, completely untouched.
+const OCR_MAX_DIMENSION = 2000;
+function downscaleForOcr(dataUrl){
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const longEdge = Math.max(img.naturalWidth, img.naturalHeight);
+      if(longEdge <= OCR_MAX_DIMENSION){ resolve(dataUrl); return; }
+      const scale = OCR_MAX_DIMENSION / longEdge;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.naturalWidth * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => resolve(dataUrl); // fall back to the original rather than fail OCR outright
+    img.src = dataUrl;
+  });
+}
+
 async function runOcr(dataUrl, onProgress){
   try{
-    const result = await Tesseract.recognize(dataUrl, 'eng', {
+    const ocrInput = await downscaleForOcr(dataUrl);
+    const result = await Tesseract.recognize(ocrInput, 'eng', {
       logger: m => { if(m.status === 'recognizing text' && onProgress) onProgress(m.progress); }
     });
     return result.data.text.trim();
@@ -2306,8 +2347,27 @@ function prefersReducedMotion(){
 // before the document has painted even once, which this flag sidesteps by just skipping straight to
 // renderImmediate() that one time (there's nothing to crossfade from anyway).
 let hasRenderedOnce = false;
+// What renderImmediate() would actually show right now, collapsed to one comparable value — used
+// below to tell "the screen itself changed" (worth an animated crossfade) apart from "some smaller
+// bit of state changed but we're still looking at the same screen" (not worth one). Mirrors
+// renderImmediate()'s own branching so the two can never disagree about what's on screen.
+function currentScreenKey(){
+  if((state.screen === 'vault' || state.screen === 'settings' || state.screen === 'quickref') && isAppLockDue()) return 'locked';
+  return state.screen;
+}
+let lastScreenKey = null;
 function render(){
-  if(!hasRenderedOnce || !('startViewTransition' in document) || prefersReducedMotion()){
+  const screenKey = currentScreenKey();
+  // Only animate when the SCREEN itself is changing (vault <-> settings, unlocking, signing in,
+  // ...) — modals already have their own open/close animations (overlayFadeIn/sheetSlideUp, the
+  // swipe-to-dismiss), and every other render() call is just some in-place state change (editing a
+  // field, opening a menu, adding/deleting a document) that stays on the exact same screen. Wrapping
+  // ALL of those in the same whole-page crossfade this was originally meant for screen changes made
+  // literally every click flash the entire app, document list included, since render() is what
+  // basically every interaction in the app already calls.
+  const isScreenChange = lastScreenKey !== null && lastScreenKey !== screenKey;
+  lastScreenKey = screenKey;
+  if(!hasRenderedOnce || !isScreenChange || !('startViewTransition' in document) || prefersReducedMotion()){
     renderImmediate();
     hasRenderedOnce = true;
     return;
@@ -3423,11 +3483,16 @@ function renderModal(){
         <select id="docCategory">${categoryOptionsHtml(renewalTarget ? renewalTarget.category : undefined)}</select>
         <div class="suggest-note" id="categorySuggestNote" style="display:none;"></div>
         <label class="field-label">Expiry date (optional)</label>
-        <input type="date" id="docExpiry" />
+        <div class="expiry-row">
+          <input type="date" id="docExpiry" />
+          <button type="button" class="icon-btn" id="docExpiryClearBtn">Clear</button>
+        </div>
         <div class="suggest-note" id="expirySuggestNote" style="display:none;"></div>
-        <label class="field-label">Remind me (days before expiry, optional)</label>
-        <input type="text" id="docReminderDays" placeholder="Add an expiry date first" disabled />
-        <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
+        <div id="docReminderWrap" style="display:none;">
+          <label class="field-label">Remind me (days before expiry, optional)</label>
+          <input type="text" id="docReminderDays" placeholder="e.g. 90, 30, 7" />
+          <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
+        </div>
         <div class="error-text" id="addErr" style="display:none;"></div>
         <button class="primary" id="saveDocBtn">${renewalTarget ? 'Save & archive old document' : 'Save document'}</button>
       </div>
@@ -3436,8 +3501,13 @@ function renderModal(){
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('fileDrop').onclick = () => document.getElementById('fileInput').click();
     document.getElementById('docCategory').onchange = () => { categoryManuallyChanged = true; };
-    syncReminderDaysEnabled('docExpiry', 'docReminderDays');
-    document.getElementById('docExpiry').addEventListener('input', () => syncReminderDaysEnabled('docExpiry', 'docReminderDays'));
+    syncReminderDaysEnabled('docExpiry', 'docReminderDays', 'docReminderWrap');
+    document.getElementById('docExpiry').addEventListener('input', () => syncReminderDaysEnabled('docExpiry', 'docReminderDays', 'docReminderWrap'));
+    document.getElementById('docExpiryClearBtn').onclick = () => {
+      const input = document.getElementById('docExpiry');
+      input.value = '';
+      syncReminderDaysEnabled('docExpiry', 'docReminderDays', 'docReminderWrap');
+    };
     document.getElementById('fileInput').onchange = async (e) => {
       const f = e.target.files[0];
       if(!f) return;
@@ -3456,7 +3526,7 @@ function renderModal(){
         pendingOcrText = await runOcr(dataUrl, setOcrProgress);
         document.getElementById('ocrProgress').style.display = 'none';
         applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
-        syncReminderDaysEnabled('docExpiry', 'docReminderDays');
+        syncReminderDaysEnabled('docExpiry', 'docReminderDays', 'docReminderWrap');
         applyCategorySuggestionIfUntouched('docCategory', 'categorySuggestNote', pendingOcrText);
         pendingOcrRunning = false;
         if(saveBtn) saveBtn.disabled = false;
@@ -3467,7 +3537,7 @@ function renderModal(){
         try{
           pendingOcrText = await runOcrOnPdfFile(f, setOcrProgress);
           applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
-          syncReminderDaysEnabled('docExpiry', 'docReminderDays');
+          syncReminderDaysEnabled('docExpiry', 'docReminderDays', 'docReminderWrap');
           applyCategorySuggestionIfUntouched('docCategory', 'categorySuggestNote', pendingOcrText);
         } catch(err){ console.error('PDF OCR failed', err); }
         document.getElementById('ocrProgress').style.display = 'none';
@@ -3491,10 +3561,15 @@ function renderModal(){
         <label class="field-label">Category</label>
         <select id="editCategory">${categoryOptionsHtml(doc.category)}</select>
         <label class="field-label">Expiry date (optional)</label>
-        <input type="date" id="editExpiry" value="${escapeHtml(doc.expiry || '')}" />
-        <label class="field-label">Remind me (days before expiry, optional)</label>
-        <input type="text" id="editReminderDays" placeholder="${doc.expiry ? 'e.g. 90, 30, 7' : 'Add an expiry date first'}" value="${escapeHtml((doc.reminderDays || []).join(', '))}" ${doc.expiry ? '' : 'disabled'} />
-        <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
+        <div class="expiry-row">
+          <input type="date" id="editExpiry" value="${escapeHtml(doc.expiry || '')}" />
+          <button type="button" class="icon-btn" id="editExpiryClearBtn">Clear</button>
+        </div>
+        <div id="editReminderWrap" style="display:${doc.expiry ? '' : 'none'};">
+          <label class="field-label">Remind me (days before expiry, optional)</label>
+          <input type="text" id="editReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml((doc.reminderDays || []).join(', '))}" />
+          <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
+        </div>
         <div class="error-text" id="editErr" style="display:none;"></div>
         <button class="primary" id="saveEditBtn">Save changes</button>
       </div>
@@ -3502,7 +3577,12 @@ function renderModal(){
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('saveEditBtn').onclick = saveEditedDocument;
-    document.getElementById('editExpiry').addEventListener('input', () => syncReminderDaysEnabled('editExpiry', 'editReminderDays'));
+    document.getElementById('editExpiry').addEventListener('input', () => syncReminderDaysEnabled('editExpiry', 'editReminderDays', 'editReminderWrap'));
+    document.getElementById('editExpiryClearBtn').onclick = () => {
+      const input = document.getElementById('editExpiry');
+      input.value = '';
+      syncReminderDaysEnabled('editExpiry', 'editReminderDays', 'editReminderWrap');
+    };
   }
 
   if(state.modal === 'confirmDelete'){
@@ -3822,11 +3902,16 @@ function renderModal(){
           <select id="camCategory">${categoryOptionsHtml(pendingCamCategory)}</select>
           <div class="suggest-note" id="camCategorySuggestNote" style="display:none;"></div>
           <label class="field-label">Expiry date (optional)</label>
-          <input type="date" id="camExpiry" value="${pendingCamExpiry}" />
+          <div class="expiry-row">
+            <input type="date" id="camExpiry" value="${pendingCamExpiry}" />
+            <button type="button" class="icon-btn" id="camExpiryClearBtn">Clear</button>
+          </div>
           <div class="suggest-note" id="camExpirySuggestNote" style="display:none;"></div>
-          <label class="field-label">Remind me (days before expiry, optional)</label>
-          <input type="text" id="camReminderDays" placeholder="${pendingCamExpiry ? 'e.g. 90, 30, 7' : 'Add an expiry date first'}" value="${escapeHtml(pendingCamReminderDaysText)}" ${pendingCamExpiry ? '' : 'disabled'} />
-          <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
+          <div id="camReminderWrap" style="display:${pendingCamExpiry ? '' : 'none'};">
+            <label class="field-label">Remind me (days before expiry, optional)</label>
+            <input type="text" id="camReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml(pendingCamReminderDaysText)}" />
+            <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
+          </div>
           <div class="error-text" id="camErr" style="display:none;"></div>
           <button class="primary" id="saveCamBtn" ${state.capturedPages.length && !pendingOcrRunning ? '' : 'disabled'}>${renewalTarget ? 'Save & archive old' : 'Save as PDF'} (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
         </div>
@@ -3839,7 +3924,12 @@ function renderModal(){
         categoryManuallyChanged = true;
         pendingCamCategory = document.getElementById('camCategory').value;
       };
-      document.getElementById('camExpiry').addEventListener('input', () => syncReminderDaysEnabled('camExpiry', 'camReminderDays'));
+      document.getElementById('camExpiry').addEventListener('input', () => syncReminderDaysEnabled('camExpiry', 'camReminderDays', 'camReminderWrap'));
+      document.getElementById('camExpiryClearBtn').onclick = () => {
+        const input = document.getElementById('camExpiry');
+        input.value = '';
+        syncReminderDaysEnabled('camExpiry', 'camReminderDays', 'camReminderWrap');
+      };
       overlay.querySelectorAll('[data-remove-page]').forEach(btn => {
         btn.onclick = () => removeCapturedPage(+btn.getAttribute('data-remove-page'));
       });
@@ -4298,8 +4388,25 @@ function imageToNaturalCanvas(imgEl){
   return canvas;
 }
 
+// Turns an OpenCV minAreaRect() result ({center, size, angle}, all plain numbers — not a Mat) into
+// its 4 corner points by hand, rather than betting on a "give me the corners" helper's exact name
+// across OpenCV.js builds (several are inconsistent about this one specifically). Just rotating a
+// rectangle's own local corners by its own angle around its own center — plain trigonometry, no
+// OpenCV-specific API surface to get wrong.
+function cornersFromRotatedRect(rect){
+  const {center, size, angle} = rect;
+  const rad = angle * Math.PI / 180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  const hw = size.width / 2, hh = size.height / 2;
+  return [{x: -hw, y: -hh}, {x: hw, y: -hh}, {x: hw, y: hh}, {x: -hw, y: hh}]
+    .map(p => ({x: center.x + p.x * cos - p.y * sin, y: center.y + p.x * sin + p.y * cos}));
+}
+
 function detectDocumentQuad(imgEl){
-  if(typeof cv === 'undefined' || !cv.Mat) return null;
+  if(typeof cv === 'undefined' || !cv.Mat){
+    console.log('[auto-crop] OpenCV not ready yet — using the default box.');
+    return null;
+  }
   const cleanup = [];
   const track = (m) => { cleanup.push(m); return m; };
   try{
@@ -4320,39 +4427,71 @@ function detectDocumentQuad(imgEl){
 
     const contours = track(new cv.MatVector());
     const hierarchy = track(new cv.Mat());
-    cv.findContours(edged, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+    // EXTERNAL, not LIST: only the outermost boundary of each shape. A real document almost always
+    // has its own internal contours (printed borders, photos, blocks of text) that LIST would also
+    // return and that can end up competing with the actual page edge for "largest area."
+    cv.findContours(edged, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-    let bestPts = null, bestArea = 0;
     const workingArea = working.cols * working.rows;
+    // Every external contour above the area floor, largest first — the page is virtually always
+    // the single largest thing in frame, but keeping more than just the #1 largest guards against a
+    // strong shadow or a busy background occasionally outscoring the actual page.
+    const candidates = [];
     for(let i = 0; i < contours.size(); i++){
       const cnt = contours.get(i);
+      const area = Math.abs(cv.contourArea(cnt));
+      if(area > workingArea * 0.15) candidates.push({cnt, area});
+      else cnt.delete();
+    }
+    candidates.sort((a, b) => b.area - a.area);
+    console.log('[auto-crop] ' + candidates.length + ' candidate contour(s) above the area floor.');
+
+    let bestPts = null, usedFallbackRect = false;
+    for(const {cnt} of candidates){
       const peri = cv.arcLength(cnt, true);
-      const approx = new cv.Mat();
-      cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-      // Require the candidate to cover a real fraction of the frame — a tiny 4-point blob (a logo,
-      // a corner of text) is never the page itself, only ever noise.
-      if(approx.rows === 4 && cv.isContourConvex(approx)){
-        const area = Math.abs(cv.contourArea(approx));
-        if(area > workingArea * 0.2 && area > bestArea){
-          bestArea = area;
+      // A single fixed epsilon either over- or under-simplifies depending on how noisy a real
+      // photo's edges are (lighting, shadows, paper texture) — searching a small range and taking
+      // the first 4-point convex result is the standard, more reliable technique real scanner
+      // implementations use instead of one fixed guess.
+      for(const frac of [0.01, 0.02, 0.03, 0.05, 0.08]){
+        const approx = new cv.Mat();
+        cv.approxPolyDP(cnt, approx, frac * peri, true);
+        if(approx.rows === 4 && cv.isContourConvex(approx)){
           bestPts = [];
           for(let k = 0; k < 4; k++) bestPts.push({x: approx.data32S[k * 2] / scale, y: approx.data32S[k * 2 + 1] / scale});
+          approx.delete();
+          break;
         }
+        approx.delete();
       }
-      approx.delete();
-      cnt.delete();
+      if(bestPts) break;
     }
 
-    if(!bestPts) return null;
-    // approxPolyDP's 4 points come out in contour-walk order, not tl/tr/bl/br — sort by position
-    // instead: the two smallest-y points are the top corners (left/right split by x), likewise for
-    // the bottom two.
+    // No clean 4-point polygon at any epsilon — fall back to the largest candidate's own rotated
+    // bounding rectangle rather than giving up entirely. Not perspective-accurate the way a real
+    // 4-corner match is, but still genuinely fitted to whatever's actually in the photo, which
+    // beats a fixed centered box regardless of what the actual document looks like.
+    if(!bestPts && candidates.length){
+      usedFallbackRect = true;
+      const rect = cv.minAreaRect(candidates[0].cnt);
+      bestPts = cornersFromRotatedRect(rect).map(p => ({x: p.x / scale, y: p.y / scale}));
+    }
+    candidates.forEach(c => c.cnt.delete());
+
+    if(!bestPts){
+      console.log('[auto-crop] no candidate covered enough of the frame — using the default box.');
+      return null;
+    }
+    // Points come out in contour-walk order (or rotated-rect order), not tl/tr/bl/br — sort by
+    // position instead: the two smallest-y points are the top corners (left/right split by x),
+    // likewise for the bottom two.
     bestPts.sort((a, b) => a.y - b.y);
     const top2 = bestPts.slice(0, 2).sort((a, b) => a.x - b.x);
     const bottom2 = bestPts.slice(2, 4).sort((a, b) => a.x - b.x);
+    console.log('[auto-crop] detected quad' + (usedFallbackRect ? ' (bounding-rect fallback)' : ' (4-point match)') + '.');
     return {tl: top2[0], tr: top2[1], bl: bottom2[0], br: bottom2[1]};
   } catch(e){
-    console.warn('Document edge detection failed', e);
+    console.warn('[auto-crop] detection threw, using the default box.', e);
     return null;
   } finally {
     cleanup.forEach(m => { try{ m.delete(); } catch(e){} });
@@ -4378,6 +4517,7 @@ async function attemptAutoDetectQuad(cropIndexAtStart){
   stage.appendChild(badge);
   try{
     await waitForOpenCvReady();
+    console.log('[auto-crop] OpenCV ready.');
     // The user may have cancelled this crop screen, or opened a different page's crop, while
     // OpenCV was still loading — never clobber a screen that isn't showing this capture anymore.
     if(state.cropIndex !== cropIndexAtStart) return;
@@ -4491,16 +4631,37 @@ function wireCropOverlay(){
 // Grabs the raw video frame and opens the crop step on it rather than storing it directly — OCR
 // and the suggestion logic that used to run right here now run at the end of confirmCrop() instead,
 // on the cropped/enhanced pixels, which is a free accuracy improvement (no background/margins).
-function capturePage(){
-  const video = document.getElementById('cameraVideo');
-  if(!video || !video.videoWidth) return;
-  snapshotCamFormFields();
+// ImageCapture.takePhoto() can return a meaningfully higher-resolution still than the live video
+// stream itself provides, on browsers/devices that support it — many phone cameras have a separate,
+// higher-resolution "photo" mode distinct from whatever resolution they stream continuous video at,
+// and getUserMedia's own width/height constraints only ever steer the latter. Falls back to the
+// plain video-frame-to-canvas capture (the only thing this ever did before) on anything that
+// doesn't support it — notably iOS Safari — so this can only ever match or beat that, never do worse.
+async function captureFrameAsDataUrl(video){
+  try{
+    const track = state.cameraStream && state.cameraStream.getVideoTracks()[0];
+    if(track && typeof ImageCapture !== 'undefined'){
+      const capture = new ImageCapture(track);
+      const blob = await capture.takePhoto();
+      return await readFileAsDataURL(blob);
+    }
+  } catch(e){
+    console.warn('ImageCapture.takePhoto() unavailable — using the live video frame instead.', e);
+  }
   const canvas = document.createElement('canvas');
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
   canvas.getContext('2d').drawImage(video, 0, 0);
+  return canvas.toDataURL('image/jpeg', 0.9);
+}
+
+async function capturePage(){
+  const video = document.getElementById('cameraVideo');
+  if(!video || !video.videoWidth) return;
+  snapshotCamFormFields();
+  const dataUrl = await captureFrameAsDataUrl(video);
   state.cropIndex = state.capturedPages.length; // "append" position — not pushed yet
-  state.cropSourceDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+  state.cropSourceDataUrl = dataUrl;
   state.cropEnhanceOn = false;
   state.cropQuad = null; // computed on first paint, once the image's on-screen size is known (or auto-detected)
   state.cropDetecting = false;
@@ -4636,7 +4797,7 @@ async function confirmCrop(){
   if(currentIndex !== -1) pendingPageOcrTexts[currentIndex] = pageText;
   pendingOcrText = pendingPageOcrTexts.join('\n').trim();
   applyExpirySuggestionIfEmpty('camExpiry', 'camExpirySuggestNote', pendingOcrText);
-  syncReminderDaysEnabled('camExpiry', 'camReminderDays');
+  syncReminderDaysEnabled('camExpiry', 'camReminderDays', 'camReminderWrap');
   applyCategorySuggestionIfUntouched('camCategory', 'camCategorySuggestNote', pendingOcrText);
   // Re-snapshot — a suggestion above may have just written into the expiry/category fields
   // directly, so this picks that up too, ready for the next renderModal().
@@ -4722,13 +4883,19 @@ function openEditModal(id){ state.modal = 'edit'; state.editDocId = id; pushAppH
 // through) until one exists. Called on the expiry field's own input event AND right after any
 // programmatic value assignment (OCR's applyExpirySuggestionIfEmpty sets .value directly, which
 // fires no input event of its own).
-function syncReminderDaysEnabled(expiryId, reminderId){
+// A reminder schedule means nothing without an expiry date to count down to — the whole "Remind
+// me" section (label, input, hint text) stays hidden, not just disabled, until one exists, and
+// its value is cleared if a filled-in expiry is ever removed so a value typed earlier can't sneak
+// through unseen. Called on the expiry field's own input event AND right after any programmatic
+// value assignment (OCR's applyExpirySuggestionIfEmpty sets .value directly, which fires no input
+// event of its own) — and also wired to the expiry field's Clear button, for the same reason.
+function syncReminderDaysEnabled(expiryId, reminderId, wrapId){
   const expiryInput = document.getElementById(expiryId);
   const reminderInput = document.getElementById(reminderId);
-  if(!expiryInput || !reminderInput) return;
+  const wrap = document.getElementById(wrapId);
+  if(!expiryInput || !reminderInput || !wrap) return;
   const hasExpiry = !!expiryInput.value;
-  reminderInput.disabled = !hasExpiry;
-  reminderInput.placeholder = hasExpiry ? 'e.g. 90, 30, 7' : 'Add an expiry date first';
+  wrap.style.display = hasExpiry ? '' : 'none';
   if(!hasExpiry) reminderInput.value = '';
 }
 
