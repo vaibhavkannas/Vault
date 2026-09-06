@@ -126,6 +126,7 @@
 
   input[type="text"], input[type="date"], input[type="password"], select, textarea{width:100%;padding:12px 14px;border:1px solid transparent;border-radius:var(--radius-sm);background:var(--surface-container);font-size:14px;color:var(--ink);margin-bottom:12px;font-family:inherit;}
   input[type="text"]:focus, input[type="date"]:focus, input[type="password"]:focus, select:focus, textarea:focus{outline:2px solid var(--brass);outline-offset:-1px;}
+  input[type="text"]:disabled{opacity:0.55;cursor:not-allowed;}
   input[type="password"]{letter-spacing:0.3em;}
   /* display:flex (not the plain text-centering a <button> gets by default) so an icon — svg.icon
      below is display:block — sits inline with its label instead of dropping to its own line; a
@@ -592,7 +593,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.06 · 10:23';
+const APP_VERSION = '2026.09.06 · 10:48';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -918,6 +919,14 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.06 · 10:48',
+    items: [
+      "Fixed a bug from the last update where the whole app could visibly flash/refresh on an unrelated click — a background connection check was animating the entire screen every time it ran, instead of staying invisible like it's supposed to.",
+      "\"Remind me\" is no longer accepted without an expiry date — it now stays disabled until you enter one, since a reminder schedule needs an expiry to count down to.",
+      "Photos captured with the camera should now come out noticeably sharper — the camera was quietly capturing at a much lower resolution than the device supports."
+    ]
+  },
   {
     version: '2026.09.06 · 10:23',
     items: [
@@ -1539,7 +1548,15 @@ async function attemptSilentDriveRefresh(){
   try{
     const tokenResp = await mintDriveAccessToken();
     applyDriveTokenResponse(tokenResp);
-    render();
+    // renderImmediate(), not render(): this fires from inside renderVault() itself, on a timer,
+    // completely independent of anything the user just clicked — the animated cross-fade render()
+    // normally uses is meant for a change the user is watching happen, not a silent background
+    // self-heal. Wrapping this one in the same transition made the ENTIRE screen (document list
+    // included) visibly flash on whatever the user's next click happened to be, since human click
+    // cadence is almost always slower than this function's own 60s cooldown — so it looked like
+    // "everything refreshes on every click," when really it was this unrelated background retry
+    // landing at roughly the same time by coincidence.
+    renderImmediate();
   } catch(e){
     console.warn('Silent Drive token refresh failed — falling back to the manual reconnect banner.', e);
   } finally {
@@ -3409,7 +3426,7 @@ function renderModal(){
         <input type="date" id="docExpiry" />
         <div class="suggest-note" id="expirySuggestNote" style="display:none;"></div>
         <label class="field-label">Remind me (days before expiry, optional)</label>
-        <input type="text" id="docReminderDays" placeholder="e.g. 90, 30, 7" />
+        <input type="text" id="docReminderDays" placeholder="Add an expiry date first" disabled />
         <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
         <div class="error-text" id="addErr" style="display:none;"></div>
         <button class="primary" id="saveDocBtn">${renewalTarget ? 'Save & archive old document' : 'Save document'}</button>
@@ -3419,6 +3436,8 @@ function renderModal(){
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('fileDrop').onclick = () => document.getElementById('fileInput').click();
     document.getElementById('docCategory').onchange = () => { categoryManuallyChanged = true; };
+    syncReminderDaysEnabled('docExpiry', 'docReminderDays');
+    document.getElementById('docExpiry').addEventListener('input', () => syncReminderDaysEnabled('docExpiry', 'docReminderDays'));
     document.getElementById('fileInput').onchange = async (e) => {
       const f = e.target.files[0];
       if(!f) return;
@@ -3437,6 +3456,7 @@ function renderModal(){
         pendingOcrText = await runOcr(dataUrl, setOcrProgress);
         document.getElementById('ocrProgress').style.display = 'none';
         applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
+        syncReminderDaysEnabled('docExpiry', 'docReminderDays');
         applyCategorySuggestionIfUntouched('docCategory', 'categorySuggestNote', pendingOcrText);
         pendingOcrRunning = false;
         if(saveBtn) saveBtn.disabled = false;
@@ -3447,6 +3467,7 @@ function renderModal(){
         try{
           pendingOcrText = await runOcrOnPdfFile(f, setOcrProgress);
           applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
+          syncReminderDaysEnabled('docExpiry', 'docReminderDays');
           applyCategorySuggestionIfUntouched('docCategory', 'categorySuggestNote', pendingOcrText);
         } catch(err){ console.error('PDF OCR failed', err); }
         document.getElementById('ocrProgress').style.display = 'none';
@@ -3472,7 +3493,7 @@ function renderModal(){
         <label class="field-label">Expiry date (optional)</label>
         <input type="date" id="editExpiry" value="${escapeHtml(doc.expiry || '')}" />
         <label class="field-label">Remind me (days before expiry, optional)</label>
-        <input type="text" id="editReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml((doc.reminderDays || []).join(', '))}" />
+        <input type="text" id="editReminderDays" placeholder="${doc.expiry ? 'e.g. 90, 30, 7' : 'Add an expiry date first'}" value="${escapeHtml((doc.reminderDays || []).join(', '))}" ${doc.expiry ? '' : 'disabled'} />
         <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
         <div class="error-text" id="editErr" style="display:none;"></div>
         <button class="primary" id="saveEditBtn">Save changes</button>
@@ -3481,6 +3502,7 @@ function renderModal(){
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('saveEditBtn').onclick = saveEditedDocument;
+    document.getElementById('editExpiry').addEventListener('input', () => syncReminderDaysEnabled('editExpiry', 'editReminderDays'));
   }
 
   if(state.modal === 'confirmDelete'){
@@ -3803,7 +3825,7 @@ function renderModal(){
           <input type="date" id="camExpiry" value="${pendingCamExpiry}" />
           <div class="suggest-note" id="camExpirySuggestNote" style="display:none;"></div>
           <label class="field-label">Remind me (days before expiry, optional)</label>
-          <input type="text" id="camReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml(pendingCamReminderDaysText)}" />
+          <input type="text" id="camReminderDays" placeholder="${pendingCamExpiry ? 'e.g. 90, 30, 7' : 'Add an expiry date first'}" value="${escapeHtml(pendingCamReminderDaysText)}" ${pendingCamExpiry ? '' : 'disabled'} />
           <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
           <div class="error-text" id="camErr" style="display:none;"></div>
           <button class="primary" id="saveCamBtn" ${state.capturedPages.length && !pendingOcrRunning ? '' : 'disabled'}>${renewalTarget ? 'Save & archive old' : 'Save as PDF'} (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
@@ -3817,6 +3839,7 @@ function renderModal(){
         categoryManuallyChanged = true;
         pendingCamCategory = document.getElementById('camCategory').value;
       };
+      document.getElementById('camExpiry').addEventListener('input', () => syncReminderDaysEnabled('camExpiry', 'camReminderDays'));
       overlay.querySelectorAll('[data-remove-page]').forEach(btn => {
         btn.onclick = () => removeCapturedPage(+btn.getAttribute('data-remove-page'));
       });
@@ -4053,7 +4076,10 @@ async function saveDocument(){
   const title = document.getElementById('docTitle').value.trim();
   const category = document.getElementById('docCategory').value;
   const expiry = document.getElementById('docExpiry').value;
-  const reminderDays = parseReminderDaysInput(document.getElementById('docReminderDays').value);
+  // A reminder schedule with no expiry to count down to doesn't mean anything — the field is kept
+  // disabled/cleared while expiry is empty (see syncReminderDaysEnabled), this is the save-time
+  // backstop against that same case.
+  const reminderDays = expiry ? parseReminderDaysInput(document.getElementById('docReminderDays').value) : null;
   const errEl = document.getElementById('addErr');
   const saveBtn = document.getElementById('saveDocBtn');
   const renewalTargetId = state.renewalUploadTargetId;
@@ -4178,7 +4204,15 @@ async function startCamera(){
     // aspectRatio is a request, not a guarantee — the displayed box stays a fixed size regardless
     // (see .camera-wrap's CSS), this just steers the negotiated stream closer to that box so
     // object-fit:cover has less to crop.
-    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment', aspectRatio:{ideal: 3/4}}});
+    //
+    // width/height `ideal` matter a lot more than they look: with no resolution constraint at all,
+    // browsers commonly negotiate a low default (often well under 1280x720) even on a camera
+    // capable of several times that — capturePage() just captures whatever video.videoWidth/Height
+    // the browser handed back, so a low-res stream here silently caps every photo's real clarity
+    // regardless of how good the actual camera is. `ideal` (not `min`/exact) still degrades
+    // gracefully on a camera that genuinely can't do this — it asks for the best available instead
+    // of forcing a failure.
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment', aspectRatio:{ideal: 3/4}, width:{ideal: 3000}, height:{ideal: 4000}}});
     // The camera modal (or the whole app, via the app-lock teardown) can close while this permission
     // prompt is still pending — unlike every other async modal-content loader here (viewDocument,
     // renderPdfInto), this one used to skip re-checking relevance after its await, so a stream
@@ -4602,6 +4636,7 @@ async function confirmCrop(){
   if(currentIndex !== -1) pendingPageOcrTexts[currentIndex] = pageText;
   pendingOcrText = pendingPageOcrTexts.join('\n').trim();
   applyExpirySuggestionIfEmpty('camExpiry', 'camExpirySuggestNote', pendingOcrText);
+  syncReminderDaysEnabled('camExpiry', 'camReminderDays');
   applyCategorySuggestionIfUntouched('camCategory', 'camCategorySuggestNote', pendingOcrText);
   // Re-snapshot — a suggestion above may have just written into the expiry/category fields
   // directly, so this picks that up too, ready for the next renderModal().
@@ -4634,7 +4669,7 @@ async function saveCameraDocument(){
   const title = document.getElementById('camTitle').value.trim();
   const category = document.getElementById('camCategory').value;
   const expiry = document.getElementById('camExpiry').value;
-  const reminderDays = parseReminderDaysInput(document.getElementById('camReminderDays').value);
+  const reminderDays = expiry ? parseReminderDaysInput(document.getElementById('camReminderDays').value) : null;
   const errEl = document.getElementById('camErr');
   const saveBtn = document.getElementById('saveCamBtn');
 
@@ -4682,6 +4717,21 @@ async function saveCameraDocument(){
 
 /* ---------- edit / view / archive / delete ---------- */
 function openEditModal(id){ state.modal = 'edit'; state.editDocId = id; pushAppHistoryState(); render(); }
+// A reminder schedule means nothing without an expiry date to count down to — keeps the "Remind
+// me" field disabled (and cleared, so a value typed before the expiry was cleared can't sneak
+// through) until one exists. Called on the expiry field's own input event AND right after any
+// programmatic value assignment (OCR's applyExpirySuggestionIfEmpty sets .value directly, which
+// fires no input event of its own).
+function syncReminderDaysEnabled(expiryId, reminderId){
+  const expiryInput = document.getElementById(expiryId);
+  const reminderInput = document.getElementById(reminderId);
+  if(!expiryInput || !reminderInput) return;
+  const hasExpiry = !!expiryInput.value;
+  reminderInput.disabled = !hasExpiry;
+  reminderInput.placeholder = hasExpiry ? 'e.g. 90, 30, 7' : 'Add an expiry date first';
+  if(!hasExpiry) reminderInput.value = '';
+}
+
 // Custom per-document reminder schedule (days-before-expiry), overriding the global milestone
 // list the Apps Script digest otherwise uses — e.g. a passport might warrant a 90-day heads-up,
 // not just the default 14. Blank means "use the default schedule", not "remind never".
@@ -4698,7 +4748,7 @@ async function saveEditedDocument(){
   const title = document.getElementById('editTitle').value.trim();
   const category = document.getElementById('editCategory').value;
   const expiry = document.getElementById('editExpiry').value;
-  const reminderDays = parseReminderDaysInput(document.getElementById('editReminderDays').value);
+  const reminderDays = expiry ? parseReminderDaysInput(document.getElementById('editReminderDays').value) : null;
   const errEl = document.getElementById('editErr');
   const saveBtn = document.getElementById('saveEditBtn');
   if(!title){ errEl.textContent='Enter a document title.'; errEl.style.display='block'; return; }
@@ -5490,7 +5540,10 @@ setInterval(async () => {
     } else if(wasShowingReconnectBanner){
       // The urgent "Reconnect" banner was up when this tick started — reflect the fix immediately
       // instead of leaving it on screen until some unrelated re-render happens to clear it.
-      render();
+      // renderImmediate(), not render(): same reasoning as attemptSilentDriveRefresh() — this is a
+      // silent background fix landing at an arbitrary moment, not something to animate the whole
+      // screen (document list included) around.
+      renderImmediate();
     }
   } catch(e){
     console.warn('Background Drive token refresh failed' + (state.isOfflineMode ? ' — still offline.' : ' — falling back to the manual reconnect banner.'), e);
