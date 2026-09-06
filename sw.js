@@ -52,7 +52,7 @@ self.addEventListener('notificationclick', (event) => {
 // index.html/manifest.json/icon.svg themselves don't need a bump for ordinary content edits:
 // they're fetched network-first below, so the live copy always wins whenever a connection is
 // available — the cached copy is only ever a fallback for when it isn't.
-const CACHE_VERSION = '4';
+const CACHE_VERSION = '5';
 const SHELL_CACHE = 'vault-shell-v' + CACHE_VERSION;
 
 // Same-origin, could change between deploys — always prefer a live fetch.
@@ -66,6 +66,11 @@ const CACHE_FIRST_URLS = [
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+  // Only actually fetched by index.html on first camera-crop use (see loadOpenCvScript()), not on
+  // every cold start — but still pre-cached here like everything else in this list, so the very
+  // first time someone opens the crop screen while online, it's already sitting in Cache Storage
+  // instead of triggering a fresh ~8MB download at that moment.
+  'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.1/dist/opencv.js',
   'https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js',
   'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js',
   'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js',

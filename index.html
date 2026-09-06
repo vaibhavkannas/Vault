@@ -319,17 +319,20 @@
   .page-thumb-wrap{position:relative;flex:none;}
   .page-thumb{width:56px;height:56px;border-radius:10px;object-fit:cover;display:block;cursor:pointer;}
   .page-thumb-del{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--danger);color:var(--on-danger);border:2px solid var(--paper);font-size:13px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;}
-  /* Sized to the image's own rendered box (inline-block shrinks to content) so cropBox's
-     left/top/width/height land directly in the image's on-screen coordinate space — no
-     letterboxing offset math needed anywhere in wireCropOverlay(). */
+  /* Sized to the image's own rendered box (inline-block shrinks to content) so the crop quad's
+     points land directly in the image's on-screen coordinate space — no letterboxing offset math
+     needed anywhere in wireCropOverlay(). */
   .crop-stage{position:relative;display:inline-block;margin:0 auto 14px;max-width:100%;touch-action:none;}
   .crop-stage img{display:block;max-width:100%;max-height:56vh;width:auto;height:auto;border-radius:8px;user-select:none;-webkit-user-drag:none;}
-  .crop-box{position:absolute;border:2px solid var(--brass);box-shadow:0 0 0 9999px rgba(0,0,0,0.45);cursor:move;touch-action:none;}
-  .crop-handle{position:absolute;width:40px;height:40px;margin:-20px;border-radius:50%;background:rgba(26,115,232,0.35);border:2px solid var(--brass);touch-action:none;}
-  .crop-handle[data-handle="tl"]{left:0;top:0;cursor:nwse-resize;}
-  .crop-handle[data-handle="tr"]{left:100%;top:0;cursor:nesw-resize;}
-  .crop-handle[data-handle="bl"]{left:0;top:100%;cursor:nesw-resize;}
-  .crop-handle[data-handle="br"]{left:100%;top:100%;cursor:nwse-resize;}
+  /* A free-form quad (not necessarily an axis-aligned rectangle) can't be drawn with the old
+     box-shadow-spread trick, which only darkens outside a rectangle — an SVG path with fill-rule
+     evenodd (the full stage rect, minus the quad, as one compound path) gives the same "spotlight"
+     effect for any four-point shape. The visible polygon on top doubles as the "drag to move"
+     hit-target. */
+  .crop-mask{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
+  .crop-quad{pointer-events:auto;cursor:move;touch-action:none;}
+  .crop-handle{position:absolute;width:40px;height:40px;margin:-20px;border-radius:50%;background:rgba(26,115,232,0.35);border:2px solid var(--brass);touch-action:none;cursor:grab;}
+  .crop-detecting{position:absolute;top:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.6);color:#fff;font-size:12px;padding:6px 12px;border-radius:999px;pointer-events:none;}
   .progress-row{font-size:12.5px;color:var(--ink-soft);text-align:center;margin:10px 0;}
   .progress-track{height:4px;background:var(--surface-container);border-radius:4px;overflow:hidden;margin-bottom:6px;}
   .progress-fill{height:100%;background:var(--brass);transition:width 0.2s ease;}
@@ -589,7 +592,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.06 · 07:23';
+const APP_VERSION = '2026.09.06 · 07:52';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -718,8 +721,12 @@ const state = {
   cropIndex: null, // index into capturedPages currently open in the crop step; null = crop UI closed.
                     // cropIndex === capturedPages.length means "new page not yet appended"
   cropSourceDataUrl: null, // the raw dataURL currently loaded into the crop <img>
-  cropRect: null, // live crop rectangle in on-screen CSS px, relative to the crop <img>: {x,y,w,h}
+  // Free-form 4-corner crop (not an axis-aligned rectangle) — each corner drags independently, like
+  // CamScanner/Adobe Scan, so a photo taken at an angle can still be perspective-corrected rather
+  // than just cropped straight. On-screen CSS px, relative to the crop <img>.
+  cropQuad: null, // {tl:{x,y}, tr:{x,y}, bl:{x,y}, br:{x,y}}
   cropEnhanceOn: false, // live Enhance toggle state for the open crop screen
+  cropDetecting: false, // true while auto edge-detection is running on a freshly opened crop screen
   openActionMenu: null, // doc id whose card's ⋮ overflow menu is currently open, or null
   offlineDocIds: new Set(), // doc ids with a file blob cached in IndexedDB for offline viewing
   isOfflineMode: false, // true when the vault opened with no Drive/Firestore connection at all
@@ -911,6 +918,13 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.06 · 07:52',
+    items: [
+      "Capturing a document with the camera now automatically detects its edges and straightens it out (like a dedicated scanner app) — you only need to adjust it by hand if the automatic detection isn't quite right, and each corner now drags freely instead of being locked to a straight rectangle.",
+      "This works fully offline too, after its one-time setup download the first time you use the camera."
+    ]
+  },
   {
     version: '2026.09.06 · 07:23',
     items: [
@@ -3701,12 +3715,14 @@ function renderModal(){
           <p class="sub">Drag the corners to crop, or drag inside the frame to move it.</p>
           <div class="crop-stage" id="cropStage">
             <img id="cropImage" src="${state.cropSourceDataUrl}" draggable="false" />
-            <div class="crop-box" id="cropBox">
-              <div class="crop-handle" data-handle="tl"></div>
-              <div class="crop-handle" data-handle="tr"></div>
-              <div class="crop-handle" data-handle="bl"></div>
-              <div class="crop-handle" data-handle="br"></div>
-            </div>
+            <svg class="crop-mask" id="cropMask" xmlns="http://www.w3.org/2000/svg">
+              <path id="cropMaskPath" fill="rgba(0,0,0,0.45)" fill-rule="evenodd"></path>
+              <polygon id="cropQuadPoly" class="crop-quad" fill="rgba(26,115,232,0.16)" stroke="#1a73e8" stroke-width="2"></polygon>
+            </svg>
+            <div class="crop-handle" data-handle="tl"></div>
+            <div class="crop-handle" data-handle="tr"></div>
+            <div class="crop-handle" data-handle="bl"></div>
+            <div class="crop-handle" data-handle="br"></div>
           </div>
           <label class="settings-row" style="cursor:pointer;">
             <span>Enhance for text (contrast + brightness)</span>
@@ -4152,7 +4168,7 @@ function stopCamera(){
 }
 function openCameraModal(){
   state.modal = 'camera'; state.capturedPages = []; state.capturedPagesRaw = []; state.capturedPageEnhance = [];
-  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropRect = null; state.cropEnhanceOn = false;
+  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropEnhanceOn = false; state.cropDetecting = false;
   state.renewalUploadTargetId = null;
   pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = ''; pendingCamCategory = null; pendingCamExpiry = '';
@@ -4165,93 +4181,244 @@ function openCameraModal(){
 function openCameraModalForRenewal(oldDocId){
   const oldDoc = state.documents.find(d => d.id === oldDocId);
   state.modal = 'camera'; state.capturedPages = []; state.capturedPagesRaw = []; state.capturedPageEnhance = [];
-  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropRect = null; state.cropEnhanceOn = false;
+  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropEnhanceOn = false; state.cropDetecting = false;
   state.renewalUploadTargetId = oldDocId;
   pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = oldDoc ? oldDoc.title : ''; pendingCamCategory = oldDoc ? oldDoc.category : null;
   pendingCamExpiry = ''; pendingCamReminderDaysText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
 }
 
-const CROP_MIN_SIZE = 40; // on-screen px — keeps handles draggable and forbids a degenerate 0-area crop
-
-// A "leading" edge (top or left): the edge AT `pos` moves by `delta`; the OPPOSITE edge (pos+size)
-// must stay fixed, so size shrinks by exactly what pos grows. Clamped so pos can't cross 0 and size
-// can't drop below CROP_MIN_SIZE — clamps the DELTA itself (not pos/size after the fact), so the box
-// never needs a second corrective jump.
-function dragLeadingEdge(pos, size, delta){
-  const dMin = -pos;
-  const dMax = size - CROP_MIN_SIZE;
-  const d = Math.max(dMin, Math.min(delta, dMax));
-  return {pos: pos + d, size: size - d};
+// OpenCV.js is only needed for this one screen (auto edge-detection + perspective correction), so
+// it's loaded lazily on first use rather than blocking every app cold-start with an ~8MB script tag
+// like the always-needed libraries loaded up in <head>. The service worker still caches it (see
+// sw.js CACHE_FIRST_URLS) once it's been fetched once, so every use after the first works offline.
+const OPENCV_JS_URL = 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.1/dist/opencv.js';
+let openCvScriptPromise = null;
+function loadOpenCvScript(){
+  if(openCvScriptPromise) return openCvScriptPromise;
+  openCvScriptPromise = new Promise((resolve, reject) => {
+    if(typeof cv !== 'undefined'){ resolve(); return; }
+    const script = document.createElement('script');
+    script.src = OPENCV_JS_URL;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('opencv_load_failed'));
+    document.head.appendChild(script);
+  });
+  return openCvScriptPromise;
 }
-// A "trailing" edge (bottom or right): the edge AT `pos+size` moves by `delta`; `pos` is fixed.
-// Clamped so the moving edge stays within [pos+CROP_MIN_SIZE, axisLimit].
-function dragTrailingEdge(pos, size, delta, axisLimit){
-  const dMin = CROP_MIN_SIZE - size;
-  const dMax = axisLimit - (pos + size);
-  const d = Math.max(dMin, Math.min(delta, dMax));
-  return {size: size + d};
+// Resolves once cv.Mat etc. are actually callable — the script loading is only step one; OpenCV.js
+// then does its own async WASM compilation before it's ready (cv['onRuntimeInitialized']). Rejects
+// after a timeout rather than hanging forever if that never fires (e.g. a corrupted cached response).
+function waitForOpenCvReady(){
+  return loadOpenCvScript().then(() => new Promise((resolve, reject) => {
+    if(typeof cv === 'undefined'){ reject(new Error('opencv_unavailable')); return; }
+    if(cv.Mat){ resolve(); return; }
+    cv['onRuntimeInitialized'] = () => resolve();
+    setTimeout(() => reject(new Error('opencv_timeout')), 20000);
+  }));
 }
 
-// Wires the crop step's drag interactions: a default centered box on first paint, a plain move-drag
-// on the box itself, and clamped resize on each of the four corner handles. The stage is an
+// Standard "scan a document" contour pipeline: grayscale → blur → Canny edges → find the largest
+// convex 4-point contour. Runs on a downscaled copy for speed (detection doesn't need full
+// resolution), then scales the found points back up to the source image's own natural pixel space.
+// Returns null (never throws past its own boundary) whenever nothing plausible is found — the
+// crop screen's default centered box is always a safe fallback the user can still adjust by hand.
+// cv.imread() on a live <img> element reads whatever size it's currently RENDERED at (CSS width/
+// height), not its natural resolution — and the crop screen's <img> is deliberately shrunk to fit
+// the modal (see .crop-stage img's max-width/max-height). Drawing it onto an offscreen canvas at
+// its natural size first is what actually gets OpenCV the full-resolution pixels to work with.
+function imageToNaturalCanvas(imgEl){
+  const canvas = document.createElement('canvas');
+  canvas.width = imgEl.naturalWidth;
+  canvas.height = imgEl.naturalHeight;
+  canvas.getContext('2d').drawImage(imgEl, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+function detectDocumentQuad(imgEl){
+  if(typeof cv === 'undefined' || !cv.Mat) return null;
+  const cleanup = [];
+  const track = (m) => { cleanup.push(m); return m; };
+  try{
+    const src = track(cv.imread(imageToNaturalCanvas(imgEl)));
+    const targetW = 700;
+    const scale = Math.min(1, targetW / src.cols);
+    const working = track(new cv.Mat());
+    cv.resize(src, working, new cv.Size(Math.max(1, Math.round(src.cols * scale)), Math.max(1, Math.round(src.rows * scale))), 0, 0, cv.INTER_AREA);
+
+    const gray = track(new cv.Mat());
+    cv.cvtColor(working, gray, cv.COLOR_RGBA2GRAY);
+    const blurred = track(new cv.Mat());
+    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+    const edged = track(new cv.Mat());
+    cv.Canny(blurred, edged, 50, 150);
+    const kernel = track(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3)));
+    cv.dilate(edged, edged, kernel);
+
+    const contours = track(new cv.MatVector());
+    const hierarchy = track(new cv.Mat());
+    cv.findContours(edged, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+    let bestPts = null, bestArea = 0;
+    const workingArea = working.cols * working.rows;
+    for(let i = 0; i < contours.size(); i++){
+      const cnt = contours.get(i);
+      const peri = cv.arcLength(cnt, true);
+      const approx = new cv.Mat();
+      cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+      // Require the candidate to cover a real fraction of the frame — a tiny 4-point blob (a logo,
+      // a corner of text) is never the page itself, only ever noise.
+      if(approx.rows === 4 && cv.isContourConvex(approx)){
+        const area = Math.abs(cv.contourArea(approx));
+        if(area > workingArea * 0.2 && area > bestArea){
+          bestArea = area;
+          bestPts = [];
+          for(let k = 0; k < 4; k++) bestPts.push({x: approx.data32S[k * 2] / scale, y: approx.data32S[k * 2 + 1] / scale});
+        }
+      }
+      approx.delete();
+      cnt.delete();
+    }
+
+    if(!bestPts) return null;
+    // approxPolyDP's 4 points come out in contour-walk order, not tl/tr/bl/br — sort by position
+    // instead: the two smallest-y points are the top corners (left/right split by x), likewise for
+    // the bottom two.
+    bestPts.sort((a, b) => a.y - b.y);
+    const top2 = bestPts.slice(0, 2).sort((a, b) => a.x - b.x);
+    const bottom2 = bestPts.slice(2, 4).sort((a, b) => a.x - b.x);
+    return {tl: top2[0], tr: top2[1], bl: bottom2[0], br: bottom2[1]};
+  } catch(e){
+    console.warn('Document edge detection failed', e);
+    return null;
+  } finally {
+    cleanup.forEach(m => { try{ m.delete(); } catch(e){} });
+  }
+}
+
+// Set by wireCropOverlay() so a detection result that arrives after the initial paint (OpenCV's
+// first load can take a couple of seconds) can repaint the already-open screen without a full
+// renderModal() — which would tear down the drag gesture state this same screen already owns.
+let cropRepaintCurrentQuad = null;
+
+// Kicks off auto edge-detection in the background as soon as the crop screen opens. Never blocks
+// the screen itself — the default centered box is already showing and fully usable the instant the
+// screen paints; this only *upgrades* state.cropQuad if and once a confident detection lands.
+async function attemptAutoDetectQuad(cropIndexAtStart){
+  const stage = document.getElementById('cropStage');
+  if(!stage) return;
+  state.cropDetecting = true;
+  const badge = document.createElement('div');
+  badge.className = 'crop-detecting';
+  badge.id = 'cropDetectingBadge';
+  badge.textContent = 'Detecting edges…';
+  stage.appendChild(badge);
+  try{
+    await waitForOpenCvReady();
+    // The user may have cancelled this crop screen, or opened a different page's crop, while
+    // OpenCV was still loading — never clobber a screen that isn't showing this capture anymore.
+    if(state.cropIndex !== cropIndexAtStart) return;
+    const img = document.getElementById('cropImage');
+    if(!img) return;
+    const detected = detectDocumentQuad(img);
+    if(!detected || state.cropIndex !== cropIndexAtStart || !document.getElementById('cropImage')) return;
+    const scaleX = img.clientWidth / img.naturalWidth, scaleY = img.clientHeight / img.naturalHeight;
+    const toScreen = (p) => ({x: p.x * scaleX, y: p.y * scaleY});
+    state.cropQuad = {tl: toScreen(detected.tl), tr: toScreen(detected.tr), bl: toScreen(detected.bl), br: toScreen(detected.br)};
+    if(cropRepaintCurrentQuad) cropRepaintCurrentQuad();
+  } catch(e){
+    console.warn('Auto edge-detection unavailable — the default crop box still works, just needs a manual adjust.', e);
+  } finally {
+    state.cropDetecting = false;
+    const el = document.getElementById('cropDetectingBadge');
+    if(el) el.remove();
+  }
+}
+
+// Wires the crop step's drag interactions: a default centered quad on first paint (immediately
+// upgraded in the background if auto-detection finds the document's real edges — see
+// attemptAutoDetectQuad above), a plain move-drag on the quad itself, and a free per-corner drag on
+// each handle — unlike the old axis-aligned box, each corner moves independently so an angled photo
+// can be corrected to its real edges, not just cropped to a straight rectangle. The stage is an
 // inline-block wrapper sized to the image's own rendered box (see the .crop-stage CSS), so
-// stage.clientWidth/Height are exactly the image's on-screen size and cropBox's left/top/width/
-// height land directly in the image's own coordinate space — no letterboxing offset math needed.
+// stage.clientWidth/Height are exactly the image's on-screen size and every point here lands
+// directly in the image's own coordinate space — no letterboxing offset math needed.
 function wireCropOverlay(){
   const img = document.getElementById('cropImage');
   const stage = document.getElementById('cropStage');
-  const box = document.getElementById('cropBox');
+  const svg = document.getElementById('cropMask');
+  const maskPath = document.getElementById('cropMaskPath');
+  const quadPoly = document.getElementById('cropQuadPoly');
+  const handles = {
+    tl: stage.querySelector('.crop-handle[data-handle="tl"]'),
+    tr: stage.querySelector('.crop-handle[data-handle="tr"]'),
+    bl: stage.querySelector('.crop-handle[data-handle="bl"]'),
+    br: stage.querySelector('.crop-handle[data-handle="br"]')
+  };
   if(state.cropEnhanceOn) img.style.filter = ENHANCE_FILTER;
 
-  function paintBox(){
-    const r = state.cropRect;
-    box.style.left = r.x + 'px'; box.style.top = r.y + 'px';
-    box.style.width = r.w + 'px'; box.style.height = r.h + 'px';
+  function paintQuad(){
+    const q = state.cropQuad;
+    const w = stage.clientWidth, h = stage.clientHeight;
+    svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+    maskPath.setAttribute('d',
+      'M0,0 H' + w + ' V' + h + ' H0 Z ' +
+      'M' + q.tl.x + ',' + q.tl.y + ' L' + q.bl.x + ',' + q.bl.y + ' L' + q.br.x + ',' + q.br.y + ' L' + q.tr.x + ',' + q.tr.y + ' Z');
+    quadPoly.setAttribute('points', q.tl.x + ',' + q.tl.y + ' ' + q.tr.x + ',' + q.tr.y + ' ' + q.br.x + ',' + q.br.y + ' ' + q.bl.x + ',' + q.bl.y);
+    Object.keys(handles).forEach(k => { handles[k].style.left = q[k].x + 'px'; handles[k].style.top = q[k].y + 'px'; });
   }
-  function initRect(){
-    if(state.cropRect){ paintBox(); return; }
+  cropRepaintCurrentQuad = paintQuad;
+
+  function defaultQuad(){
     const w = img.clientWidth, h = img.clientHeight;
-    const mx = w * 0.05, my = h * 0.05; // default: centered box, 5% margin each side
-    state.cropRect = {x: mx, y: my, w: w - mx * 2, h: h - my * 2};
-    paintBox();
+    const mx = w * 0.05, my = h * 0.05; // centered box, 5% margin each side — same as the old default
+    return {tl: {x: mx, y: my}, tr: {x: w - mx, y: my}, bl: {x: mx, y: h - my}, br: {x: w - mx, y: h - my}};
   }
-  if(img.complete && img.naturalWidth) initRect(); else img.onload = initRect;
+  function initQuad(){
+    if(state.cropQuad){ paintQuad(); return; }
+    state.cropQuad = defaultQuad();
+    paintQuad();
+    attemptAutoDetectQuad(state.cropIndex);
+  }
+  if(img.complete && img.naturalWidth) initQuad(); else img.onload = initQuad;
 
   let dragMode = null; // 'move' | 'tl' | 'tr' | 'bl' | 'br' | null
   let startPointer = {x: 0, y: 0};
-  let startRect = null;
+  let startQuad = null;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
 
   function onPointerDown(mode, e){
     e.preventDefault(); e.stopPropagation();
     dragMode = mode;
     startPointer = {x: e.clientX, y: e.clientY};
-    startRect = {...state.cropRect};
+    startQuad = JSON.parse(JSON.stringify(state.cropQuad));
     stage.setPointerCapture(e.pointerId);
   }
-  box.addEventListener('pointerdown', (e) => onPointerDown('move', e));
-  box.querySelectorAll('.crop-handle').forEach(h => {
-    h.addEventListener('pointerdown', (e) => onPointerDown(h.dataset.handle, e));
-  });
+  quadPoly.addEventListener('pointerdown', (e) => onPointerDown('move', e));
+  Object.keys(handles).forEach(k => handles[k].addEventListener('pointerdown', (e) => onPointerDown(k, e)));
 
   stage.addEventListener('pointermove', (e) => {
     if(!dragMode) return;
     const dx = e.clientX - startPointer.x, dy = e.clientY - startPointer.y;
     const stageW = stage.clientWidth, stageH = stage.clientHeight;
-    let r = {...startRect};
     if(dragMode === 'move'){
-      r.x = Math.max(0, Math.min(startRect.x + dx, stageW - startRect.w));
-      r.y = Math.max(0, Math.min(startRect.y + dy, stageH - startRect.h));
+      // Clamp the whole quad's bounding box, same spirit as the old rectangle's move-drag, so it
+      // can't be dragged off the edge of the image.
+      const xs = Object.values(startQuad).map(p => p.x), ys = Object.values(startQuad).map(p => p.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+      const cdx = clamp(dx, -minX, stageW - maxX), cdy = clamp(dy, -minY, stageH - maxY);
+      const q = {};
+      Object.keys(startQuad).forEach(k => { q[k] = {x: startQuad[k].x + cdx, y: startQuad[k].y + cdy}; });
+      state.cropQuad = q;
     } else {
-      const isLeft = dragMode === 'tl' || dragMode === 'bl';
-      const isTop = dragMode === 'tl' || dragMode === 'tr';
-      if(isLeft){ const res = dragLeadingEdge(startRect.x, startRect.w, dx); r.x = res.pos; r.w = res.size; }
-      else { const res = dragTrailingEdge(startRect.x, startRect.w, dx, stageW); r.w = res.size; }
-      if(isTop){ const res = dragLeadingEdge(startRect.y, startRect.h, dy); r.y = res.pos; r.h = res.size; }
-      else { const res = dragTrailingEdge(startRect.y, startRect.h, dy, stageH); r.h = res.size; }
+      // A single corner just follows the pointer, clamped to the stage bounds — free-form, not
+      // constrained to a rectangle, which is the whole point of a real scanner-style crop.
+      state.cropQuad = {...state.cropQuad, [dragMode]: {
+        x: clamp(startQuad[dragMode].x + dx, 0, stageW),
+        y: clamp(startQuad[dragMode].y + dy, 0, stageH)
+      }};
     }
-    state.cropRect = r;
-    paintBox();
+    paintQuad();
   });
   const endDrag = () => { dragMode = null; };
   stage.addEventListener('pointerup', endDrag);
@@ -4272,7 +4439,8 @@ function capturePage(){
   state.cropIndex = state.capturedPages.length; // "append" position — not pushed yet
   state.cropSourceDataUrl = canvas.toDataURL('image/jpeg', 0.9);
   state.cropEnhanceOn = false;
-  state.cropRect = null; // computed on first paint, once the image's on-screen size is known
+  state.cropQuad = null; // computed on first paint, once the image's on-screen size is known (or auto-detected)
+  state.cropDetecting = false;
   renderModal();
 }
 
@@ -4283,36 +4451,99 @@ function openCropForExistingPage(index){
   state.cropIndex = index;
   state.cropSourceDataUrl = state.capturedPagesRaw[index];
   state.cropEnhanceOn = !!state.capturedPageEnhance[index];
-  state.cropRect = null; // re-editing starts from a fresh centered box, not the exact previous rect
+  state.cropQuad = null; // re-editing starts from a fresh centered/auto-detected quad, not the exact previous one
+  state.cropDetecting = false;
   renderModal();
 }
 
 const ENHANCE_FILTER = 'contrast(1.4) brightness(1.08) saturate(0.9)';
 
-// Bakes the crop (and, if enabled, the enhance filter) onto a full-resolution canvas and replaces
-// or appends into state.capturedPages — the only thing saveCameraDocument()'s jsPDF loop ever
-// reads, so that loop needs no changes at all. The on-screen crop rect is converted to true source
-// pixels via the live <img>'s natural-vs-rendered size ratio, so the output is never upsampled
-// beyond what the camera actually captured.
+// Perspective-warps the quad's 4 corners (in true source pixels) to a flat rectangle via OpenCV —
+// this is what actually straightens an angled photo, not just crops it. Output size is picked from
+// the quad's own longest top/bottom and left/right edges (the standard "scan a document" sizing
+// heuristic), so a near-rectangular quad produces an output close to its own real resolution.
+// Returns null whenever OpenCV isn't available/ready — confirmCrop() below always falls back to a
+// plain bounding-box crop in that case, so the feature keeps working, online or off, just without
+// the deskew.
+async function warpQuadToDataUrl(img, quadNatural, enhanceOn){
+  if(typeof cv === 'undefined' || !cv.Mat) return null;
+  const cleanup = [];
+  const track = (m) => { cleanup.push(m); return m; };
+  try{
+    const src = track(cv.imread(imageToNaturalCanvas(img)));
+    const {tl, tr, bl, br} = quadNatural;
+    const widthTop = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+    const widthBottom = Math.hypot(br.x - bl.x, br.y - bl.y);
+    const heightLeft = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+    const heightRight = Math.hypot(br.x - tr.x, br.y - tr.y);
+    const outW = Math.max(1, Math.round(Math.max(widthTop, widthBottom)));
+    const outH = Math.max(1, Math.round(Math.max(heightLeft, heightRight)));
+
+    const srcTri = track(cv.matFromArray(4, 1, cv.CV_32FC2, [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]));
+    const dstTri = track(cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, outW, 0, outW, outH, 0, outH]));
+    const M = track(cv.getPerspectiveTransform(srcTri, dstTri));
+    const dst = track(new cv.Mat());
+    cv.warpPerspective(src, dst, M, new cv.Size(outW, outH), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+
+    const warpedCanvas = document.createElement('canvas');
+    warpedCanvas.width = outW; warpedCanvas.height = outH;
+    cv.imshow(warpedCanvas, dst);
+    if(!enhanceOn) return warpedCanvas.toDataURL('image/jpeg', 0.92);
+
+    // The Enhance filter is a browser Canvas 2D `ctx.filter`, not an OpenCV op — applied as a
+    // second pass over the already-warped pixels, same filter string used everywhere else.
+    const finalCanvas = document.createElement('canvas');
+    finalCanvas.width = outW; finalCanvas.height = outH;
+    const ctx = finalCanvas.getContext('2d');
+    ctx.filter = ENHANCE_FILTER;
+    ctx.drawImage(warpedCanvas, 0, 0);
+    return finalCanvas.toDataURL('image/jpeg', 0.92);
+  } catch(e){
+    console.warn('Perspective warp failed, falling back to a plain crop', e);
+    return null;
+  } finally {
+    cleanup.forEach(m => { try{ m.delete(); } catch(e){} });
+  }
+}
+
+// Fallback for when OpenCV isn't available at all (never loaded, e.g. fully offline before the
+// first successful fetch): the same straight, non-perspective-corrected crop this feature always
+// did, just using the free-form quad's own bounding box as the region — still correct for a photo
+// taken roughly straight-on, which is the common case anyway.
+function plainBoundingBoxCrop(img, quadNatural, enhanceOn){
+  const xs = [quadNatural.tl.x, quadNatural.tr.x, quadNatural.bl.x, quadNatural.br.x];
+  const ys = [quadNatural.tl.y, quadNatural.tr.y, quadNatural.bl.y, quadNatural.br.y];
+  const sx = Math.min(...xs), sy = Math.min(...ys);
+  const sw = Math.max(1, Math.max(...xs) - sx), sh = Math.max(1, Math.max(...ys) - sy);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(sw); canvas.height = Math.round(sh);
+  const ctx = canvas.getContext('2d');
+  if(enhanceOn) ctx.filter = ENHANCE_FILTER; // must be set before drawImage
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.92);
+}
+
+// Bakes the crop (perspective-corrected when OpenCV is available, and the enhance filter if
+// enabled) onto a full-resolution canvas and replaces or appends into state.capturedPages — the
+// only thing saveCameraDocument()'s jsPDF loop ever reads, so that loop needs no changes at all.
+// The on-screen crop quad is converted to true source pixels via the live <img>'s natural-vs-
+// rendered size ratio, so the output is never upsampled beyond what the camera actually captured.
 async function confirmCrop(){
   const img = document.getElementById('cropImage');
-  const r = state.cropRect;
+  const q = state.cropQuad;
   const scaleX = img.naturalWidth / img.clientWidth, scaleY = img.naturalHeight / img.clientHeight;
-  const sx = Math.round(r.x * scaleX), sy = Math.round(r.y * scaleY);
-  const sw = Math.round(r.w * scaleX), sh = Math.round(r.h * scaleY);
+  const toNatural = (p) => ({x: p.x * scaleX, y: p.y * scaleY});
+  const quadNatural = {tl: toNatural(q.tl), tr: toNatural(q.tr), bl: toNatural(q.bl), br: toNatural(q.br)};
 
-  const canvas = document.createElement('canvas');
-  canvas.width = sw; canvas.height = sh;
-  const ctx = canvas.getContext('2d');
-  if(state.cropEnhanceOn) ctx.filter = ENHANCE_FILTER; // must be set before drawImage
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+  const warped = await warpQuadToDataUrl(img, quadNatural, state.cropEnhanceOn);
+  const dataUrl = warped || plainBoundingBoxCrop(img, quadNatural, state.cropEnhanceOn);
 
   const index = state.cropIndex;
   const isNewPage = index === state.capturedPages.length;
   const rawSrc = state.cropSourceDataUrl;
   const enhanceOn = state.cropEnhanceOn;
-  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropRect = null;
+  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropDetecting = false;
+  cropRepaintCurrentQuad = null;
 
   if(isNewPage){
     state.capturedPages.push(dataUrl);
@@ -4355,7 +4586,8 @@ function cancelCrop(){
   // A brand-new capture that's cancelled was never pushed to capturedPages — nothing to roll back
   // beyond closing the overlay. Cancelling an edit of an existing page leaves its stored image
   // untouched, since confirmCrop() never ran.
-  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropRect = null;
+  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropDetecting = false;
+  cropRepaintCurrentQuad = null;
   renderModal();
 }
 
