@@ -206,9 +206,16 @@
      nodes animate underneath, unseen, so this would otherwise finish invisibly before the crossfade
      even lifts.
      */
-  @keyframes listItemIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
-  .doc-card, .renewal-card, .quickref-row{animation:listItemIn 0.28s ease both;animation-delay:min(calc(var(--i,0) * 40ms), 320ms);}
-  html.vt-pending .doc-card, html.vt-pending .renewal-card, html.vt-pending .quickref-row{animation:none;}
+  /* A per-card "fade in from transparent" entrance animation used to run unconditionally here,
+     triggered by insertion — but renderVault() rebuilds every card from scratch on every single
+     render(), not just when the list has genuinely changed, so it replayed on every click (editing
+     a field, opening a menu, a background token refresh, ...), making the whole visible list look
+     like it kept "refreshing" no matter what was actually clicked. Toggling a suppressing class
+     around the render (the html.vt-pending pattern still used elsewhere in this file) turned out
+     not to reliably prevent it either — a CSS animation-name change still starts an animation once
+     the browser gets around to a style flush, whether or not the suppressing class is still present
+     by then, so a same-tick add-then-remove is invisible to it. Removed rather than fought further.
+  */
 
   .doc-card{background:var(--paper-2);border-radius:var(--radius);padding:12px;margin-bottom:8px;display:flex;gap:11px;align-items:flex-start;box-shadow:var(--elevation-1);}
   /* Scoped to the icon/title/meta/snippet only, not the whole card — dimming .doc-actions too made
@@ -237,7 +244,11 @@
   /* A native <input type="date"> has no visible way to clear it once set on several mobile
      browsers (no built-in × the way desktop Chrome shows one) — this pairs an explicit Clear
      button alongside it everywhere an expiry date is entered. */
-  .expiry-row{display:flex;gap:8px;align-items:center;}
+  /* margin-bottom lives on the row itself, not the date input inside it (zeroed out below) — the
+     row is what needs to keep its normal gap below regardless of what comes next, which used to be
+     nothing at all once the Remind me section started hiding itself when there's no expiry date,
+     leaving the expiry row touching the Save button directly. */
+  .expiry-row{display:flex;gap:8px;align-items:center;margin-bottom:12px;}
   .expiry-row input[type="date"]{margin-bottom:0;flex:1;min-width:0;}
   .expiry-row .icon-btn{flex:none;white-space:nowrap;}
   svg.icon{flex:none;display:block;}
@@ -339,6 +350,12 @@
   .crop-mask{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
   .crop-quad{pointer-events:auto;cursor:move;touch-action:none;}
   .crop-handle{position:absolute;width:40px;height:40px;margin:-20px;border-radius:50%;background:rgba(26,115,232,0.35);border:2px solid var(--brass);touch-action:none;cursor:grab;}
+  /* Edge-midpoint handles: dragging one moves its two adjacent corners together (see
+     wireCropOverlay's 'top'/'right'/'bottom'/'left' drag modes) rather than reshaping just one
+     corner — a pill shape distinguishes them from the round corner handles at a glance. */
+  .crop-handle-edge{border-radius:999px;background:rgba(26,115,232,0.3);cursor:move;}
+  .crop-handle-edge-h{width:34px;height:14px;margin:-7px -17px;}
+  .crop-handle-edge-v{width:14px;height:34px;margin:-17px -7px;}
   .crop-detecting{position:absolute;top:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.6);color:#fff;font-size:12px;padding:6px 12px;border-radius:999px;pointer-events:none;}
   .progress-row{font-size:12.5px;color:var(--ink-soft);text-align:center;margin:10px 0;}
   .progress-track{height:4px;background:var(--surface-container);border-radius:4px;overflow:hidden;margin-bottom:6px;}
@@ -599,7 +616,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.06 · 11:43';
+const APP_VERSION = '2026.09.06 · 12:20';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -925,6 +942,16 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.06 · 12:20',
+    items: [
+      "Found the actual remaining cause of the app-wide flash on every click: every document card was set to replay its entrance (fade-in) animation each time the list redrew, which happens on every single click — not just screen switches. That per-card animation is now gone.",
+      "Fixed a spacing bug where the expiry date field touched the Save button directly when \"Remind me\" was hidden.",
+      "Saving a document (camera or file upload) no longer waits for on-device text scanning to finish — it saves right away and finishes reading the text in the background, updating search afterward.",
+      "The crop screen now has 4 additional handles along the edges (not just the 4 corners) — dragging one moves both of that edge's corners together, for straightening a whole side at once.",
+      "Fixed a bug where the crop screen's default crop box could sometimes collapse to a single point in one corner instead of a proper centered box."
+    ]
+  },
   {
     version: '2026.09.06 · 11:43',
     items: [
@@ -2367,9 +2394,13 @@ function render(){
   // basically every interaction in the app already calls.
   const isScreenChange = lastScreenKey !== null && lastScreenKey !== screenKey;
   lastScreenKey = screenKey;
-  if(!hasRenderedOnce || !isScreenChange || !('startViewTransition' in document) || prefersReducedMotion()){
+  if(!hasRenderedOnce){
     renderImmediate();
     hasRenderedOnce = true;
+    return;
+  }
+  if(!isScreenChange || !('startViewTransition' in document) || prefersReducedMotion()){
+    renderImmediate();
     return;
   }
   document.documentElement.classList.add('vt-pending');
@@ -3280,7 +3311,7 @@ function renderDocCard(d, opts){
               <div class="action-menu" id="actionMenu-${d.id}">
                 <button data-menu-action="pin" data-doc="${d.id}">${icon('star',15)} ${d.pinned ? 'Unpin' : 'Pin to top'}</button>
                 <button data-menu-action="edit" data-doc="${d.id}">${icon('edit',15)} Edit</button>
-                ${d.mimeType === 'application/pdf' && !d.ocrText ? `<button data-menu-action="extractText" data-doc="${d.id}">${icon('search',15)} Extract text</button>` : ''}
+                ${!d.ocrText ? `<button data-menu-action="extractText" data-doc="${d.id}">${icon('search',15)} Extract text</button>` : ''}
                 <button data-menu-action="archive" data-doc="${d.id}">${icon(d.archived?'restore':'archive',15)} ${d.archived ? 'Restore' : 'Archive'}</button>
                 ${d.expiry ? `<button data-menu-action="remind" data-doc="${d.id}">${icon('calendar',15)} Add reminder</button>` : ''}
                 <button data-menu-action="download" data-doc="${d.id}">${icon('download',15)} Download</button>
@@ -3300,7 +3331,11 @@ let pendingOcrText = '';
 let pendingExpirySuggested = false;
 let pendingCategorySuggested = false;
 let categoryManuallyChanged = false;
-let pendingOcrRunning = false; // guards against saving before background OCR finishes
+// No longer blocks Save — the user shouldn't have to wait for on-device OCR just to save a
+// document. Still tracked so saveDocument()/saveCameraDocument() know whether to kick off
+// extractTextForDocument() as a background backfill once OCR (which keeps running either way)
+// actually finishes, since text search wouldn't otherwise pick up whatever it hadn't found yet.
+let pendingOcrRunning = false;
 
 function openAddModal(){ state.modal = 'add'; state.renewalUploadTargetId = null; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
 // Opens the same 'add' modal, but flagged so saveDocument() links the new file to oldDocId as its
@@ -3518,10 +3553,12 @@ function renderModal(){
       const drop = document.getElementById('fileDrop');
       drop.textContent = f.name; drop.classList.add('has-file');
       document.getElementById('pdfNote').style.display = f.type === 'application/pdf' ? 'block' : 'none';
+      // Deliberately doesn't disable Save while this runs — see saveDocument()'s own background-OCR
+      // fallback below, which is what lets someone save immediately without waiting for on-device
+      // OCR to finish at all. The progress bar and expiry/category suggestions are still worth
+      // showing if they do wait, just not required to.
       if(f.type.startsWith('image/')){
-        const saveBtn = document.getElementById('saveDocBtn');
         pendingOcrRunning = true;
-        if(saveBtn) saveBtn.disabled = true;
         const dataUrl = await readFileAsDataURL(f);
         pendingOcrText = await runOcr(dataUrl, setOcrProgress);
         document.getElementById('ocrProgress').style.display = 'none';
@@ -3529,11 +3566,8 @@ function renderModal(){
         syncReminderDaysEnabled('docExpiry', 'docReminderDays', 'docReminderWrap');
         applyCategorySuggestionIfUntouched('docCategory', 'categorySuggestNote', pendingOcrText);
         pendingOcrRunning = false;
-        if(saveBtn) saveBtn.disabled = false;
       } else if(f.type === 'application/pdf'){
-        const saveBtn = document.getElementById('saveDocBtn');
         pendingOcrRunning = true;
-        if(saveBtn) saveBtn.disabled = true;
         try{
           pendingOcrText = await runOcrOnPdfFile(f, setOcrProgress);
           applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
@@ -3542,7 +3576,6 @@ function renderModal(){
         } catch(err){ console.error('PDF OCR failed', err); }
         document.getElementById('ocrProgress').style.display = 'none';
         pendingOcrRunning = false;
-        if(saveBtn) saveBtn.disabled = false;
       }
     };
     document.getElementById('saveDocBtn').onclick = saveDocument;
@@ -3843,7 +3876,7 @@ function renderModal(){
         <div class="modal-sheet crop-sheet">
           <div class="modal-close"><button id="closeCropBtn" aria-label="Cancel crop">×</button></div>
           <h3>Adjust page</h3>
-          <p class="sub">Drag the corners to crop, or drag inside the frame to move it.</p>
+          <p class="sub">Drag a corner to crop, an edge to move both its corners together, or drag inside the frame to move all of it.</p>
           <div class="crop-stage" id="cropStage">
             <img id="cropImage" src="${state.cropSourceDataUrl}" draggable="false" />
             <svg class="crop-mask" id="cropMask" xmlns="http://www.w3.org/2000/svg">
@@ -3854,6 +3887,10 @@ function renderModal(){
             <div class="crop-handle" data-handle="tr"></div>
             <div class="crop-handle" data-handle="bl"></div>
             <div class="crop-handle" data-handle="br"></div>
+            <div class="crop-handle crop-handle-edge crop-handle-edge-h" data-handle="top"></div>
+            <div class="crop-handle crop-handle-edge crop-handle-edge-h" data-handle="bottom"></div>
+            <div class="crop-handle crop-handle-edge crop-handle-edge-v" data-handle="left"></div>
+            <div class="crop-handle crop-handle-edge crop-handle-edge-v" data-handle="right"></div>
           </div>
           <label class="settings-row" style="cursor:pointer;">
             <span>Enhance for text (contrast + brightness)</span>
@@ -3913,7 +3950,7 @@ function renderModal(){
             <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
           </div>
           <div class="error-text" id="camErr" style="display:none;"></div>
-          <button class="primary" id="saveCamBtn" ${state.capturedPages.length && !pendingOcrRunning ? '' : 'disabled'}>${renewalTarget ? 'Save & archive old' : 'Save as PDF'} (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
+          <button class="primary" id="saveCamBtn" ${state.capturedPages.length ? '' : 'disabled'}>${renewalTarget ? 'Save & archive old' : 'Save as PDF'} (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
         </div>
       `;
       document.body.appendChild(overlay);
@@ -4180,6 +4217,12 @@ async function saveDocument(){
   errEl.style.display = 'none';
   saveBtn.disabled = true;
   saveBtn.textContent = 'Saving…';
+  // Captured before anything below can change it — if OCR hadn't finished the moment Save was
+  // clicked, pendingOcrText passed to finalizeAndStoreDocument() is whatever partial/empty text
+  // existed at that instant, not necessarily the final result (OCR keeps running independently of
+  // this save). extractTextForDocument() re-reads the saved file fresh once OCR (whenever it
+  // actually finishes) is done, and is the source of truth for this case either way.
+  const needsBackgroundOcr = pendingOcrRunning;
 
   try{
     const newDoc = await finalizeAndStoreDocument({title, category, expiry, reminderDays, blob: pendingFile, mimeType: pendingFile.type, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
@@ -4189,8 +4232,9 @@ async function saveDocument(){
       const linked = await linkRenewalAndArchiveOld(renewalTargetId, newDoc.id);
       toast(linked ? 'Renewed — old document archived' : 'Saved, but the old document needs archiving manually');
     } else {
-      toast(pendingOcrText ? 'Saved and indexed' : 'Saved');
+      toast(needsBackgroundOcr ? 'Saved — reading text on-device in the background' : (pendingOcrText ? 'Saved and indexed' : 'Saved'));
     }
+    if(needsBackgroundOcr) extractTextForDocument(newDoc.id, true);
   } catch(e){
     // Without this, any failure here (a huge file, a Drive error, OCR erroring in a way runOcr
     // didn't already catch) left the button stuck on "Saving…" with no way to retry.
@@ -4540,12 +4584,14 @@ async function attemptAutoDetectQuad(cropIndexAtStart){
 
 // Wires the crop step's drag interactions: a default centered quad on first paint (immediately
 // upgraded in the background if auto-detection finds the document's real edges — see
-// attemptAutoDetectQuad above), a plain move-drag on the quad itself, and a free per-corner drag on
-// each handle — unlike the old axis-aligned box, each corner moves independently so an angled photo
-// can be corrected to its real edges, not just cropped to a straight rectangle. The stage is an
-// inline-block wrapper sized to the image's own rendered box (see the .crop-stage CSS), so
-// stage.clientWidth/Height are exactly the image's on-screen size and every point here lands
-// directly in the image's own coordinate space — no letterboxing offset math needed.
+// attemptAutoDetectQuad above), a plain move-drag on the quad itself, a free per-corner drag on
+// each corner handle — unlike the old axis-aligned box, each corner moves independently so an
+// angled photo can be corrected to its real edges, not just cropped to a straight rectangle — and
+// an edge-midpoint drag on each of 4 additional handles, which moves BOTH corners on that side
+// together for nudging a whole edge at once. The stage is an inline-block wrapper sized to the
+// image's own rendered box (see the .crop-stage CSS), so stage.clientWidth/Height are exactly the
+// image's on-screen size and every point here lands directly in the image's own coordinate space —
+// no letterboxing offset math needed.
 function wireCropOverlay(){
   const img = document.getElementById('cropImage');
   const stage = document.getElementById('cropStage');
@@ -4558,6 +4604,16 @@ function wireCropOverlay(){
     bl: stage.querySelector('.crop-handle[data-handle="bl"]'),
     br: stage.querySelector('.crop-handle[data-handle="br"]')
   };
+  // Edge-midpoint handles: dragging one moves BOTH corners on that edge together (by the same
+  // delta), for nudging a whole side into place rather than one corner at a time — each maps to
+  // the two corners it actually moves.
+  const edgeHandles = {
+    top: stage.querySelector('.crop-handle[data-handle="top"]'),
+    right: stage.querySelector('.crop-handle[data-handle="right"]'),
+    bottom: stage.querySelector('.crop-handle[data-handle="bottom"]'),
+    left: stage.querySelector('.crop-handle[data-handle="left"]')
+  };
+  const EDGE_CORNERS = {top: ['tl', 'tr'], right: ['tr', 'br'], bottom: ['bl', 'br'], left: ['tl', 'bl']};
   if(state.cropEnhanceOn) img.style.filter = ENHANCE_FILTER;
 
   function paintQuad(){
@@ -4569,6 +4625,11 @@ function wireCropOverlay(){
       'M' + q.tl.x + ',' + q.tl.y + ' L' + q.bl.x + ',' + q.bl.y + ' L' + q.br.x + ',' + q.br.y + ' L' + q.tr.x + ',' + q.tr.y + ' Z');
     quadPoly.setAttribute('points', q.tl.x + ',' + q.tl.y + ' ' + q.tr.x + ',' + q.tr.y + ' ' + q.br.x + ',' + q.br.y + ' ' + q.bl.x + ',' + q.bl.y);
     Object.keys(handles).forEach(k => { handles[k].style.left = q[k].x + 'px'; handles[k].style.top = q[k].y + 'px'; });
+    Object.keys(edgeHandles).forEach(k => {
+      const [a, b] = EDGE_CORNERS[k];
+      edgeHandles[k].style.left = (q[a].x + q[b].x) / 2 + 'px';
+      edgeHandles[k].style.top = (q[a].y + q[b].y) / 2 + 'px';
+    });
   }
   cropRepaintCurrentQuad = paintQuad;
 
@@ -4579,13 +4640,23 @@ function wireCropOverlay(){
   }
   function initQuad(){
     if(state.cropQuad){ paintQuad(); return; }
-    state.cropQuad = defaultQuad();
-    paintQuad();
-    attemptAutoDetectQuad(state.cropIndex);
+    // A data: URL image can already have img.complete===true (no network fetch needed to decode
+    // it) before the browser has actually LAID OUT this freshly-inserted element — reading
+    // clientWidth/Height synchronously at that exact point can still see 0, collapsing the whole
+    // default quad onto a single point. A single requestAnimationFrame is only guaranteed to run
+    // before the NEXT paint, not after one has actually happened yet — nesting a second one inside
+    // the first is the standard way to guarantee a real layout/paint has completed first, regardless
+    // of which of the two paths below reached here.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if(state.cropQuad) return; // e.g. auto-detection somehow already landed a quad first
+      state.cropQuad = defaultQuad();
+      paintQuad();
+      attemptAutoDetectQuad(state.cropIndex);
+    }));
   }
   if(img.complete && img.naturalWidth) initQuad(); else img.onload = initQuad;
 
-  let dragMode = null; // 'move' | 'tl' | 'tr' | 'bl' | 'br' | null
+  let dragMode = null; // 'move' | 'tl' | 'tr' | 'bl' | 'br' | 'top' | 'right' | 'bottom' | 'left' | null
   let startPointer = {x: 0, y: 0};
   let startQuad = null;
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
@@ -4599,6 +4670,7 @@ function wireCropOverlay(){
   }
   quadPoly.addEventListener('pointerdown', (e) => onPointerDown('move', e));
   Object.keys(handles).forEach(k => handles[k].addEventListener('pointerdown', (e) => onPointerDown(k, e)));
+  Object.keys(edgeHandles).forEach(k => edgeHandles[k].addEventListener('pointerdown', (e) => onPointerDown(k, e)));
 
   stage.addEventListener('pointermove', (e) => {
     if(!dragMode) return;
@@ -4613,6 +4685,16 @@ function wireCropOverlay(){
       const q = {};
       Object.keys(startQuad).forEach(k => { q[k] = {x: startQuad[k].x + cdx, y: startQuad[k].y + cdy}; });
       state.cropQuad = q;
+    } else if(EDGE_CORNERS[dragMode]){
+      // An edge handle moves its two corners together, by the same delta — nudging a whole side
+      // (e.g. correcting a wonky top edge) without disturbing the other two corners at all. Each
+      // corner is still clamped individually, so one side of the pair hitting the stage edge
+      // doesn't block the other from continuing to move.
+      const [a, b] = EDGE_CORNERS[dragMode];
+      state.cropQuad = {...state.cropQuad,
+        [a]: {x: clamp(startQuad[a].x + dx, 0, stageW), y: clamp(startQuad[a].y + dy, 0, stageH)},
+        [b]: {x: clamp(startQuad[b].x + dx, 0, stageW), y: clamp(startQuad[b].y + dy, 0, stageH)}
+      };
     } else {
       // A single corner just follows the pointer, clamped to the stage bounds — free-form, not
       // constrained to a rectangle, which is the whole point of a real scanner-style crop.
@@ -4803,8 +4885,6 @@ async function confirmCrop(){
   // directly, so this picks that up too, ready for the next renderModal().
   snapshotCamFormFields();
   pendingOcrRunning = false;
-  const saveBtn = document.getElementById('saveCamBtn');
-  if(saveBtn) saveBtn.disabled = false;
 }
 
 function cancelCrop(){
@@ -4841,6 +4921,10 @@ async function saveCameraDocument(){
   const renewalTargetId = state.renewalUploadTargetId;
   saveBtn.disabled = true;
   saveBtn.textContent = 'Saving…';
+  // Captured before anything below can change it — see saveDocument()'s identical use of this for
+  // the file-upload form. A page's OCR can still be running (the user didn't wait for it) when
+  // Save is tapped; pendingOcrText at that instant may be missing that page's text entirely.
+  const needsBackgroundOcr = pendingOcrRunning;
 
   try{
     // Always a PDF, even for a single page — a scanned document should behave like one
@@ -4865,8 +4949,9 @@ async function saveCameraDocument(){
       const linked = await linkRenewalAndArchiveOld(renewalTargetId, newDoc.id);
       toast(linked ? 'Renewed — old document archived' : 'Saved, but the old document needs archiving manually');
     } else {
-      toast('Captured and saved');
+      toast(needsBackgroundOcr ? 'Saved — reading text on-device in the background' : 'Captured and saved');
     }
+    if(needsBackgroundOcr) extractTextForDocument(newDoc.id, true);
   } catch(e){
     console.error('Save failed', e);
     errEl.textContent = friendlyCloudError(e);
@@ -5130,26 +5215,35 @@ async function togglePin(id){
   catch(e){ console.error('Failed to update pin state', e); }
 }
 
-// Backfills OCR text for a PDF that was uploaded before this app ran OCR on PDFs at all (or one
-// that simply hasn't been re-uploaded since) — re-downloads the file it already has and runs it
-// through the same per-page OCR path a fresh PDF upload uses now, then updates the saved record so
+// Backfills OCR text for a document that doesn't have any yet (a PDF uploaded before this app ran
+// OCR on PDFs at all, an image or PDF saved before its own on-device OCR had a chance to finish —
+// see saveDocument()/saveCameraDocument()'s own background-OCR use of this below, `silent: true` —
+// or simply one that's never been re-uploaded since). Re-downloads the file it already has and
+// runs it through the same OCR path a fresh upload uses now, then updates the saved record so
 // content search picks it up without the user needing to delete and re-add the document.
-async function extractTextForDocument(id){
+// `silent` skips every toast — appropriate for this running automatically in the background right
+// after a save, not for someone deliberately tapping "Extract text" and watching for a result.
+async function extractTextForDocument(id, silent){
   const doc = state.documents.find(d => d.id === id);
-  if(!doc || doc.mimeType !== 'application/pdf') return;
-  toast('Reading text on-device…');
+  if(!doc) return;
+  if(!silent) toast('Reading text on-device…');
   try{
     const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
     const blob = await res.blob();
-    const file = new File([blob], safeFilename(doc.title, doc.mimeType), {type: doc.mimeType});
-    const ocrText = await runOcrOnPdfFile(file);
+    const ocrText = doc.mimeType === 'application/pdf'
+      ? await runOcrOnPdfFile(new File([blob], safeFilename(doc.title, doc.mimeType), {type: doc.mimeType}))
+      : await runOcr(await readFileAsDataURL(blob));
+    // The document may have been deleted, or this exact field already updated by something else,
+    // while the download+OCR above was in flight — re-check it's still worth writing rather than
+    // trusting the reference captured before any of that started.
+    if(!state.documents.some(d => d.id === id)) return;
     doc.ocrText = ocrText;
     render();
     await userDoc().collection('documents').doc(id).update({ocrText});
-    toast(ocrText ? 'Text extracted — now searchable' : 'No readable text found in this document');
+    if(!silent) toast(ocrText ? 'Text extracted — now searchable' : 'No readable text found in this document');
   } catch(e){
     console.error('Extract text failed', e);
-    toast(friendlyCloudError(e));
+    if(!silent) toast(friendlyCloudError(e));
   }
 }
 
