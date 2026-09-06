@@ -367,7 +367,8 @@ function formatDaysLabel(days){
 
 function buildDigestText(rows){
   const lines = rows.map(function(r){ return '- ' + r.title + ' (' + r.category + ') — ' + formatDaysLabel(r.days); });
-  return 'Documents needing attention in Vault:\n\n' + lines.join('\n') + '\n\n' + VAULT_APP_URL;
+  return 'Documents needing attention in Vault:\n\n' + lines.join('\n') + '\n\n' + 'Open Vault: ' + VAULT_APP_URL +
+    '\n\n—\nYou\'re receiving this because email reminders are turned on in Vault → Settings.';
 }
 
 function escapeHtml(str){
@@ -376,19 +377,56 @@ function escapeHtml(str){
   });
 }
 
+// Three severity tiers, matching the same palette the app itself uses for its own status pills
+// (index.html's --danger/--warning/--success tokens) so the email and the in-app UI read as the
+// same product rather than two different-looking things. Email clients strip <style> blocks and
+// most external stylesheets, so every rule here has to be inline to render reliably in Gmail/
+// Outlook/etc — there's no separate stylesheet to maintain in sync.
+function digestSeverityFor(days){
+  if(days < 0) return {bg: '#fce8e6', fg: '#c5221f'};       // overdue — matches --danger/--danger-bg
+  if(days <= 7) return {bg: '#f7edd9', fg: '#8a5a05'};       // due soon — matches --warning/--warning-bg
+  return {bg: '#e6f4ea', fg: '#157a34'};                     // further out — matches --success/--success-bg
+}
+
+function buildDigestRowHtml(r){
+  const sev = digestSeverityFor(r.days);
+  return '<tr>' +
+    '<td style="padding:14px 0;border-bottom:1px solid #f1f3f4;">' +
+      '<div style="font-size:14px;color:#1f1f1f;font-weight:500;">' + escapeHtml(r.title) + '</div>' +
+      '<div style="font-size:12px;color:#5f6368;margin-top:2px;">' + escapeHtml(r.category) + '</div>' +
+    '</td>' +
+    '<td style="padding:14px 0;border-bottom:1px solid #f1f3f4;text-align:right;white-space:nowrap;vertical-align:top;">' +
+      '<span style="display:inline-block;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:600;background:' + sev.bg + ';color:' + sev.fg + ';">' +
+        escapeHtml(formatDaysLabel(r.days)) +
+      '</span>' +
+    '</td>' +
+  '</tr>';
+}
+
 function buildDigestHtml(rows){
-  const items = rows.map(function(r){
-    const urgent = r.days <= 7;
-    return '<li style="margin-bottom:8px;">' +
-      '<strong>' + escapeHtml(r.title) + '</strong> &middot; ' + escapeHtml(r.category) +
-      '<br><span style="color:' + (urgent ? '#b3261e' : '#5f6368') + ';">' + formatDaysLabel(r.days) + '</span>' +
-      '</li>';
-  }).join('');
-  return '<div style="font-family:Roboto,Arial,sans-serif;max-width:480px;">' +
-    '<p>Documents needing attention in Vault:</p>' +
-    '<ul style="list-style:none;padding:0;">' + items + '</ul>' +
-    '<p><a href="' + VAULT_APP_URL + '">Open Vault</a></p>' +
-    '</div>';
+  const rowsHtml = rows.map(buildDigestRowHtml).join('');
+  const count = rows.length;
+  const heading = count + ' document' + (count === 1 ? '' : 's') + ' need' + (count === 1 ? 's' : '') + ' your attention';
+  return '<div style="background:#f1f3f4;padding:32px 16px;font-family:Roboto,Arial,sans-serif;">' +
+    '<table role="presentation" width="100%" style="max-width:520px;margin:0 auto;border-collapse:collapse;">' +
+      '<tr><td style="background:#1a73e8;border-radius:16px 16px 0 0;padding:20px 28px;">' +
+        '<span style="color:#ffffff;font-size:18px;font-weight:500;">🛡️ Vault</span>' +
+      '</td></tr>' +
+      '<tr><td style="background:#ffffff;border-left:1px solid #dadce0;border-right:1px solid #dadce0;padding:24px 28px 4px;">' +
+        '<p style="margin:0 0 4px;font-size:16px;color:#1f1f1f;font-weight:500;">' + escapeHtml(heading) + '</p>' +
+        '<p style="margin:0 0 12px;font-size:13px;color:#5f6368;">Here\'s what\'s coming up or overdue in your Vault.</p>' +
+      '</td></tr>' +
+      '<tr><td style="background:#ffffff;border-left:1px solid #dadce0;border-right:1px solid #dadce0;padding:0 28px;">' +
+        '<table role="presentation" width="100%" style="border-collapse:collapse;">' + rowsHtml + '</table>' +
+      '</td></tr>' +
+      '<tr><td style="background:#ffffff;border:1px solid #dadce0;border-top:none;border-radius:0 0 16px 16px;padding:20px 28px 28px;">' +
+        '<a href="' + VAULT_APP_URL + '" style="display:inline-block;background:#1a73e8;color:#ffffff;text-decoration:none;padding:10px 22px;border-radius:999px;font-size:14px;font-weight:500;">Open Vault</a>' +
+      '</td></tr>' +
+    '</table>' +
+    '<p style="text-align:center;color:#80868b;font-size:11px;margin:20px auto 0;max-width:520px;">' +
+      'You\'re receiving this because email reminders are turned on in Vault → Settings. This mailbox isn\'t monitored.' +
+    '</p>' +
+  '</div>';
 }
 
 function sendEmailDigests(){
@@ -399,7 +437,12 @@ function sendEmailDigests(){
       const rows = buildDigestRowsForUser(sub.uid);
       if(!rows.length) return;
       const subject = rows.length + ' document' + (rows.length === 1 ? '' : 's') + ' need attention — Vault';
-      MailApp.sendEmail(sub.email, subject, buildDigestText(rows), {htmlBody: buildDigestHtml(rows)});
+      // `name` only customizes the display name shown to the recipient — MailApp always sends from
+      // the Apps Script project owner's own Gmail address underneath, the same for every recipient.
+      // There's no way to make each user see their own address as sender without a verified custom
+      // domain / Workspace delegated-sending setup, which is out of scope for a personal-Gmail-based
+      // project like this one.
+      MailApp.sendEmail(sub.email, subject, buildDigestText(rows), {htmlBody: buildDigestHtml(rows), name: 'Vault'});
       sent++;
     } catch(err){
       // One user's bad data or a transient failure must not abort everyone else's digest.
