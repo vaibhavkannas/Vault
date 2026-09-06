@@ -296,7 +296,7 @@
      --paper is the page's own background — using it here too was exactly why the sheet visually
      merged into the page behind it, with only the backdrop dimming (and not much else) marking
      where one ends and the other begins. */
-  .modal-sheet{width:100%;max-width:480px;background:var(--paper-2);border-radius:28px 28px 0 0;padding:22px 20px 28px;max-height:88vh;overflow-y:auto;animation:sheetSlideUp 0.24s cubic-bezier(0.05,0.7,0.1,1);position:relative;}
+  .modal-sheet{width:100%;max-width:480px;background:var(--paper-2);border-radius:28px 28px 0 0;padding:22px 20px 28px;max-height:88vh;overflow-y:auto;overscroll-behavior:contain;animation:sheetSlideUp 0.24s cubic-bezier(0.05,0.7,0.1,1);position:relative;}
   @keyframes overlayFadeIn{from{opacity:0;}to{opacity:1;}}
   @keyframes sheetSlideUp{from{transform:translateY(28px);opacity:0;}to{transform:translateY(0);opacity:1;}}
   .modal-sheet h3{font-weight:400;font-size:20px;margin:0 0 4px;}
@@ -308,7 +308,7 @@
      actually gets scaled (see wireViewFileZoom()). A scaled-up element still expands its parent's
      scrollable region in every modern browser, so panning a zoomed document is just this
      container's own native scroll/touch-drag — no custom pan-dragging code needed for it. */
-  #viewFileContent{overflow:auto;max-height:65vh;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;}
+  #viewFileContent{overflow:auto;max-height:65vh;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;overscroll-behavior:contain;}
   .view-zoom-inner{transform-origin:0 0;touch-action:pan-x pan-y;}
   label.field-label{font-size:12px;font-weight:500;color:var(--ink-soft);display:block;margin-bottom:6px;}
   /* Floats in the corner instead of its own full-width row above the title — the previous stacked
@@ -628,7 +628,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.06 · 12:34';
+const APP_VERSION = '2026.09.06 · 12:44';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -954,6 +954,14 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.06 · 12:44',
+    items: [
+      "Fixed the app still being zoomable on some phones (mainly iPhones — Safari there ignores the usual \"don't allow zoom\" setting, so it needed a second, more direct fix).",
+      "Fixed scrolling inside the document viewer also scrolling the screen behind it.",
+      "The camera's edge-detection now shows its actual result on screen for a couple seconds (\"Edges detected automatically\" or \"no match found\") instead of only in the browser console, so it's possible to tell what's actually happening on a phone."
+    ]
+  },
   {
     version: '2026.09.06 · 12:34',
     items: [
@@ -1632,6 +1640,33 @@ async function attemptSilentDriveRefresh(){
 function isAppOnline(){ return navigator.onLine && !state.isOfflineMode; }
 window.addEventListener('online', () => render());
 window.addEventListener('offline', () => render());
+
+// The viewport meta tag's maximum-scale/user-scalable=no (see <head>) doesn't actually stop
+// pinch/double-tap zoom on every browser — iOS Safari has deliberately ignored those two
+// attributes since iOS 10, as an Apple accessibility policy (a page can't be allowed to block a
+// user's own ability to zoom it). These three listeners are the standard supplementary technique
+// for that: 'gesturestart' is a Safari-only event fired at the start of a pinch gesture and
+// preventDefault()-ing it is the documented way to actually stop pinch-zoom there; the
+// multi-touch touchmove check catches pinch-zoom on browsers that don't fire 'gesturestart'; the
+// touchend timing check catches double-tap-zoom the same way most "disable mobile zoom" libraries
+// do. All three explicitly exclude the document viewer's own content area, which is the one place
+// zoom is still deliberately allowed (see wireViewFileZoom()).
+function isInsideZoomableViewer(target){
+  return !!(target && target.closest && target.closest('#viewFileContent'));
+}
+document.addEventListener('gesturestart', (e) => {
+  if(!isInsideZoomableViewer(e.target)) e.preventDefault();
+});
+document.addEventListener('touchmove', (e) => {
+  if(e.touches.length > 1 && !isInsideZoomableViewer(e.target)) e.preventDefault();
+}, {passive: false});
+let lastTouchEndAt = 0;
+document.addEventListener('touchend', (e) => {
+  if(isInsideZoomableViewer(e.target)) return;
+  const now = Date.now();
+  if(now - lastTouchEndAt < 350) e.preventDefault();
+  lastTouchEndAt = now;
+}, {passive: false});
 
 // A ripple on tap needs one delegated, document-level listener rather than per-button wiring inside
 // every renderX() function — every screen/modal rebuilds its buttons' DOM nodes from scratch on
@@ -4569,15 +4604,25 @@ let cropRepaintCurrentQuad = null;
 // Kicks off auto edge-detection in the background as soon as the crop screen opens. Never blocks
 // the screen itself — the default centered box is already showing and fully usable the instant the
 // screen paints; this only *upgrades* state.cropQuad if and once a confident detection lands.
+// Shows the outcome directly in the crop screen (not just console.log) for a couple seconds —
+// checking a phone's own devtools console requires plugging it into a computer, a real barrier for
+// actually diagnosing this away from a desk. Whatever this says is exactly what the [auto-crop]
+// console lines would have said, just somewhere a phone can actually show it.
+function showCropDetectBadge(stage, text){
+  const el = document.getElementById('cropDetectingBadge');
+  const badge = el || document.createElement('div');
+  badge.className = 'crop-detecting';
+  badge.id = 'cropDetectingBadge';
+  badge.textContent = text;
+  if(!el) stage.appendChild(badge);
+  return badge;
+}
 async function attemptAutoDetectQuad(cropIndexAtStart){
   const stage = document.getElementById('cropStage');
   if(!stage) return;
   state.cropDetecting = true;
-  const badge = document.createElement('div');
-  badge.className = 'crop-detecting';
-  badge.id = 'cropDetectingBadge';
-  badge.textContent = 'Detecting edges…';
-  stage.appendChild(badge);
+  showCropDetectBadge(stage, 'Detecting edges…');
+  let resultText = 'Auto-detect: unexpected error — adjust manually';
   try{
     await waitForOpenCvReady();
     console.log('[auto-crop] OpenCV ready.');
@@ -4585,19 +4630,28 @@ async function attemptAutoDetectQuad(cropIndexAtStart){
     // OpenCV was still loading — never clobber a screen that isn't showing this capture anymore.
     if(state.cropIndex !== cropIndexAtStart) return;
     const img = document.getElementById('cropImage');
-    if(!img) return;
+    if(!img){ resultText = null; return; }
     const detected = detectDocumentQuad(img);
-    if(!detected || state.cropIndex !== cropIndexAtStart || !document.getElementById('cropImage')) return;
+    if(!detected){ resultText = 'Auto-detect: no match found — adjust manually'; return; }
+    if(state.cropIndex !== cropIndexAtStart || !document.getElementById('cropImage')){ resultText = null; return; }
     const scaleX = img.clientWidth / img.naturalWidth, scaleY = img.clientHeight / img.naturalHeight;
     const toScreen = (p) => ({x: p.x * scaleX, y: p.y * scaleY});
     state.cropQuad = {tl: toScreen(detected.tl), tr: toScreen(detected.tr), bl: toScreen(detected.bl), br: toScreen(detected.br)};
     if(cropRepaintCurrentQuad) cropRepaintCurrentQuad();
+    resultText = 'Edges detected automatically';
   } catch(e){
+    resultText = 'Auto-detect: unavailable right now — adjust manually';
     console.warn('Auto edge-detection unavailable — the default crop box still works, just needs a manual adjust.', e);
   } finally {
     state.cropDetecting = false;
-    const el = document.getElementById('cropDetectingBadge');
-    if(el) el.remove();
+    const stageNow = document.getElementById('cropStage'); // re-fetched — the screen may have changed underneath this await chain
+    if(stageNow && resultText){
+      const badge = showCropDetectBadge(stageNow, resultText);
+      setTimeout(() => { if(badge.textContent === resultText) badge.remove(); }, 2500);
+    } else {
+      const el = document.getElementById('cropDetectingBadge');
+      if(el) el.remove();
+    }
   }
 }
 
