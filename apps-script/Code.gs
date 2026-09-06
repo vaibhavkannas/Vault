@@ -219,6 +219,37 @@ function firestoreFieldsToObject(fields){
   return obj;
 }
 
+// Reverse of firestoreFieldsToObject — wraps a plain JS value in Firestore REST's typed-value
+// shape. Only covers what this file actually needs to write (string/boolean/number/null); extend
+// if a future write needs another type.
+function toFirestoreValue(v){
+  if(v === null || v === undefined) return {nullValue: null};
+  if(typeof v === 'string') return {stringValue: v};
+  if(typeof v === 'boolean') return {booleanValue: v};
+  if(typeof v === 'number') return {integerValue: String(v)};
+  throw new Error('toFirestoreValue: unsupported type ' + typeof v);
+}
+// A single write helper for both shapes Code.gs needs: `merge:true` does a partial update (only
+// the given fields change, like the client's own `.update()`/`.set({merge:true})`) via Firestore's
+// updateMask query params; `merge:false` replaces the whole document (like a plain `.set()`) by
+// omitting them — Firestore's PATCH method already does either depending on that one difference,
+// so this needs no separate firestoreSet()/firestoreUpdate() pair.
+function firestoreWrite(path, fieldsObj, merge){
+  const fields = {};
+  for(const k in fieldsObj) fields[k] = toFirestoreValue(fieldsObj[k]);
+  const maskQs = merge
+    ? ('?' + Object.keys(fieldsObj).map(function(k){ return 'updateMask.fieldPaths=' + encodeURIComponent(k); }).join('&'))
+    : '';
+  const res = UrlFetchApp.fetch(FIRESTORE_BASE + path + maskQs, {
+    method: 'patch',
+    contentType: 'application/json',
+    headers: {Authorization: 'Bearer ' + ScriptApp.getOAuthToken()},
+    payload: JSON.stringify({fields: fields}),
+    muteHttpExceptions: true
+  });
+  return res.getResponseCode() === 200;
+}
+
 // Looks up each subscriber's real address via the Identity Platform Admin API's project-scoped
 // accounts:lookup (batched by localId) rather than trusting the client-writable `email` field
 // stored alongside the subscription doc — any signed-in user can rewrite that field via the
@@ -266,8 +297,10 @@ function listActiveDocumentsForUser(uid){
   return firestoreListAll('users/' + uid + '/documents')
     .map(function(d){ return firestoreFieldsToObject(d.fields); })
     // Mirrors index.html's own `!d.archived` check exactly (not `=== false`), so legacy documents
-    // with no archived field at all are still treated as active, same as the client does.
-    .filter(function(doc){ return !doc.archived && doc.expiry; });
+    // with no archived field at all are still treated as active, same as the client does. Also
+    // excludes anything already soft-deleted (see runTrashCleanup below) — a document the user just
+    // deleted has no business showing up in a reminder about it.
+    .filter(function(doc){ return !doc.archived && doc.expiry && !doc.deletedAt; });
 }
 
 function listCategoryLabelsForUser(uid){
@@ -490,7 +523,12 @@ function listArchivedDocumentsForUser(uid){
       obj.id = d.name.split('/').pop();
       return obj;
     })
-    .filter(function(doc){ return doc.archived && doc.archivedAt; });
+    // !doc.deletedAt matters here specifically: a document can be BOTH archived and already
+    // soft-deleted (the user archived it, then later deleted it manually from the 3-dot menu) —
+    // without this, runArchiveCleanup would keep "moving" an already-trashed document into Deleted
+    // again on every run, each time stamping a fresh deletedAt and pushing its real purge date back
+    // indefinitely instead of counting down from when it actually landed in trash.
+    .filter(function(doc){ return doc.archived && doc.archivedAt && !doc.deletedAt; });
 }
 
 function daysSinceIso(isoString){
@@ -508,21 +546,113 @@ function driveDeleteFileForUser(uid, fileId){
   return res.getResponseCode() === 200 || res.getResponseCode() === 404; // 404 = already gone
 }
 
+// meta/vault holds vaultFolderId (see index.html's provisionVault/loadUserData) — needed here so
+// runArchiveCleanup can find-or-create that user's own Vault/Deleted folder without the client
+// having to separately publish it anywhere else.
+function getVaultFolderIdForUser(uid){
+  const result = firestoreFetch('/users/' + uid + '/meta/vault');
+  if(!result.ok) return null;
+  return firestoreFieldsToObject(result.json.fields).vaultFolderId || null;
+}
+// Per-user counterparts to index.html's own driveFindFolder/driveCreateFolder/driveFindOrCreateFolder
+// — same query/create shape, just authenticated with that user's own minted Drive token
+// (handleMint) instead of the browser's live OAuth session, since this runs from the daily trigger
+// with no user present at all.
+function driveFindFolderForUser(uid, name, parentId, accessToken){
+  const escaped = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const parentClause = parentId ? ("'" + parentId + "' in parents") : "'root' in parents";
+  const q = encodeURIComponent(parentClause + " and name='" + escaped + "' and mimeType='application/vnd.google-apps.folder' and trashed=false");
+  const res = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=files(id)', {
+    headers: {Authorization: 'Bearer ' + accessToken},
+    muteHttpExceptions: true
+  });
+  if(res.getResponseCode() !== 200) return null;
+  let json;
+  try{ json = JSON.parse(res.getContentText()); } catch(err){ return null; }
+  return (json.files && json.files.length) ? json.files[0].id : null;
+}
+function driveCreateFolderForUser(name, parentId, accessToken){
+  const body = {name: name, mimeType: 'application/vnd.google-apps.folder'};
+  if(parentId) body.parents = [parentId];
+  const res = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {Authorization: 'Bearer ' + accessToken},
+    payload: JSON.stringify(body),
+    muteHttpExceptions: true
+  });
+  if(res.getResponseCode() !== 200) return null;
+  let json;
+  try{ json = JSON.parse(res.getContentText()); } catch(err){ return null; }
+  return json.id;
+}
+function driveFindOrCreateFolderForUser(uid, name, parentId){
+  const mintResult = handleMint(uid);
+  if(mintResult.error) return null;
+  const existing = driveFindFolderForUser(uid, name, parentId, mintResult.accessToken);
+  return existing || driveCreateFolderForUser(name, parentId, mintResult.accessToken);
+}
+// Moves a file to a new parent, removing whatever parent(s) it actually has right now (fetched
+// fresh rather than assumed) — avoids needing a separate category-id-to-Drive-folder-id lookup
+// just to know what to remove.
+function driveMoveFileForUser(uid, fileId, toParentId){
+  const mintResult = handleMint(uid);
+  if(mintResult.error) return false;
+  const token = mintResult.accessToken;
+  const getRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?fields=parents', {
+    headers: {Authorization: 'Bearer ' + token},
+    muteHttpExceptions: true
+  });
+  if(getRes.getResponseCode() !== 200) return false;
+  let getJson;
+  try{ getJson = JSON.parse(getRes.getContentText()); } catch(err){ return false; }
+  const removeParents = (getJson.parents || []).join(',');
+  const moveUrl = 'https://www.googleapis.com/drive/v3/files/' + fileId + '?addParents=' + toParentId
+    + (removeParents ? '&removeParents=' + encodeURIComponent(removeParents) : '');
+  const moveRes = UrlFetchApp.fetch(moveUrl, {
+    method: 'patch',
+    contentType: 'application/json',
+    headers: {Authorization: 'Bearer ' + token},
+    payload: JSON.stringify({}),
+    muteHttpExceptions: true
+  });
+  return moveRes.getResponseCode() === 200;
+}
+
+// Moves an overdue-archived document into Vault/Deleted and marks deletedAt, rather than deleting
+// it outright — the same 30-day trash window a manual delete from the app gives (see
+// confirmDeleteDocument in index.html), so this feature can't surprise anyone with an unrecoverable
+// deletion just because they turned a setting on. runTrashCleanup() below is what actually purges
+// it for good, once TRASH_RETENTION_DAYS have passed since THIS move (deletedAt), not since the
+// original archivedAt.
 function runArchiveCleanup(){
   const subscribers = listArchiveRetentionSubscribers();
-  let deleted = 0;
+  let moved = 0;
   subscribers.forEach(function(sub){
     try{
       const overdue = listArchivedDocumentsForUser(sub.uid).filter(function(doc){
         return daysSinceIso(doc.archivedAt) >= sub.archiveRetentionDays;
       });
+      if(!overdue.length) return;
+      const vaultFolderId = getVaultFolderIdForUser(sub.uid);
+      if(!vaultFolderId){
+        console.error('Archive cleanup: no vaultFolderId on file for uid ' + sub.uid + ' — skipping');
+        return;
+      }
+      const deletedFolderId = driveFindOrCreateFolderForUser(sub.uid, 'Deleted', vaultFolderId);
+      if(!deletedFolderId){
+        console.error('Archive cleanup: could not find/create the Deleted folder for uid ' + sub.uid);
+        return;
+      }
       overdue.forEach(function(doc){
         try{
-          if(doc.driveFileId) driveDeleteFileForUser(sub.uid, doc.driveFileId);
-          firestoreDelete('/users/' + sub.uid + '/documents/' + doc.id);
-          deleted++;
+          const deletedAt = new Date().toISOString();
+          if(doc.driveFileId) driveMoveFileForUser(sub.uid, doc.driveFileId, deletedFolderId);
+          firestoreWrite('/users/' + sub.uid + '/documents/' + doc.id, {deletedAt: deletedAt}, true);
+          firestoreWrite('/trashSubscribers/' + sub.uid, {uid: sub.uid, updatedAt: deletedAt}, false);
+          moved++;
         } catch(err){
-          console.error('Archive cleanup: failed to delete document ' + doc.id + ' for uid ' + sub.uid + ': ' + err);
+          console.error('Archive cleanup: failed to move document ' + doc.id + ' for uid ' + sub.uid + ' to trash: ' + err);
         }
       });
     } catch(err){
@@ -530,7 +660,57 @@ function runArchiveCleanup(){
       console.error('Archive cleanup failed for uid ' + sub.uid + ': ' + err);
     }
   });
-  console.log('Archive cleanup: deleted ' + deleted + ' document(s) across ' + subscribers.length + ' subscriber(s) with retention set.');
+  console.log('Archive cleanup: moved ' + moved + ' document(s) to trash across ' + subscribers.length + ' subscriber(s) with retention set.');
+}
+
+// ---------- Trash (Recently deleted) permanent purge ----------
+//
+// Mirrors the other subscriber-registry jobs above: trashSubscribers/{uid} exists for any account
+// with at least one soft-deleted document, written directly by the client (confirmDeleteDocument)
+// or by runArchiveCleanup above — either path into "Recently deleted" gets the same eventual purge.
+// Unlike archiveRetentionSubscribers, this isn't opt-in/configurable — every soft-delete already
+// implies "yes, purge this once its time is up," so there's no separate retention-days field to
+// read here, just TRASH_RETENTION_DAYS (keep this in sync with index.html's own constant of the
+// same name).
+const TRASH_RETENTION_DAYS = 30;
+
+function listTrashSubscribers(){
+  return firestoreListAll('trashSubscribers').map(function(d){ return d.name.split('/').pop(); });
+}
+
+function listDeletedDocumentsForUser(uid){
+  return firestoreListAll('users/' + uid + '/documents')
+    .map(function(d){
+      const obj = firestoreFieldsToObject(d.fields);
+      obj.id = d.name.split('/').pop();
+      return obj;
+    })
+    .filter(function(doc){ return !!doc.deletedAt; });
+}
+
+function runTrashCleanup(){
+  const uids = listTrashSubscribers();
+  let purged = 0;
+  uids.forEach(function(uid){
+    try{
+      const expired = listDeletedDocumentsForUser(uid).filter(function(doc){
+        return daysSinceIso(doc.deletedAt) >= TRASH_RETENTION_DAYS;
+      });
+      expired.forEach(function(doc){
+        try{
+          if(doc.driveFileId) driveDeleteFileForUser(uid, doc.driveFileId);
+          firestoreDelete('/users/' + uid + '/documents/' + doc.id);
+          purged++;
+        } catch(err){
+          console.error('Trash cleanup: failed to purge document ' + doc.id + ' for uid ' + uid + ': ' + err);
+        }
+      });
+    } catch(err){
+      // One user's bad data or a transient failure must not abort everyone else's cleanup.
+      console.error('Trash cleanup failed for uid ' + uid + ': ' + err);
+    }
+  });
+  console.log('Trash cleanup: permanently deleted ' + purged + ' document(s) across ' + uids.length + ' subscriber(s) with items in trash.');
 }
 
 // Single entry point for the existing daily trigger (see createDailyDigestTrigger below) — email,
@@ -543,6 +723,7 @@ function runDailyDigest(){
   try{ sendEmailDigests(); } catch(err){ console.error('sendEmailDigests failed: ' + err); }
   try{ sendPushReminders(); } catch(err){ console.error('sendPushReminders failed: ' + err); }
   try{ runArchiveCleanup(); } catch(err){ console.error('runArchiveCleanup failed: ' + err); }
+  try{ runTrashCleanup(); } catch(err){ console.error('runTrashCleanup failed: ' + err); }
 }
 
 // One-off setup — run manually, once, from the Apps Script editor. Never called from doPost.
