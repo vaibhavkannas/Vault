@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<!-- maximum-scale=1/user-scalable=no: this is a PWA meant to feel like a native app, not a
+     document — the browser's own pinch/double-tap page zoom fought with in-app gestures (the
+     crop screen's own drag handles, swipe-to-dismiss) more than it ever helped. Zooming into an
+     actual document's content is handled separately and deliberately, inside the document viewer
+     itself (see .view-zoom-inner) — this line only disables zooming the CHROME OF THE APP. -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Vault — your documents, secured</title>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -298,6 +303,13 @@
   .modal-sheet .sub{font-size:12.5px;color:var(--ink-soft);margin:0 0 18px;}
   .pdf-pages{display:flex;flex-direction:column;align-items:center;gap:10px;}
   .pdf-page-canvas{max-width:100%;border-radius:8px;box-shadow:var(--elevation-1);}
+  /* The one place inside the app that's allowed to zoom, now that the page itself can't (see the
+     viewport meta tag) — #viewFileContent is the scrollable viewport; .view-zoom-inner is what
+     actually gets scaled (see wireViewFileZoom()). A scaled-up element still expands its parent's
+     scrollable region in every modern browser, so panning a zoomed document is just this
+     container's own native scroll/touch-drag — no custom pan-dragging code needed for it. */
+  #viewFileContent{overflow:auto;max-height:65vh;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;}
+  .view-zoom-inner{transform-origin:0 0;touch-action:pan-x pan-y;}
   label.field-label{font-size:12px;font-weight:500;color:var(--ink-soft);display:block;margin-bottom:6px;}
   /* Floats in the corner instead of its own full-width row above the title — the previous stacked
      layout (close-button row, THEN separately the drag handle's own row above THAT) added up to a
@@ -616,7 +628,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.06 · 12:20';
+const APP_VERSION = '2026.09.06 · 12:34';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -942,6 +954,13 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.06 · 12:34',
+    items: [
+      "You can no longer pinch/double-tap-zoom the app itself — that was never intentional and made the UI feel less like a real app.",
+      "Opening a document now lets you pinch-to-zoom or double-tap to zoom in on it specifically, then scroll around while zoomed in — for reading fine print on a scan, for example."
+    ]
+  },
   {
     version: '2026.09.06 · 12:20',
     items: [
@@ -5078,8 +5097,73 @@ async function renderViewedBlob(blob, doc, id){
   if(doc.mimeType === 'application/pdf'){
     await renderPdfInto(contentEl, blob, id);
   } else {
-    contentEl.innerHTML = `<img src="${url}" alt="${escapeHtml(doc.title)}" style="max-width:100%;border-radius:8px;display:block;margin:0 auto;">`;
+    contentEl.innerHTML = `<div class="view-zoom-inner"><img src="${url}" alt="${escapeHtml(doc.title)}" style="max-width:100%;border-radius:8px;display:block;margin:0 auto;"></div>`;
+    wireViewFileZoom(contentEl);
   }
+}
+
+// Pinch-to-zoom + double-tap-to-zoom for the document viewer specifically — the one place inside
+// the app allowed to zoom now that the page itself can't (see the viewport meta tag). Only scale
+// is tracked here; panning a zoomed document is just #viewFileContent's own native scroll (see its
+// CSS) — a scaled-up element still expands its parent's scrollable region in every modern browser,
+// so there's no custom pan-dragging to write.
+const VIEW_ZOOM_MIN = 1, VIEW_ZOOM_MAX = 4;
+function wireViewFileZoom(contentEl){
+  const inner = contentEl.querySelector('.view-zoom-inner');
+  if(!inner) return;
+  let zoom = 1;
+  const applyZoom = () => { inner.style.transform = zoom === 1 ? '' : `scale(${zoom})`; };
+
+  const pointers = new Map(); // pointerId -> {x,y}; only ever holds the 2 fingers of an active pinch
+  let pinchStartDist = 0, pinchStartZoom = 1;
+  const distance = () => {
+    const pts = [...pointers.values()];
+    return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+  };
+
+  contentEl.addEventListener('pointerdown', (e) => {
+    pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
+    if(pointers.size === 2){ pinchStartDist = distance(); pinchStartZoom = zoom; }
+  });
+  contentEl.addEventListener('pointermove', (e) => {
+    if(!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
+    if(pointers.size === 2 && pinchStartDist > 0){
+      zoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, pinchStartZoom * (distance() / pinchStartDist)));
+      applyZoom();
+    }
+  });
+  const clearPointer = (e) => {
+    pointers.delete(e.pointerId);
+    if(pointers.size < 2) pinchStartDist = 0;
+  };
+  contentEl.addEventListener('pointerup', clearPointer);
+  contentEl.addEventListener('pointercancel', clearPointer);
+
+  // A quick double-tap/double-click toggles 1x <-> 2x, roughly centered on the tapped point — a
+  // faster shortcut than pinching for the common case of "just let me read that".
+  let lastTapTime = 0, lastTapX = 0, lastTapY = 0;
+  contentEl.addEventListener('pointerup', (e) => {
+    const isDoubleTap = e.timeStamp - lastTapTime < 320 && Math.hypot(e.clientX - lastTapX, e.clientY - lastTapY) < 24;
+    lastTapTime = e.timeStamp; lastTapX = e.clientX; lastTapY = e.clientY;
+    if(!isDoubleTap) return;
+    lastTapTime = 0; // consumed — a third quick tap starts a fresh pair, not another toggle
+    if(zoom > 1){
+      zoom = 1;
+      applyZoom();
+      return;
+    }
+    const rect = contentEl.getBoundingClientRect();
+    const tapX = e.clientX - rect.left + contentEl.scrollLeft, tapY = e.clientY - rect.top + contentEl.scrollTop;
+    zoom = 2;
+    applyZoom();
+    // Waits a frame for the larger scrollable range from the new scale to actually exist before
+    // trying to scroll into it.
+    requestAnimationFrame(() => {
+      contentEl.scrollLeft = tapX * 2 - rect.width / 2;
+      contentEl.scrollTop = tapY * 2 - rect.height / 2;
+    });
+  });
 }
 
 async function renderPdfInto(contentEl, blob, id){
@@ -5108,8 +5192,12 @@ async function renderPdfInto(contentEl, blob, id){
     wrap.appendChild(canvas);
   }
   if(state.modal !== 'viewFile' || state.viewDocId !== id) return;
+  const inner = document.createElement('div');
+  inner.className = 'view-zoom-inner';
+  inner.appendChild(wrap);
   contentEl.innerHTML = '';
-  contentEl.appendChild(wrap);
+  contentEl.appendChild(inner);
+  wireViewFileZoom(contentEl);
 }
 
 // Fetches a document's actual bytes from Drive when reachable, falling back to the offline cache
