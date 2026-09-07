@@ -77,8 +77,15 @@
      own scroll position for that gesture regardless of what overlay is drawn on top, so a modal
      being open doesn't suppress it on its own. Dragging further reloads the whole tab instead of
      the modal closing. This is the documented opt-out for that, same mechanism as the X-axis one. */
-  html{overscroll-behavior: none;}
-  body{margin:0;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;overscroll-behavior:none;}
+  /* touch-action, not just the viewport meta's maximum-scale/user-scalable=no, is what actually
+     stops native pinch-zoom reliably on Android/Chrome — the meta tag alone left it still working
+     there. Listing pan-x/pan-y without pinch-zoom is what disables it while keeping ordinary
+     scrolling; this is deliberately NOT the "manipulation" keyword, which explicitly re-enables
+     pinch-zoom. The document viewer's own pinch-to-zoom (wireViewFileZoom()) is unaffected —
+     it's built on Pointer Events, which fire regardless of touch-action; this only ever stops the
+     BROWSER's own native zoom gesture from fighting with it. */
+  html{overscroll-behavior: none; touch-action: pan-x pan-y;}
+  body{margin:0;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;overscroll-behavior:none;touch-action:pan-x pan-y;}
   /* Baseline tap feedback for every button so nothing feels inert — more specific :active rules
      elsewhere (e.g. button.primary's scale(0.98)) simply override this by CSS specificity. */
   button, .doc-icon, .icon-pick-btn, .cat-toggle, .renewal-card{transition:transform 0.1s ease;}
@@ -628,7 +635,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.06 · 12:44';
+const APP_VERSION = '2026.09.07 · 15:06';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -954,6 +961,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.07 · 15:06',
+    items: [
+      "Found the real fix for zoom still working — the previous fix only addressed iPhones specifically; Android needed a different, more fundamental setting that's now applied everywhere, so this should actually cover both this time."
+    ]
+  },
   {
     version: '2026.09.06 · 12:44',
     items: [
@@ -1657,9 +1670,13 @@ function isInsideZoomableViewer(target){
 document.addEventListener('gesturestart', (e) => {
   if(!isInsideZoomableViewer(e.target)) e.preventDefault();
 });
-document.addEventListener('touchmove', (e) => {
-  if(e.touches.length > 1 && !isInsideZoomableViewer(e.target)) e.preventDefault();
-}, {passive: false});
+// Both touchstart AND touchmove: some browsers commit to their own native pinch-zoom gesture as
+// soon as a second finger touches down, before any touchmove ever fires — catching only touchmove
+// can be a beat too late for those. touch-action (see html/body's own rule) is the real fix for
+// this on most browsers; these two stay as a belt-and-suspenders backstop.
+const preventMultiTouch = (e) => { if(e.touches.length > 1 && !isInsideZoomableViewer(e.target)) e.preventDefault(); };
+document.addEventListener('touchstart', preventMultiTouch, {passive: false});
+document.addEventListener('touchmove', preventMultiTouch, {passive: false});
 let lastTouchEndAt = 0;
 document.addEventListener('touchend', (e) => {
   if(isInsideZoomableViewer(e.target)) return;
