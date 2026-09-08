@@ -635,7 +635,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.07 · 15:06';
+const APP_VERSION = '2026.09.08 · 10:08';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -961,6 +961,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.08 · 10:08',
+    items: [
+      "Found the real reason automatic edge detection only ever seemed to work on the first page of a multi-page scan: it takes a moment, and moving to the next page before it finished threw the result away completely instead of finishing in the background. It now always finishes and is applied the next time that page's crop screen is opened, even if you've already moved on."
+    ]
+  },
   {
     version: '2026.09.07 · 15:06',
     items: [
@@ -4377,6 +4383,17 @@ function readFileAsDataURL(file){
 /* ---------- camera capture ---------- */
 let pendingPageOcrTexts = []; // per-page OCR text, parallel to state.capturedPages — lets removing
                                // a page also cleanly drop just that page's text from pendingOcrText
+// Per-page auto-detected crop quad, parallel to state.capturedPages, in NATURAL image pixels (not
+// on-screen CSS px — those depend on whatever <img> currently happens to be displayed, which is
+// only ever correct for the page actually on screen right now). Detection takes a moment (OpenCV's
+// one-time load, then the per-image contour search), and capturing a document is normally a quick
+// multi-page burst — without this, moving to the next page before a slower page's detection
+// finished just discarded that result outright once it did complete (attemptAutoDetectQuad's own
+// guard against a stale page correctly stopped it from being APPLIED to the wrong page, but nothing
+// kept it around for when that page's own crop screen is opened again). Indexed directly (not
+// .push()ed) since a detection can finish for any page regardless of which one's on screen when it
+// does; removeCapturedPage() splices it to stay aligned when a page's index shifts.
+let pendingPageAutoQuads = [];
 // Every capturePage()/removeCapturedPage() call rebuilds this modal's whole innerHTML (to show the
 // new thumbnail, or reflect a removed page), which would otherwise silently reset every text field
 // back to its default each time — not just the category <select> this was originally written for.
@@ -4634,40 +4651,73 @@ function showCropDetectBadge(stage, text){
   if(!el) stage.appendChild(badge);
   return badge;
 }
-async function attemptAutoDetectQuad(cropIndexAtStart){
-  const stage = document.getElementById('cropStage');
-  if(!stage) return;
-  state.cropDetecting = true;
-  showCropDetectBadge(stage, 'Detecting edges…');
+// Loads a data URL into a detached <img> (never inserted into the DOM) — used so detection can run
+// against a SPECIFIC page's actual photo regardless of what's currently showing in the live
+// #cropImage element, which capturing (or re-opening) a different page replaces outright.
+function loadImageElement(dataUrl){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('image_load_failed'));
+    img.src = dataUrl;
+  });
+}
+
+// cropIndexAtStart identifies WHICH captured page this detection is for; sourceDataUrl is that
+// page's own raw capture, loaded independently (see loadImageElement) instead of trusting the live
+// #cropImage element to still be showing it. OpenCV's one-time load (a few seconds on a slow
+// connection) plus the per-image contour search means this routinely doesn't finish before someone
+// has already moved on to capturing the next page — previously that meant the whole attempt was
+// just abandoned (worse: abandoned before ever running, since the old code checked "is this page
+// still on screen" BEFORE running detection at all) the instant the page changed, so a multi-page
+// capture would only ever get automatic detection on whichever page happened to be showing at the
+// exact moment OpenCV finished loading. Detection now always runs to completion and its result is
+// saved in pendingPageAutoQuads keyed by page, independent of whichever page is on screen when it
+// finishes — initQuad() checks there first before ever falling back to the plain default box.
+async function attemptAutoDetectQuad(cropIndexAtStart, sourceDataUrl){
+  const isCurrentPage = () => state.cropIndex === cropIndexAtStart;
+  if(isCurrentPage()){
+    const stage = document.getElementById('cropStage');
+    if(stage){ state.cropDetecting = true; showCropDetectBadge(stage, 'Detecting edges…'); }
+  }
   let resultText = 'Auto-detect: unexpected error — adjust manually';
   try{
     await waitForOpenCvReady();
     console.log('[auto-crop] OpenCV ready.');
-    // The user may have cancelled this crop screen, or opened a different page's crop, while
-    // OpenCV was still loading — never clobber a screen that isn't showing this capture anymore.
-    if(state.cropIndex !== cropIndexAtStart) return;
-    const img = document.getElementById('cropImage');
-    if(!img){ resultText = null; return; }
-    const detected = detectDocumentQuad(img);
-    if(!detected){ resultText = 'Auto-detect: no match found — adjust manually'; return; }
-    if(state.cropIndex !== cropIndexAtStart || !document.getElementById('cropImage')){ resultText = null; return; }
-    const scaleX = img.clientWidth / img.naturalWidth, scaleY = img.clientHeight / img.naturalHeight;
+    const offscreenImg = await loadImageElement(sourceDataUrl);
+    const detected = detectDocumentQuad(offscreenImg);
+    if(!detected){
+      pendingPageAutoQuads[cropIndexAtStart] = null;
+      resultText = 'Auto-detect: no match found — adjust manually';
+      return;
+    }
+    pendingPageAutoQuads[cropIndexAtStart] = detected; // natural-pixel space — saved regardless of what's on screen now
+    resultText = 'Edges detected automatically';
+    // Only the LIVE screen needs the immediate repaint — if the user has moved on, this page's
+    // result is already saved above for whenever its crop screen is next opened (fresh or re-edit).
+    if(!isCurrentPage()) return;
+    const liveImg = document.getElementById('cropImage');
+    if(!liveImg) return;
+    const scaleX = liveImg.clientWidth / liveImg.naturalWidth, scaleY = liveImg.clientHeight / liveImg.naturalHeight;
     const toScreen = (p) => ({x: p.x * scaleX, y: p.y * scaleY});
     state.cropQuad = {tl: toScreen(detected.tl), tr: toScreen(detected.tr), bl: toScreen(detected.bl), br: toScreen(detected.br)};
     if(cropRepaintCurrentQuad) cropRepaintCurrentQuad();
-    resultText = 'Edges detected automatically';
   } catch(e){
     resultText = 'Auto-detect: unavailable right now — adjust manually';
     console.warn('Auto edge-detection unavailable — the default crop box still works, just needs a manual adjust.', e);
   } finally {
     state.cropDetecting = false;
-    const stageNow = document.getElementById('cropStage'); // re-fetched — the screen may have changed underneath this await chain
-    if(stageNow && resultText){
-      const badge = showCropDetectBadge(stageNow, resultText);
-      setTimeout(() => { if(badge.textContent === resultText) badge.remove(); }, 2500);
-    } else {
-      const el = document.getElementById('cropDetectingBadge');
-      if(el) el.remove();
+    // A stale result for a page the user has already moved past has nothing to show on whatever
+    // IS on screen now — only touch the badge if this page is still the one showing.
+    if(isCurrentPage()){
+      const stageNow = document.getElementById('cropStage');
+      if(stageNow && resultText){
+        const badge = showCropDetectBadge(stageNow, resultText);
+        setTimeout(() => { if(badge.textContent === resultText) badge.remove(); }, 2500);
+      } else if(stageNow){
+        const el = document.getElementById('cropDetectingBadge');
+        if(el) el.remove();
+      }
     }
   }
 }
@@ -4739,9 +4789,20 @@ function wireCropOverlay(){
     // of which of the two paths below reached here.
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if(state.cropQuad) return; // e.g. auto-detection somehow already landed a quad first
+      // Detection for THIS exact page may have already finished in the background while a later
+      // page was on screen (see attemptAutoDetectQuad/pendingPageAutoQuads) — use that instead of
+      // ever showing the plain default box or re-running detection from scratch.
+      const already = pendingPageAutoQuads[state.cropIndex];
+      if(already){
+        const scaleX = img.clientWidth / img.naturalWidth, scaleY = img.clientHeight / img.naturalHeight;
+        const toScreen = (p) => ({x: p.x * scaleX, y: p.y * scaleY});
+        state.cropQuad = {tl: toScreen(already.tl), tr: toScreen(already.tr), bl: toScreen(already.bl), br: toScreen(already.br)};
+        paintQuad();
+        return;
+      }
       state.cropQuad = defaultQuad();
       paintQuad();
-      attemptAutoDetectQuad(state.cropIndex);
+      attemptAutoDetectQuad(state.cropIndex, state.cropSourceDataUrl);
     }));
   }
   if(img.complete && img.naturalWidth) initQuad(); else img.onload = initQuad;
@@ -4992,6 +5053,7 @@ function removeCapturedPage(index){
   state.capturedPagesRaw.splice(index, 1);
   state.capturedPageEnhance.splice(index, 1);
   pendingPageOcrTexts.splice(index, 1);
+  pendingPageAutoQuads.splice(index, 1);
   pendingOcrText = pendingPageOcrTexts.join('\n').trim();
   renderModal();
 }
