@@ -183,6 +183,13 @@
   .doc-card-grid-wrap{display:grid;grid-template-rows:1fr;transition:grid-template-rows 0.28s ease;}
   .doc-card-grid-wrap.is-collapsed{grid-template-rows:0fr;}
   .doc-card-grid-inner{overflow:hidden;min-height:0;}
+  /* Needed for the collapse/expand grid-template-rows animation to actually clip content while a
+     category's row is shrinking/growing — but it ALSO clips anything that deliberately extends past
+     a document card's own bounds once fully open, most notably an open ⋮ action menu overlapping
+     the next card down. Added once a category settles fully expanded (see the .cat-toggle handler
+     and this category's own initial render), removed the instant a collapse starts so the shrink
+     animation still clips correctly from its very first frame. */
+  .doc-card-grid-inner.overflow-visible{overflow:visible;}
   .archive-toggle{background:none;border:none;color:var(--brass);font-size:12.5px;font-weight:500;cursor:pointer;padding:4px;margin:24px auto 0;display:flex;align-items:center;justify-content:center;gap:4px;width:100%;}
 
   .reminder-card{display:flex;align-items:center;gap:10px;background:var(--success-bg);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px;font-size:13px;}
@@ -635,7 +642,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.08 · 10:08';
+const APP_VERSION = '2026.09.09 · 07:09';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -961,6 +968,13 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.09 · 07:09',
+    items: [
+      "Found the actual remaining cause of documents appearing to refresh on an unrelated click: closing a document's ⋮ menu by tapping elsewhere (an extremely common, mostly accidental interaction) was rebuilding the entire document list every single time, just to close one small dropdown. It now only removes that one menu.",
+      "Fixed a document's ⋮ menu sometimes rendering partly hidden behind the next document card instead of on top of it."
+    ]
+  },
   {
     version: '2026.09.08 · 10:08',
     items: [
@@ -3138,7 +3152,7 @@ function renderVault(app){
           <span class="cat-title-label">${categoryIconHtml(meta,15)} ${escapeHtml(meta.label)}</span>
           <span class="cat-count">${grouped[cat].length}<span class="cat-chevron ${isCollapsed ? 'collapsed' : ''}">${icon('chevronDown',15)}</span></span>
         </div>
-        <div class="doc-card-grid-wrap ${isCollapsed ? 'is-collapsed' : ''}" data-cat-panel="${cat}"><div class="doc-card-grid-inner"><div class="doc-card-grid">${grouped[cat].map((d,i) => renderDocCard(d, {i})).join('')}</div></div></div>
+        <div class="doc-card-grid-wrap ${isCollapsed ? 'is-collapsed' : ''}" data-cat-panel="${cat}"><div class="doc-card-grid-inner ${isCollapsed ? '' : 'overflow-visible'}"><div class="doc-card-grid">${grouped[cat].map((d,i) => renderDocCard(d, {i})).join('')}</div></div></div>
       `; }).join('')}
       ${archivedCount ? `<button class="archive-toggle" id="archiveToggleBtn">${state.showArchived ? `${icon('back',14)} Back to active documents` : `View archived (${archivedCount})`}</button>` : ''}
       ${!state.showArchived && deletedCount ? `<button class="archive-toggle" id="deletedToggleBtn">Recently deleted (${deletedCount})</button>` : ''}
@@ -3222,7 +3236,28 @@ function renderVault(app){
       const collapsed = !state.collapsedCats[c];
       state.collapsedCats[c] = collapsed;
       const panel = document.querySelector(`.doc-card-grid-wrap[data-cat-panel="${c}"]`);
-      if(panel) panel.classList.toggle('is-collapsed', collapsed);
+      if(panel){
+        panel.classList.toggle('is-collapsed', collapsed);
+        const inner = panel.querySelector('.doc-card-grid-inner');
+        if(inner){
+          if(collapsed){
+            // Collapsing: clip right away so the shrink animation looks right from its first frame
+            // — waiting for a transitionend here would leave content briefly un-clipped mid-shrink.
+            inner.classList.remove('overflow-visible');
+          } else {
+            // Expanding: stay clipped through the whole grow animation (same reasoning, reversed),
+            // only allowing an open action menu to overlap the next card down once this category
+            // has actually finished settling open, not before.
+            const onDone = (e) => {
+              if(e.target === panel && e.propertyName === 'grid-template-rows'){
+                inner.classList.add('overflow-visible');
+                panel.removeEventListener('transitionend', onDone);
+              }
+            };
+            panel.addEventListener('transitionend', onDone);
+          }
+        }
+      }
       const chevron = el.querySelector('.cat-chevron');
       if(chevron) chevron.classList.toggle('collapsed', collapsed);
       el.setAttribute('aria-expanded', String(!collapsed));
@@ -3297,7 +3332,21 @@ function renderVault(app){
   if(actionMenuOutsideClickHandler) document.removeEventListener('click', actionMenuOutsideClickHandler);
   actionMenuOutsideClickHandler = null;
   if(state.openActionMenu){
-    actionMenuOutsideClickHandler = () => { state.openActionMenu = null; actionMenuOutsideClickHandler = null; render(); };
+    actionMenuOutsideClickHandler = () => {
+      const openId = state.openActionMenu;
+      state.openActionMenu = null;
+      actionMenuOutsideClickHandler = null;
+      // A plain click ANYWHERE ELSE in the app while a menu happens to be open is an extremely
+      // common, mostly incidental interaction — a full render() here (rebuilding the ENTIRE
+      // document list just to close one small dropdown) was expensive enough on a real phone to
+      // look like the whole app was refreshing on every unrelated tap. Removing just this one
+      // menu (and fixing up the toggle button's own state) is the same targeted-DOM-update
+      // approach category-collapse already uses instead of a full render().
+      const menuEl = document.getElementById('actionMenu-' + openId);
+      if(menuEl) menuEl.remove();
+      const toggleBtn = document.querySelector(`[data-menu-toggle="${openId}"]`);
+      if(toggleBtn) toggleBtn.setAttribute('aria-expanded', 'false');
+    };
     document.addEventListener('click', actionMenuOutsideClickHandler, {once: true});
   }
 
