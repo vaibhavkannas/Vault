@@ -357,6 +357,10 @@
   .camera-wrap video, .camera-wrap canvas{width:100%;height:100%;object-fit:cover;display:block;}
   .camera-controls{display:flex;gap:10px;margin-bottom:12px;}
   .camera-controls button{flex:1;}
+  /* button.ghost's margin-top:8px (below) is meant for vertically-stacked ghost buttons elsewhere
+     (e.g. under a PIN field) — inside this horizontal row it instead pushed the ghost button down
+     and shorter than its .primary sibling, a visible misalignment between the two. */
+  .camera-controls button.ghost{margin-top:0;}
   .capture-btn{background:var(--brass);color:var(--on-brass);border:none;border-radius:var(--radius-full);padding:13px;font-weight:500;font-size:14px;cursor:pointer;}
   .scroll-hint{display:flex;align-items:center;justify-content:center;gap:4px;color:var(--ink-soft);font-size:12px;margin:0 0 14px;}
   .page-thumbs{display:flex;gap:8px;overflow-x:auto;margin-bottom:12px;padding-bottom:4px;}
@@ -650,7 +654,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.09 · 07:55';
+const APP_VERSION = '2026.09.09 · 08:19';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -975,6 +979,13 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.09 · 08:19',
+    items: [
+      "Fixed the crop screen feeling slightly laggy when dragging a corner or edge — it was re-checking the frame's size on every tiny movement instead of once, and updating on every raw touch event instead of once per screen refresh.",
+      "Fixed the \"Capture with camera\" / \"Upload a file\" buttons on the Renew screen (and Cancel / \"Use this crop\" on the crop screen) not lining up evenly."
+    ]
+  },
   {
     version: '2026.09.09 · 07:55',
     items: [
@@ -4661,6 +4672,16 @@ const CROP_MAG_SIZE = 110, CROP_MAG_ZOOM = 2.5, CROP_MAG_OFFSET_Y = 95;
 // wrapper sized to the image's own rendered box (see the .crop-stage CSS), so stage.clientWidth/
 // Height are exactly the image's on-screen size and every point here lands directly in the image's
 // own coordinate space — no letterboxing offset math needed.
+//
+// Drag updates are read-cached and rAF-batched: stage.clientWidth/Height never actually changes
+// mid-drag, so re-reading it on every pointermove (once for clamping, again inside paintQuad, again
+// inside updateMagnifier) was forcing a fresh synchronous layout reflow each time a DOM write from
+// an earlier read-write pair in the same tick invalidated the browser's cached layout — classic
+// layout thrashing, and the direct cause of the drag feeling laggy. It's read once per gesture
+// (onPointerDown) instead. Separately, raw pointermove can fire faster than the display repaints
+// (touchscreens routinely report 60-120Hz), so doing a full paint+reflow on every single event was
+// also just wasted work between frames — the handler now only records the latest pointer position
+// and lets one requestAnimationFrame per frame do the actual quad/paint/magnifier update.
 function wireCropOverlay(){
   waitForOpenCvReady().catch(() => {}); // warm OpenCV early so it's ready by the time confirmCrop() needs it for perspective correction
   const img = document.getElementById('cropImage');
@@ -4687,10 +4708,18 @@ function wireCropOverlay(){
   const magnifier = document.getElementById('cropMagnifier');
   if(state.cropEnhanceOn) img.style.filter = ENHANCE_FILTER;
 
+  // Cached once per gesture (onPointerDown) / once at initial layout (initQuad), not re-read on
+  // every pointermove — see the note above. The SVG viewBox only depends on this, so it's set here
+  // too rather than redundantly on every paintQuad() call.
+  let stageW = 0, stageH = 0;
+  function refreshStageSize(){
+    stageW = stage.clientWidth; stageH = stage.clientHeight;
+    svg.setAttribute('viewBox', '0 0 ' + stageW + ' ' + stageH);
+  }
+
   function paintQuad(){
     const q = state.cropQuad;
-    const w = stage.clientWidth, h = stage.clientHeight;
-    svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+    const w = stageW, h = stageH;
     maskPath.setAttribute('d',
       'M0,0 H' + w + ' V' + h + ' H0 Z ' +
       'M' + q.tl.x + ',' + q.tl.y + ' L' + q.bl.x + ',' + q.bl.y + ' L' + q.br.x + ',' + q.br.y + ' L' + q.tr.x + ',' + q.tr.y + ' Z');
@@ -4705,12 +4734,12 @@ function wireCropOverlay(){
   cropRepaintCurrentQuad = paintQuad;
 
   function defaultQuad(){
-    const w = img.clientWidth, h = img.clientHeight;
+    const w = stageW, h = stageH;
     const mx = w * 0.05, my = h * 0.05; // centered box, 5% margin each side — same as the old default
     return {tl: {x: mx, y: my}, tr: {x: w - mx, y: my}, bl: {x: mx, y: h - my}, br: {x: w - mx, y: h - my}};
   }
   function initQuad(){
-    if(state.cropQuad){ paintQuad(); return; }
+    if(state.cropQuad){ refreshStageSize(); paintQuad(); return; }
     // A data: URL image can already have img.complete===true (no network fetch needed to decode
     // it) before the browser has actually LAID OUT this freshly-inserted element — reading
     // clientWidth/Height synchronously at that exact point can still see 0, collapsing the whole
@@ -4720,6 +4749,7 @@ function wireCropOverlay(){
     // of which of the two paths below reached here.
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if(state.cropQuad) return;
+      refreshStageSize();
       state.cropQuad = defaultQuad();
       paintQuad();
     }));
@@ -4748,7 +4778,6 @@ function wireCropOverlay(){
   function hideMagnifier(){ if(magnifier) magnifier.style.display = 'none'; }
   function updateMagnifier(pt){
     if(!magnifier) return;
-    const stageW = stage.clientWidth, stageH = stage.clientHeight;
     const half = CROP_MAG_SIZE / 2;
     let mx = clamp(pt.x, half, stageW - half);
     let my = pt.y - CROP_MAG_OFFSET_Y;
@@ -4765,6 +4794,7 @@ function wireCropOverlay(){
     dragMode = mode;
     startPointer = {x: e.clientX, y: e.clientY};
     startQuad = JSON.parse(JSON.stringify(state.cropQuad));
+    refreshStageSize(); // stage size is fixed for the whole gesture — one read here, reused for every move
     stage.setPointerCapture(e.pointerId);
     // No loupe for a whole-quad move — there's no single precise point to zoom in on, and the
     // finger isn't hiding an edge/corner the way it does for the other drag modes.
@@ -4777,10 +4807,14 @@ function wireCropOverlay(){
   Object.keys(handles).forEach(k => handles[k].addEventListener('pointerdown', (e) => onPointerDown(k, e)));
   Object.keys(edgeHandles).forEach(k => edgeHandles[k].addEventListener('pointerdown', (e) => onPointerDown(k, e)));
 
-  stage.addEventListener('pointermove', (e) => {
-    if(!dragMode) return;
-    const dx = e.clientX - startPointer.x, dy = e.clientY - startPointer.y;
-    const stageW = stage.clientWidth, stageH = stage.clientHeight;
+  // The actual per-frame work: compute the new quad from the latest recorded pointer delta, paint
+  // it, and update the loupe. Runs at most once per animation frame (scheduled below), regardless
+  // of how many raw pointermove events arrived since the last one.
+  let latestDx = 0, latestDy = 0, moveRafPending = false;
+  function applyDragMove(){
+    moveRafPending = false;
+    if(!dragMode) return; // the drag may have already ended by the time this frame runs
+    const dx = latestDx, dy = latestDy;
     if(dragMode === 'move'){
       // Clamp the whole quad's bounding box, same spirit as the old rectangle's move-drag, so it
       // can't be dragged off the edge of the image.
@@ -4810,6 +4844,16 @@ function wireCropOverlay(){
     }
     paintQuad();
     if(dragMode !== 'move') updateMagnifier(dragPointFor(dragMode, state.cropQuad));
+  }
+
+  stage.addEventListener('pointermove', (e) => {
+    if(!dragMode) return;
+    latestDx = e.clientX - startPointer.x;
+    latestDy = e.clientY - startPointer.y;
+    if(!moveRafPending){
+      moveRafPending = true;
+      requestAnimationFrame(applyDragMove);
+    }
   });
   const endDrag = () => { dragMode = null; hideMagnifier(); };
   stage.addEventListener('pointerup', endDrag);
