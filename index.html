@@ -382,7 +382,15 @@
   .crop-handle-edge{border-radius:999px;background:rgba(26,115,232,0.3);cursor:move;}
   .crop-handle-edge-h{width:34px;height:14px;margin:-7px -17px;}
   .crop-handle-edge-v{width:14px;height:34px;margin:-17px -7px;}
-  .crop-detecting{position:absolute;top:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.6);color:#fff;font-size:12px;padding:6px 12px;border-radius:999px;pointer-events:none;}
+  /* Loupe shown while dragging a corner/edge handle — a finger covers the exact point it's
+     touching, so this mirrors that same point at a fixed offset above (or below, near the top
+     edge) where it's actually visible, zoomed in so the real edge is easy to land on precisely.
+     pointer-events:none so it never itself becomes a drag target; last in the stage's DOM order
+     (see the crop screen markup) so it paints above the mask/handles with no z-index needed. */
+  .crop-magnifier{position:absolute;width:110px;height:110px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 12px rgba(0,0,0,0.45),0 0 0 1px rgba(0,0,0,0.15);pointer-events:none;background-repeat:no-repeat;display:none;overflow:hidden;}
+  .crop-magnifier::before, .crop-magnifier::after{content:'';position:absolute;background:#1a73e8;}
+  .crop-magnifier::before{left:50%;top:0;bottom:0;width:1px;transform:translateX(-50%);}
+  .crop-magnifier::after{top:50%;left:0;right:0;height:1px;transform:translateY(-50%);}
   .progress-row{font-size:12.5px;color:var(--ink-soft);text-align:center;margin:10px 0;}
   .progress-track{height:4px;background:var(--surface-container);border-radius:4px;overflow:hidden;margin-bottom:6px;}
   .progress-fill{height:100%;background:var(--brass);transition:width 0.2s ease;}
@@ -642,7 +650,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.09 · 07:24';
+const APP_VERSION = '2026.09.09 · 07:55';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -775,8 +783,7 @@ const state = {
   // CamScanner/Adobe Scan, so a photo taken at an angle can still be perspective-corrected rather
   // than just cropped straight. On-screen CSS px, relative to the crop <img>.
   cropQuad: null, // {tl:{x,y}, tr:{x,y}, bl:{x,y}, br:{x,y}}
-  cropEnhanceOn: false, // live Enhance toggle state for the open crop screen
-  cropDetecting: false, // true while auto edge-detection is running on a freshly opened crop screen
+  cropEnhanceOn: true, // live Enhance toggle state for the open crop screen — on by default, user can uncheck
   openActionMenu: null, // doc id whose card's ⋮ overflow menu is currently open, or null
   offlineDocIds: new Set(), // doc ids with a file blob cached in IndexedDB for offline viewing
   isOfflineMode: false, // true when the vault opened with no Drive/Firestore connection at all
@@ -968,6 +975,16 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.09 · 07:55',
+    items: [
+      "Lock screen now shows just the biometric prompt when biometric unlock is set up, instead of the PIN field at the same time — tap \"Use PIN instead\" if you'd rather type your PIN (it also shows automatically if biometric fails or is cancelled).",
+      "Sign-in has one less network round trip: your categories now load at the same time as everything else instead of afterward.",
+      "\"Enhance for text\" in the camera crop screen is now checked by default — uncheck it if you don't want the extra contrast/brightness.",
+      "Removed automatic edge detection when cropping a captured photo — it was unreliable and often just cropped the same default box regardless of the photo. Manual cropping is now the only path, and dragging a corner or edge shows a zoomed-in loupe above your finger so you can see exactly where you're placing it.",
+      "Fixed the Settings screen flashing/refreshing when turning biometric unlock off."
+    ]
+  },
   {
     version: '2026.09.09 · 07:24',
     items: [
@@ -2140,17 +2157,23 @@ async function migrateAndLoadQuickRefs(loadDoc){
   }
 }
 
-// The meta/documents/reminderSettings reads loadUserData() needs — pulled out on its own so a
-// caller that's ALSO about to await a slow, unrelated network call (the Drive token mint/consent
-// exchange, an Apps Script Web App round trip) can fire both at once instead of one after the
-// other. Neither depends on the other for a returning user; only categories/Quick Reference
-// further down in loadUserData() actually need the Drive token, and by then it's long done.
+// The meta/documents/reminderSettings/categories reads loadUserData() needs — pulled out on its
+// own so a caller that's ALSO about to await a slow, unrelated network call (the Drive token
+// mint/consent exchange, an Apps Script Web App round trip) can fire both at once instead of one
+// after the other. All four are plain Firestore reads authenticated by the Firebase ID token, not
+// the separate Drive OAuth token, so none of them actually needs Drive access to depend on —
+// categories was previously queried on its own, after this whole batch, on the mistaken belief
+// that it needed the Drive token like Quick Reference genuinely does; it doesn't, and folding it
+// in here removes one full serial round trip from every returning sign-in. Only Quick Reference
+// (further down in loadUserData()) genuinely can't join this batch — it lives in a Drive file, so
+// it needs state.vaultFolderId (from metaSnap, below) settled first.
 function prefetchUserMetaReads(uid){
   const loadDoc = () => db.collection('users').doc(uid);
   return Promise.all([
     loadDoc().collection('meta').doc('vault').get(),
     loadDoc().collection('documents').orderBy('addedAt', 'desc').get(),
-    loadDoc().collection('meta').doc('reminderSettings').get()
+    loadDoc().collection('meta').doc('reminderSettings').get(),
+    loadDoc().collection('categories').orderBy('order').get()
   ]);
 }
 
@@ -2174,13 +2197,13 @@ async function loadUserData(prefetchedReads){
   // side, right after alreadyProvisioned is actually determined).
   const everProvisionedFallback = () => { try{ return localStorage.getItem('vault-ever-provisioned-' + uid) === 'true'; } catch(e){ return false; } };
   try{
-    // metaSnap doesn't depend on anything below, and nothing below except categories depends on
-    // it — it used to be awaited alone, before even issuing the other reads, which cost a
-    // full extra round trip on every sign-in/reopen for no reason. Firing it in the same wave
-    // turns "meta, then everything else" into "everything (except categories, and Quick Reference
-    // — see below) at once." Quick Reference isn't read here at all anymore: it now lives in Drive,
-    // which needs state.vaultFolderId settled first, so migrateAndLoadQuickRefs() runs further down.
-    const [metaSnap, docsSnap, reminderSnap] = await (prefetchedReads || prefetchUserMetaReads(uid));
+    // metaSnap doesn't depend on anything below, and nothing below except Quick Reference depends
+    // on it — it used to be awaited alone, before even issuing the other reads, which cost a full
+    // extra round trip on every sign-in/reopen for no reason. Firing it in the same wave turns
+    // "meta, then everything else" into "everything (except Quick Reference — see below) at once."
+    // Quick Reference isn't read here at all anymore: it now lives in Drive, which needs
+    // state.vaultFolderId settled first, so migrateAndLoadQuickRefs() runs further down.
+    const [metaSnap, docsSnap, reminderSnap, prefetchedCatsSnap] = await (prefetchedReads || prefetchUserMetaReads(uid));
     if(!stillCurrent()) return;
     // metaSnap.data().vaultFolderId is checked, not just metaSnap.exists — an account from
     // before this cloud-storage redesign has an old-shape meta/vault doc (passphrase salt and
@@ -2195,11 +2218,11 @@ async function loadUserData(prefetchedReads){
     let catsSnap = null;
     if(alreadyProvisioned){
       state.vaultFolderId = metaSnap.data().vaultFolderId;
-      catsSnap = await loadDoc().collection('categories').orderBy('order').get();
-      if(!stillCurrent()) return;
+      catsSnap = prefetchedCatsSnap; // already fetched above, alongside meta/documents/reminderSettings
     } else {
-      // Needs state.driveAccessToken already set (it creates Drive folders) — the one read that
-      // can't run alongside the others above, since it's the only one Drive-dependent at all.
+      // Needs state.driveAccessToken already set (it creates Drive folders) — the one thing here
+      // that's genuinely Drive-dependent; provisionVault() sets state.categories itself once the
+      // fresh default categories exist, so the (necessarily empty) prefetched read is left unused.
       await provisionVault();
       if(!stillCurrent()) return;
     }
@@ -2534,15 +2557,27 @@ function renderLocked(app){
       <h1>Vault Locked</h1>
       <p>${hasBio ? 'Verifying with biometric unlock…' : 'Enter your PIN to continue.'}</p>
       ${hasBio ? `<button class="google-btn" id="bioUnlockBtn">${icon('shield',20)} Unlock with biometric</button>` : ''}
-      <input type="password" inputmode="numeric" pattern="[0-9]*" id="lockPinInput" placeholder="PIN" maxlength="8" style="text-align:center;font-size:22px;letter-spacing:8px;width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);margin-top:10px;background:var(--surface-container);color:var(--ink);" />
+      <div id="lockPinSection" style="${hasBio ? 'display:none;' : ''}">
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="lockPinInput" placeholder="PIN" maxlength="8" style="text-align:center;font-size:22px;letter-spacing:8px;width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);margin-top:10px;background:var(--surface-container);color:var(--ink);" />
+        <button class="primary" id="lockUnlockBtn" style="margin-top:10px;">Unlock</button>
+      </div>
+      ${hasBio ? `<button class="ghost" id="lockUsePinBtn">Use PIN instead</button>` : ''}
       <div class="error-text" id="lockErr" style="display:none;"></div>
-      <button class="primary" id="lockUnlockBtn">Unlock</button>
       <button class="ghost" id="lockSignOutBtn">Not you? Sign out</button>
       <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
   `;
   const pinInput = document.getElementById('lockPinInput');
   const errEl = document.getElementById('lockErr');
+  const pinSection = document.getElementById('lockPinSection');
+  const usePinBtn = document.getElementById('lockUsePinBtn');
+  // Reveals the PIN field on demand — either the user asks for it via "Use PIN instead", or
+  // biometric unlock fails/is cancelled and PIN becomes the only remaining path.
+  const revealPin = () => {
+    pinSection.style.display = '';
+    if(usePinBtn) usePinBtn.style.display = 'none';
+    pinInput.focus();
+  };
   const tryPin = async () => {
     const ok = await verifyAppLockPin(pinInput.value.trim());
     if(ok) markAppUnlocked();
@@ -2550,22 +2585,28 @@ function renderLocked(app){
   };
   document.getElementById('lockUnlockBtn').onclick = tryPin;
   pinInput.onkeydown = (e) => { if(e.key === 'Enter') tryPin(); };
-  pinInput.focus();
+  if(usePinBtn) usePinBtn.onclick = revealPin;
   const attemptBio = async () => {
     const ok = await verifyBiometricUnlock();
     if(ok) markAppUnlocked();
-    else { errEl.textContent = "Biometric unlock didn't go through — try your PIN instead."; errEl.style.display = 'block'; }
+    else {
+      errEl.textContent = "Biometric unlock didn't go through — try your PIN instead.";
+      errEl.style.display = 'block';
+      revealPin();
+    }
   };
   const bioBtn = document.getElementById('bioUnlockBtn');
   if(bioBtn) bioBtn.onclick = attemptBio;
-  // Biometric is the primary path when it's set up — try it automatically rather than making the
-  // user tap a button first, falling back to the PIN (already focused above) only if it fails or
-  // is cancelled. Guarded by bioAutoAttemptedThisLock so this fires once per lock, not once per
-  // render (renderLocked can be invoked again while still locked, e.g. by the visibilitychange
-  // listener below).
+  // Biometric is the primary path when it's set up — the PIN field starts hidden (above) and try
+  // biometric automatically rather than making the user tap a button first, revealing PIN (via
+  // revealPin) only if it fails or is cancelled, or the user explicitly asks for it. Guarded by
+  // bioAutoAttemptedThisLock so this fires once per lock, not once per render (renderLocked can be
+  // invoked again while still locked, e.g. by the visibilitychange listener below).
   if(hasBio && !bioAutoAttemptedThisLock){
     bioAutoAttemptedThisLock = true;
     attemptBio();
+  } else if(!hasBio){
+    pinInput.focus();
   }
   document.getElementById('lockSignOutBtn').onclick = () => signOutUser();
 }
@@ -2879,7 +2920,9 @@ function renderSettings(app){
       turnOffBiometricUnlock();
       toast('Biometric unlock turned off');
     }
-    render();
+    // No render() here — the checkbox already shows its own new state natively (that's what just
+    // triggered this handler), and nothing else on this screen reads hasBiometricUnlockConfigured().
+    // A full render() only flashed the whole Settings screen to reflect one already-visible switch.
   };
 
   const emailDigestSwitch = document.getElementById('emailDigestSwitch');
@@ -4045,6 +4088,7 @@ function renderModal(){
             <div class="crop-handle crop-handle-edge crop-handle-edge-h" data-handle="bottom"></div>
             <div class="crop-handle crop-handle-edge crop-handle-edge-v" data-handle="left"></div>
             <div class="crop-handle crop-handle-edge crop-handle-edge-v" data-handle="right"></div>
+            <div class="crop-magnifier" id="cropMagnifier"></div>
           </div>
           <label class="settings-row" style="cursor:pointer;">
             <span>Enhance for text (contrast + brightness)</span>
@@ -4460,17 +4504,6 @@ function readFileAsDataURL(file){
 /* ---------- camera capture ---------- */
 let pendingPageOcrTexts = []; // per-page OCR text, parallel to state.capturedPages — lets removing
                                // a page also cleanly drop just that page's text from pendingOcrText
-// Per-page auto-detected crop quad, parallel to state.capturedPages, in NATURAL image pixels (not
-// on-screen CSS px — those depend on whatever <img> currently happens to be displayed, which is
-// only ever correct for the page actually on screen right now). Detection takes a moment (OpenCV's
-// one-time load, then the per-image contour search), and capturing a document is normally a quick
-// multi-page burst — without this, moving to the next page before a slower page's detection
-// finished just discarded that result outright once it did complete (attemptAutoDetectQuad's own
-// guard against a stale page correctly stopped it from being APPLIED to the wrong page, but nothing
-// kept it around for when that page's own crop screen is opened again). Indexed directly (not
-// .push()ed) since a detection can finish for any page regardless of which one's on screen when it
-// does; removeCapturedPage() splices it to stay aligned when a page's index shifts.
-let pendingPageAutoQuads = [];
 // Every capturePage()/removeCapturedPage() call rebuilds this modal's whole innerHTML (to show the
 // new thumbnail, or reflect a removed page), which would otherwise silently reset every text field
 // back to its default each time — not just the category <select> this was originally written for.
@@ -4530,7 +4563,7 @@ function stopCamera(){
 }
 function openCameraModal(){
   state.modal = 'camera'; state.capturedPages = []; state.capturedPagesRaw = []; state.capturedPageEnhance = [];
-  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropEnhanceOn = false; state.cropDetecting = false;
+  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropEnhanceOn = true;
   state.renewalUploadTargetId = null;
   pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = ''; pendingCamCategory = null; pendingCamExpiry = '';
@@ -4543,15 +4576,15 @@ function openCameraModal(){
 function openCameraModalForRenewal(oldDocId){
   const oldDoc = state.documents.find(d => d.id === oldDocId);
   state.modal = 'camera'; state.capturedPages = []; state.capturedPagesRaw = []; state.capturedPageEnhance = [];
-  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropEnhanceOn = false; state.cropDetecting = false;
+  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropEnhanceOn = true;
   state.renewalUploadTargetId = oldDocId;
   pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = oldDoc ? oldDoc.title : ''; pendingCamCategory = oldDoc ? oldDoc.category : null;
   pendingCamExpiry = ''; pendingCamReminderDaysText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
 }
 
-// OpenCV.js is only needed for this one screen (auto edge-detection + perspective correction), so
-// it's loaded lazily on first use rather than blocking every app cold-start with an ~8MB script tag
+// OpenCV.js is only needed for this one screen (the crop step's perspective correction), so it's
+// loaded lazily on first use rather than blocking every app cold-start with an ~8MB script tag
 // like the always-needed libraries loaded up in <head>. The service worker still caches it (see
 // sw.js CACHE_FIRST_URLS) once it's been fetched once, so every use after the first works offline.
 const OPENCV_JS_URL = 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.1/dist/opencv.js';
@@ -4597,219 +4630,39 @@ function imageToNaturalCanvas(imgEl){
   return canvas;
 }
 
-// Turns an OpenCV minAreaRect() result ({center, size, angle}, all plain numbers — not a Mat) into
-// its 4 corner points by hand, rather than betting on a "give me the corners" helper's exact name
-// across OpenCV.js builds (several are inconsistent about this one specifically). Just rotating a
-// rectangle's own local corners by its own angle around its own center — plain trigonometry, no
-// OpenCV-specific API surface to get wrong.
-function cornersFromRotatedRect(rect){
-  const {center, size, angle} = rect;
-  const rad = angle * Math.PI / 180;
-  const cos = Math.cos(rad), sin = Math.sin(rad);
-  const hw = size.width / 2, hh = size.height / 2;
-  return [{x: -hw, y: -hh}, {x: hw, y: -hh}, {x: hw, y: hh}, {x: -hw, y: hh}]
-    .map(p => ({x: center.x + p.x * cos - p.y * sin, y: center.y + p.x * sin + p.y * cos}));
-}
+// Automatic edge-detection (Canny + contour search via OpenCV.js) was tried here and removed: on
+// real-world photos — uneven lighting, a desk/background close in color to the paper, a document
+// not filling the frame — it routinely failed to find a clean 4-point contour and silently fell
+// back to the plain centered default box below, which looks identical regardless of the actual
+// photo. That read as "auto-crop always cropping the same predefined frame," which is exactly what
+// was happening. Rather than keep tuning a classic CV heuristic blind (no way to test against real
+// devices/lighting from here), the effort went into making the manual crop itself precise and easy
+// to use instead — see the loupe in wireCropOverlay() below. Perspective correction (warpQuadToDataUrl)
+// still runs on whatever quad the user ends up with, auto- or hand-placed, so straightening/deskew
+// isn't lost — only the automatic guess at where the corners start is gone.
 
-function detectDocumentQuad(imgEl){
-  if(typeof cv === 'undefined' || !cv.Mat){
-    console.log('[auto-crop] OpenCV not ready yet — using the default box.');
-    return null;
-  }
-  const cleanup = [];
-  const track = (m) => { cleanup.push(m); return m; };
-  try{
-    const src = track(cv.imread(imageToNaturalCanvas(imgEl)));
-    const targetW = 700;
-    const scale = Math.min(1, targetW / src.cols);
-    const working = track(new cv.Mat());
-    cv.resize(src, working, new cv.Size(Math.max(1, Math.round(src.cols * scale)), Math.max(1, Math.round(src.rows * scale))), 0, 0, cv.INTER_AREA);
-
-    const gray = track(new cv.Mat());
-    cv.cvtColor(working, gray, cv.COLOR_RGBA2GRAY);
-    const blurred = track(new cv.Mat());
-    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
-    const edged = track(new cv.Mat());
-    cv.Canny(blurred, edged, 50, 150);
-    const kernel = track(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3)));
-    cv.dilate(edged, edged, kernel);
-
-    const contours = track(new cv.MatVector());
-    const hierarchy = track(new cv.Mat());
-    // EXTERNAL, not LIST: only the outermost boundary of each shape. A real document almost always
-    // has its own internal contours (printed borders, photos, blocks of text) that LIST would also
-    // return and that can end up competing with the actual page edge for "largest area."
-    cv.findContours(edged, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-    const workingArea = working.cols * working.rows;
-    // Every external contour above the area floor, largest first — the page is virtually always
-    // the single largest thing in frame, but keeping more than just the #1 largest guards against a
-    // strong shadow or a busy background occasionally outscoring the actual page.
-    const candidates = [];
-    for(let i = 0; i < contours.size(); i++){
-      const cnt = contours.get(i);
-      const area = Math.abs(cv.contourArea(cnt));
-      if(area > workingArea * 0.15) candidates.push({cnt, area});
-      else cnt.delete();
-    }
-    candidates.sort((a, b) => b.area - a.area);
-    console.log('[auto-crop] ' + candidates.length + ' candidate contour(s) above the area floor.');
-
-    let bestPts = null, usedFallbackRect = false;
-    for(const {cnt} of candidates){
-      const peri = cv.arcLength(cnt, true);
-      // A single fixed epsilon either over- or under-simplifies depending on how noisy a real
-      // photo's edges are (lighting, shadows, paper texture) — searching a small range and taking
-      // the first 4-point convex result is the standard, more reliable technique real scanner
-      // implementations use instead of one fixed guess.
-      for(const frac of [0.01, 0.02, 0.03, 0.05, 0.08]){
-        const approx = new cv.Mat();
-        cv.approxPolyDP(cnt, approx, frac * peri, true);
-        if(approx.rows === 4 && cv.isContourConvex(approx)){
-          bestPts = [];
-          for(let k = 0; k < 4; k++) bestPts.push({x: approx.data32S[k * 2] / scale, y: approx.data32S[k * 2 + 1] / scale});
-          approx.delete();
-          break;
-        }
-        approx.delete();
-      }
-      if(bestPts) break;
-    }
-
-    // No clean 4-point polygon at any epsilon — fall back to the largest candidate's own rotated
-    // bounding rectangle rather than giving up entirely. Not perspective-accurate the way a real
-    // 4-corner match is, but still genuinely fitted to whatever's actually in the photo, which
-    // beats a fixed centered box regardless of what the actual document looks like.
-    if(!bestPts && candidates.length){
-      usedFallbackRect = true;
-      const rect = cv.minAreaRect(candidates[0].cnt);
-      bestPts = cornersFromRotatedRect(rect).map(p => ({x: p.x / scale, y: p.y / scale}));
-    }
-    candidates.forEach(c => c.cnt.delete());
-
-    if(!bestPts){
-      console.log('[auto-crop] no candidate covered enough of the frame — using the default box.');
-      return null;
-    }
-    // Points come out in contour-walk order (or rotated-rect order), not tl/tr/bl/br — sort by
-    // position instead: the two smallest-y points are the top corners (left/right split by x),
-    // likewise for the bottom two.
-    bestPts.sort((a, b) => a.y - b.y);
-    const top2 = bestPts.slice(0, 2).sort((a, b) => a.x - b.x);
-    const bottom2 = bestPts.slice(2, 4).sort((a, b) => a.x - b.x);
-    console.log('[auto-crop] detected quad' + (usedFallbackRect ? ' (bounding-rect fallback)' : ' (4-point match)') + '.');
-    return {tl: top2[0], tr: top2[1], bl: bottom2[0], br: bottom2[1]};
-  } catch(e){
-    console.warn('[auto-crop] detection threw, using the default box.', e);
-    return null;
-  } finally {
-    cleanup.forEach(m => { try{ m.delete(); } catch(e){} });
-  }
-}
-
-// Set by wireCropOverlay() so a detection result that arrives after the initial paint (OpenCV's
-// first load can take a couple of seconds) can repaint the already-open screen without a full
-// renderModal() — which would tear down the drag gesture state this same screen already owns.
+// Set by wireCropOverlay() so drag handlers can trigger a repaint without a full renderModal(),
+// which would tear down the drag gesture state this same screen already owns.
 let cropRepaintCurrentQuad = null;
 
-// Kicks off auto edge-detection in the background as soon as the crop screen opens. Never blocks
-// the screen itself — the default centered box is already showing and fully usable the instant the
-// screen paints; this only *upgrades* state.cropQuad if and once a confident detection lands.
-// Shows the outcome directly in the crop screen (not just console.log) for a couple seconds —
-// checking a phone's own devtools console requires plugging it into a computer, a real barrier for
-// actually diagnosing this away from a desk. Whatever this says is exactly what the [auto-crop]
-// console lines would have said, just somewhere a phone can actually show it.
-function showCropDetectBadge(stage, text){
-  const el = document.getElementById('cropDetectingBadge');
-  const badge = el || document.createElement('div');
-  badge.className = 'crop-detecting';
-  badge.id = 'cropDetectingBadge';
-  badge.textContent = text;
-  if(!el) stage.appendChild(badge);
-  return badge;
-}
-// Loads a data URL into a detached <img> (never inserted into the DOM) — used so detection can run
-// against a SPECIFIC page's actual photo regardless of what's currently showing in the live
-// #cropImage element, which capturing (or re-opening) a different page replaces outright.
-function loadImageElement(dataUrl){
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('image_load_failed'));
-    img.src = dataUrl;
-  });
-}
+// Loupe sizing: a finger's own contact patch (and the hand behind it) covers a good 40-60px radius
+// around the actual touch point, so the magnifier needs to sit further from it than that to stay
+// visible — OFFSET_Y is measured to the loupe's CENTER, not its edge. ZOOM 2.5x is enough to see
+// exactly where an edge/corner sits relative to the document without the circle feeling cramped.
+const CROP_MAG_SIZE = 110, CROP_MAG_ZOOM = 2.5, CROP_MAG_OFFSET_Y = 95;
 
-// cropIndexAtStart identifies WHICH captured page this detection is for; sourceDataUrl is that
-// page's own raw capture, loaded independently (see loadImageElement) instead of trusting the live
-// #cropImage element to still be showing it. OpenCV's one-time load (a few seconds on a slow
-// connection) plus the per-image contour search means this routinely doesn't finish before someone
-// has already moved on to capturing the next page — previously that meant the whole attempt was
-// just abandoned (worse: abandoned before ever running, since the old code checked "is this page
-// still on screen" BEFORE running detection at all) the instant the page changed, so a multi-page
-// capture would only ever get automatic detection on whichever page happened to be showing at the
-// exact moment OpenCV finished loading. Detection now always runs to completion and its result is
-// saved in pendingPageAutoQuads keyed by page, independent of whichever page is on screen when it
-// finishes — initQuad() checks there first before ever falling back to the plain default box.
-async function attemptAutoDetectQuad(cropIndexAtStart, sourceDataUrl){
-  const isCurrentPage = () => state.cropIndex === cropIndexAtStart;
-  if(isCurrentPage()){
-    const stage = document.getElementById('cropStage');
-    if(stage){ state.cropDetecting = true; showCropDetectBadge(stage, 'Detecting edges…'); }
-  }
-  let resultText = 'Auto-detect: unexpected error — adjust manually';
-  try{
-    await waitForOpenCvReady();
-    console.log('[auto-crop] OpenCV ready.');
-    const offscreenImg = await loadImageElement(sourceDataUrl);
-    const detected = detectDocumentQuad(offscreenImg);
-    if(!detected){
-      pendingPageAutoQuads[cropIndexAtStart] = null;
-      resultText = 'Auto-detect: no match found — adjust manually';
-      return;
-    }
-    pendingPageAutoQuads[cropIndexAtStart] = detected; // natural-pixel space — saved regardless of what's on screen now
-    resultText = 'Edges detected automatically';
-    // Only the LIVE screen needs the immediate repaint — if the user has moved on, this page's
-    // result is already saved above for whenever its crop screen is next opened (fresh or re-edit).
-    if(!isCurrentPage()) return;
-    const liveImg = document.getElementById('cropImage');
-    if(!liveImg) return;
-    const scaleX = liveImg.clientWidth / liveImg.naturalWidth, scaleY = liveImg.clientHeight / liveImg.naturalHeight;
-    const toScreen = (p) => ({x: p.x * scaleX, y: p.y * scaleY});
-    state.cropQuad = {tl: toScreen(detected.tl), tr: toScreen(detected.tr), bl: toScreen(detected.bl), br: toScreen(detected.br)};
-    if(cropRepaintCurrentQuad) cropRepaintCurrentQuad();
-  } catch(e){
-    resultText = 'Auto-detect: unavailable right now — adjust manually';
-    console.warn('Auto edge-detection unavailable — the default crop box still works, just needs a manual adjust.', e);
-  } finally {
-    state.cropDetecting = false;
-    // A stale result for a page the user has already moved past has nothing to show on whatever
-    // IS on screen now — only touch the badge if this page is still the one showing.
-    if(isCurrentPage()){
-      const stageNow = document.getElementById('cropStage');
-      if(stageNow && resultText){
-        const badge = showCropDetectBadge(stageNow, resultText);
-        setTimeout(() => { if(badge.textContent === resultText) badge.remove(); }, 2500);
-      } else if(stageNow){
-        const el = document.getElementById('cropDetectingBadge');
-        if(el) el.remove();
-      }
-    }
-  }
-}
-
-// Wires the crop step's drag interactions: a default centered quad on first paint (immediately
-// upgraded in the background if auto-detection finds the document's real edges — see
-// attemptAutoDetectQuad above), a plain move-drag on the quad itself, a free per-corner drag on
-// each corner handle — unlike the old axis-aligned box, each corner moves independently so an
-// angled photo can be corrected to its real edges, not just cropped to a straight rectangle — and
-// an edge-midpoint drag on each of 4 additional handles, which moves BOTH corners on that side
-// together for nudging a whole edge at once. The stage is an inline-block wrapper sized to the
-// image's own rendered box (see the .crop-stage CSS), so stage.clientWidth/Height are exactly the
-// image's on-screen size and every point here lands directly in the image's own coordinate space —
-// no letterboxing offset math needed.
+// Wires the crop step's drag interactions: a default centered quad on first paint, a plain
+// move-drag on the quad itself, a free per-corner drag on each corner handle — unlike an
+// axis-aligned box, each corner moves independently so an angled photo can be corrected to its real
+// edges, not just cropped to a straight rectangle — and an edge-midpoint drag on each of 4
+// additional handles, which moves BOTH corners on that side together for nudging a whole edge at
+// once. A loupe (showMagnifier/updateMagnifier below) tracks corner/edge drags so the exact crop
+// point is always visible somewhere the dragging finger isn't covering it. The stage is an inline-block
+// wrapper sized to the image's own rendered box (see the .crop-stage CSS), so stage.clientWidth/
+// Height are exactly the image's on-screen size and every point here lands directly in the image's
+// own coordinate space — no letterboxing offset math needed.
 function wireCropOverlay(){
+  waitForOpenCvReady().catch(() => {}); // warm OpenCV early so it's ready by the time confirmCrop() needs it for perspective correction
   const img = document.getElementById('cropImage');
   const stage = document.getElementById('cropStage');
   const svg = document.getElementById('cropMask');
@@ -4831,6 +4684,7 @@ function wireCropOverlay(){
     left: stage.querySelector('.crop-handle[data-handle="left"]')
   };
   const EDGE_CORNERS = {top: ['tl', 'tr'], right: ['tr', 'br'], bottom: ['bl', 'br'], left: ['tl', 'bl']};
+  const magnifier = document.getElementById('cropMagnifier');
   if(state.cropEnhanceOn) img.style.filter = ENHANCE_FILTER;
 
   function paintQuad(){
@@ -4865,21 +4719,9 @@ function wireCropOverlay(){
     // the first is the standard way to guarantee a real layout/paint has completed first, regardless
     // of which of the two paths below reached here.
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      if(state.cropQuad) return; // e.g. auto-detection somehow already landed a quad first
-      // Detection for THIS exact page may have already finished in the background while a later
-      // page was on screen (see attemptAutoDetectQuad/pendingPageAutoQuads) — use that instead of
-      // ever showing the plain default box or re-running detection from scratch.
-      const already = pendingPageAutoQuads[state.cropIndex];
-      if(already){
-        const scaleX = img.clientWidth / img.naturalWidth, scaleY = img.clientHeight / img.naturalHeight;
-        const toScreen = (p) => ({x: p.x * scaleX, y: p.y * scaleY});
-        state.cropQuad = {tl: toScreen(already.tl), tr: toScreen(already.tr), bl: toScreen(already.bl), br: toScreen(already.br)};
-        paintQuad();
-        return;
-      }
+      if(state.cropQuad) return;
       state.cropQuad = defaultQuad();
       paintQuad();
-      attemptAutoDetectQuad(state.cropIndex, state.cropSourceDataUrl);
     }));
   }
   if(img.complete && img.naturalWidth) initQuad(); else img.onload = initQuad;
@@ -4889,12 +4731,47 @@ function wireCropOverlay(){
   let startQuad = null;
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
 
+  // The point the loupe should mirror: a corner handle's own point, or an edge handle's midpoint
+  // between the two corners it drags together — i.e. wherever the visible handle actually sits.
+  function dragPointFor(mode, quad){
+    if(EDGE_CORNERS[mode]){
+      const [a, b] = EDGE_CORNERS[mode];
+      return {x: (quad[a].x + quad[b].x) / 2, y: (quad[a].y + quad[b].y) / 2};
+    }
+    return quad[mode];
+  }
+  function showMagnifier(){
+    if(!magnifier) return;
+    magnifier.style.backgroundImage = `url("${state.cropSourceDataUrl}")`;
+    magnifier.style.display = 'block';
+  }
+  function hideMagnifier(){ if(magnifier) magnifier.style.display = 'none'; }
+  function updateMagnifier(pt){
+    if(!magnifier) return;
+    const stageW = stage.clientWidth, stageH = stage.clientHeight;
+    const half = CROP_MAG_SIZE / 2;
+    let mx = clamp(pt.x, half, stageW - half);
+    let my = pt.y - CROP_MAG_OFFSET_Y;
+    if(my - half < 0) my = pt.y + CROP_MAG_OFFSET_Y; // too close to the top — show it below instead
+    my = clamp(my, half, stageH - half);
+    magnifier.style.left = (mx - half) + 'px';
+    magnifier.style.top = (my - half) + 'px';
+    magnifier.style.backgroundSize = (stageW * CROP_MAG_ZOOM) + 'px ' + (stageH * CROP_MAG_ZOOM) + 'px';
+    magnifier.style.backgroundPosition = (-(pt.x * CROP_MAG_ZOOM - half)) + 'px ' + (-(pt.y * CROP_MAG_ZOOM - half)) + 'px';
+  }
+
   function onPointerDown(mode, e){
     e.preventDefault(); e.stopPropagation();
     dragMode = mode;
     startPointer = {x: e.clientX, y: e.clientY};
     startQuad = JSON.parse(JSON.stringify(state.cropQuad));
     stage.setPointerCapture(e.pointerId);
+    // No loupe for a whole-quad move — there's no single precise point to zoom in on, and the
+    // finger isn't hiding an edge/corner the way it does for the other drag modes.
+    if(mode !== 'move'){
+      showMagnifier();
+      updateMagnifier(dragPointFor(mode, state.cropQuad));
+    }
   }
   quadPoly.addEventListener('pointerdown', (e) => onPointerDown('move', e));
   Object.keys(handles).forEach(k => handles[k].addEventListener('pointerdown', (e) => onPointerDown(k, e)));
@@ -4932,8 +4809,9 @@ function wireCropOverlay(){
       }};
     }
     paintQuad();
+    if(dragMode !== 'move') updateMagnifier(dragPointFor(dragMode, state.cropQuad));
   });
-  const endDrag = () => { dragMode = null; };
+  const endDrag = () => { dragMode = null; hideMagnifier(); };
   stage.addEventListener('pointerup', endDrag);
   stage.addEventListener('pointercancel', endDrag);
 }
@@ -4972,9 +4850,8 @@ async function capturePage(){
   const dataUrl = await captureFrameAsDataUrl(video);
   state.cropIndex = state.capturedPages.length; // "append" position — not pushed yet
   state.cropSourceDataUrl = dataUrl;
-  state.cropEnhanceOn = false;
-  state.cropQuad = null; // computed on first paint, once the image's on-screen size is known (or auto-detected)
-  state.cropDetecting = false;
+  state.cropEnhanceOn = true;
+  state.cropQuad = null; // computed on first paint, once the image's on-screen size is known
   renderModal();
 }
 
@@ -4985,8 +4862,7 @@ function openCropForExistingPage(index){
   state.cropIndex = index;
   state.cropSourceDataUrl = state.capturedPagesRaw[index];
   state.cropEnhanceOn = !!state.capturedPageEnhance[index];
-  state.cropQuad = null; // re-editing starts from a fresh centered/auto-detected quad, not the exact previous one
-  state.cropDetecting = false;
+  state.cropQuad = null; // re-editing starts from a fresh centered quad, not the exact previous one
   renderModal();
 }
 
@@ -5076,7 +4952,7 @@ async function confirmCrop(){
   const isNewPage = index === state.capturedPages.length;
   const rawSrc = state.cropSourceDataUrl;
   const enhanceOn = state.cropEnhanceOn;
-  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropDetecting = false;
+  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null;
   cropRepaintCurrentQuad = null;
 
   if(isNewPage){
@@ -5119,7 +4995,7 @@ function cancelCrop(){
   // A brand-new capture that's cancelled was never pushed to capturedPages — nothing to roll back
   // beyond closing the overlay. Cancelling an edit of an existing page leaves its stored image
   // untouched, since confirmCrop() never ran.
-  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropDetecting = false;
+  state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null;
   cropRepaintCurrentQuad = null;
   renderModal();
 }
@@ -5130,7 +5006,6 @@ function removeCapturedPage(index){
   state.capturedPagesRaw.splice(index, 1);
   state.capturedPageEnhance.splice(index, 1);
   pendingPageOcrTexts.splice(index, 1);
-  pendingPageAutoQuads.splice(index, 1);
   pendingOcrText = pendingPageOcrTexts.join('\n').trim();
   renderModal();
 }
