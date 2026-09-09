@@ -130,6 +130,12 @@
   .gicon{width:18px;height:18px;flex:none;}
   .demo-note{margin-top:16px;font-size:11.5px;color:var(--ink-soft);background:var(--surface-container);border-radius:12px;padding:10px 12px;text-align:left;line-height:1.5;}
   .privacy-link{display:block;margin-top:14px;font-size:12px;color:var(--ink-soft);text-decoration:underline;background:none;border:none;padding:0;cursor:pointer;font-family:inherit;}
+  /* A <button> stays shrink-to-fit width even at display:block, so .login-screen's inherited
+     text-align:center only centers the text WITHIN that tight little box, never the box itself —
+     it was sitting flush left instead of centered like .version-tag right below it. margin:auto is
+     what actually centers a shrink-to-fit block box. Scoped to .login-screen specifically so the
+     Settings instance (left-aligned with its own version-tag, see below) is untouched. */
+  .login-screen .privacy-link{margin-left:auto;margin-right:auto;}
   /* In Settings' About section, .version-tag sits directly under .privacy-link as one left-aligned
      group, not as its own isolated centered footer (the .login-screen/checking/locked/vault-footer
      contexts it was designed for, where there's nothing beside it to align with) — override just
@@ -662,7 +668,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.09 · 08:53';
+const APP_VERSION = '2026.09.09 · 08:57';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -987,6 +993,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.09 · 08:57',
+    items: [
+      "Centered \"Privacy Policy\" on the sign-in screen so it lines up with the version number below it, instead of sitting flush left."
+    ]
+  },
   {
     version: '2026.09.09 · 08:53',
     items: [
