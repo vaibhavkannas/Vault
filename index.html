@@ -380,10 +380,18 @@
   .crop-mask{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
   .crop-quad{pointer-events:auto;cursor:move;touch-action:none;}
   .crop-handle{position:absolute;width:40px;height:40px;margin:-20px;border-radius:50%;background:rgba(26,115,232,0.35);border:2px solid var(--brass);touch-action:none;cursor:grab;}
+  /* The visible dot/pill stays exactly this size — this invisible layer is what a finger actually
+     has to land on, sized well past it (a fingertip's contact patch is bigger than a 14px-thin edge
+     pill). Centered on the handle's own center regardless of its margin-based positioning trick, so
+     this only ever makes a handle MORE forgiving to grab, never shifts where it visually sits. */
+  .crop-handle::before{content:'';position:absolute;top:50%;left:50%;width:52px;height:52px;transform:translate(-50%,-50%);}
   /* Edge-midpoint handles: dragging one moves its two adjacent corners together (see
      wireCropOverlay's 'top'/'right'/'bottom'/'left' drag modes) rather than reshaping just one
      corner — a pill shape distinguishes them from the round corner handles at a glance. */
   .crop-handle-edge{border-radius:999px;background:rgba(26,115,232,0.3);cursor:move;}
+  /* Slightly smaller than a corner's hit-area (above) so a tap that's genuinely ambiguous between a
+     corner and its neighboring edge favors the corner — the more common, more precise target. */
+  .crop-handle-edge::before{width:44px;height:44px;}
   .crop-handle-edge-h{width:34px;height:14px;margin:-7px -17px;}
   .crop-handle-edge-v{width:14px;height:34px;margin:-17px -7px;}
   /* Loupe shown while dragging a corner/edge handle — a finger covers the exact point it's
@@ -654,7 +662,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.09 · 08:19';
+const APP_VERSION = '2026.09.09 · 08:53';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -979,6 +987,13 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.09 · 08:53',
+    items: [
+      "Found the actual cause of zoom still working from inside a document you're viewing: on some Android/Chrome versions, touch-action alone doesn't stop native pinch-zoom on a scrollable area, so the browser was zooming the whole page in parallel with the document's own pinch-to-zoom. Now explicitly blocked the moment a second finger touches down.",
+      "Crop screen: every handle (especially the thin edge ones) now has a bigger invisible touch target than its visible size, so it's easier to grab precisely — a tap ambiguous between a corner and its neighboring edge favors the corner."
+    ]
+  },
   {
     version: '2026.09.09 · 08:19',
     items: [
@@ -4091,14 +4106,18 @@ function renderModal(){
               <path id="cropMaskPath" fill="rgba(0,0,0,0.45)" fill-rule="evenodd"></path>
               <polygon id="cropQuadPoly" class="crop-quad" fill="rgba(26,115,232,0.16)" stroke="#1a73e8" stroke-width="2"></polygon>
             </svg>
-            <div class="crop-handle" data-handle="tl"></div>
-            <div class="crop-handle" data-handle="tr"></div>
-            <div class="crop-handle" data-handle="bl"></div>
-            <div class="crop-handle" data-handle="br"></div>
+            <!-- Corner handles come AFTER the edge handles in DOM order (unusual for markup that
+                 otherwise lists tl/tr/bl/br first) so their larger invisible hit-area (see
+                 .crop-handle::before) paints on top where it overlaps a neighboring edge handle's —
+                 a tap ambiguous between the two should grab the corner, the more precise target. -->
             <div class="crop-handle crop-handle-edge crop-handle-edge-h" data-handle="top"></div>
             <div class="crop-handle crop-handle-edge crop-handle-edge-h" data-handle="bottom"></div>
             <div class="crop-handle crop-handle-edge crop-handle-edge-v" data-handle="left"></div>
             <div class="crop-handle crop-handle-edge crop-handle-edge-v" data-handle="right"></div>
+            <div class="crop-handle" data-handle="tl"></div>
+            <div class="crop-handle" data-handle="tr"></div>
+            <div class="crop-handle" data-handle="bl"></div>
+            <div class="crop-handle" data-handle="br"></div>
             <div class="crop-magnifier" id="cropMagnifier"></div>
           </div>
           <label class="settings-row" style="cursor:pointer;">
@@ -5250,14 +5269,24 @@ function wireViewFileZoom(contentEl){
     return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
   };
 
+  // touch-action:pan-x pan-y (see #viewFileContent's CSS) is supposed to stop the browser's own
+  // native pinch-zoom everywhere, including here, leaving pinch free for this Pointer-Events-based
+  // handler to interpret on its own — but on a scrollable overflow:auto element specifically (which
+  // this is), some Android/Chrome versions still let native pinch-zoom activate anyway, zooming the
+  // whole page instead of just this element. touch-action alone isn't enough there, so this also
+  // calls preventDefault() itself, directly on the two-finger gesture, the moment it's recognized —
+  // the standard, more forceful way to suppress default touch handling regardless of what
+  // touch-action says. Scoped to exactly the 2-pointer case so ordinary single-finger scrolling
+  // (which relies on the browser's own native scroll, not custom JS) is completely unaffected.
   contentEl.addEventListener('pointerdown', (e) => {
     pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
-    if(pointers.size === 2){ pinchStartDist = distance(); pinchStartZoom = zoom; }
+    if(pointers.size === 2){ pinchStartDist = distance(); pinchStartZoom = zoom; e.preventDefault(); }
   });
   contentEl.addEventListener('pointermove', (e) => {
     if(!pointers.has(e.pointerId)) return;
     pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
     if(pointers.size === 2 && pinchStartDist > 0){
+      e.preventDefault();
       zoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, pinchStartZoom * (distance() / pinchStartDist)));
       applyZoom();
     }
