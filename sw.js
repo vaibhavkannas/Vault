@@ -56,7 +56,7 @@ const CACHE_VERSION = '5';
 const SHELL_CACHE = 'vault-shell-v' + CACHE_VERSION;
 
 // Same-origin, could change between deploys — always prefer a live fetch.
-const NETWORK_FIRST_REL = ['./index.html', './manifest.json', './icon.svg', './icon-180.png'];
+const NETWORK_FIRST_REL = ['./index.html', './manifest.json', './icon.svg', './icon-180.png', './icon-192.png', './icon-512.png'];
 // External libraries pinned to an exact version in the URL itself — that exact URL's content
 // never changes, so serving the cached copy immediately, before even checking the network, is
 // always safe.
