@@ -668,7 +668,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.12 · 13:41';
+const APP_VERSION = '2026.09.12 · 13:47';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -993,6 +993,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.12 · 13:47',
+    items: [
+      "Fixed signing up as a new user sometimes needing several attempts. A brand-new account needs two Google popups back to back (sign-in, then a one-time Drive permission) — if only the second one didn't go through, retrying used to repeat both from scratch every time. It now picks up right where it left off with a single \"Continue\" tap instead of a full sign-in again."
+    ]
+  },
   {
     version: '2026.09.12 · 13:41',
     items: [
@@ -2725,6 +2731,22 @@ function renderLogin(app){
       maybeShowChangelog();
     } catch(e){
       console.error('Sign-in failed', e);
+      // A brand-new account has no Drive grant yet, so acquireDriveAccess() above always falls
+      // through to the one-time consent popup — a SECOND popup chained right after the sign-in
+      // one, and therefore a second, independent chance for something to go wrong (a stricter
+      // browser's popup-blocking heuristics, the account-picker/consent screen being dismissed, a
+      // slow backend exchange). If state.user is already set here, that first popup already
+      // succeeded — only this second step failed. Retrying used to mean repeating BOTH popups from
+      // scratch every time (throwing away a perfectly good sign-in and doubling the failure surface
+      // on every attempt) — exactly what read as "having to sign in over and over." Routing to the
+      // existing reconnect screen instead means a retry only ever has to survive the one remaining
+      // popup (completeReconnect() below calls just grantDriveAccessOneTime(), not signInWithPopup).
+      if(state.user){
+        state.screen = 'reconnect';
+        render();
+        armExitGuardIfIdle();
+        return;
+      }
       btn.disabled = false;
       btn.textContent = 'Sign in with Google';
       // A blocked popup is a distinct, actionable case — the generic "please try again" message
