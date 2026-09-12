@@ -668,7 +668,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.12 · 14:14';
+const APP_VERSION = '2026.09.12 · 21:40';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -802,7 +802,9 @@ const state = {
   // than just cropped straight. On-screen CSS px, relative to the crop <img>.
   cropQuad: null, // {tl:{x,y}, tr:{x,y}, bl:{x,y}, br:{x,y}}
   cropEnhanceOn: true, // live Enhance toggle state for the open crop screen — on by default, user can uncheck
-  openActionMenu: null, // doc id whose card's ⋮ overflow menu is currently open, or null
+  openActionMenu: null, // instance key (see renderDocCard's opts.instanceKey — distinguishes a
+                        // pinned-section card from its own-category copy of the same doc) whose
+                        // card's ⋮ overflow menu is currently open, or null
   offlineDocIds: new Set(), // doc ids with a file blob cached in IndexedDB for offline viewing
   isOfflineMode: false, // true when the vault opened with no Drive/Firestore connection at all
   reminderSettings: {emailDigestEnabled: false, pushEnabled: false}, // loaded in loadUserData(), see meta/reminderSettings
@@ -993,6 +995,14 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.12 · 21:40',
+    items: [
+      "Fixed: pinning a document could leave two copies of its ⋮ menu open at once (it shows once under Pinned and once under its own category).",
+      "Fixed: the archived documents view could become a dead end with no way back once the last archived item was restored.",
+      "Fixed: the app lock setup screen no longer looks stuck after saving a PIN on devices offering biometric unlock — it now clearly shows the PIN was saved before offering the extra biometric step."
+    ]
+  },
   {
     version: '2026.09.12 · 14:14',
     items: [
@@ -3260,7 +3270,7 @@ function renderVault(app){
 
       ${pinnedDocs.length ? `
         <div class="section-title">Pinned</div>
-        <div class="doc-card-grid">${pinnedDocs.map((d,i) => renderDocCard(d, {showCategory: true, i})).join('')}</div>
+        <div class="doc-card-grid">${pinnedDocs.map((d,i) => renderDocCard(d, {showCategory: true, i, instanceKey: 'pinned:'+d.id})).join('')}</div>
       ` : ''}
 
       ${!state.searchQuery && !state.showArchived && upcoming.length ? `
@@ -3295,9 +3305,11 @@ function renderVault(app){
           <span class="cat-title-label">${categoryIconHtml(meta,15)} ${escapeHtml(meta.label)}</span>
           <span class="cat-count">${grouped[cat].length}<span class="cat-chevron ${isCollapsed ? 'collapsed' : ''}">${icon('chevronDown',15)}</span></span>
         </div>
-        <div class="doc-card-grid-wrap ${isCollapsed ? 'is-collapsed' : ''}" data-cat-panel="${cat}"><div class="doc-card-grid-inner ${isCollapsed ? '' : 'overflow-visible'}"><div class="doc-card-grid">${grouped[cat].map((d,i) => renderDocCard(d, {i})).join('')}</div></div></div>
+        <div class="doc-card-grid-wrap ${isCollapsed ? 'is-collapsed' : ''}" data-cat-panel="${cat}"><div class="doc-card-grid-inner ${isCollapsed ? '' : 'overflow-visible'}"><div class="doc-card-grid">${grouped[cat].map((d,i) => renderDocCard(d, {i, instanceKey: 'cat:'+cat+':'+d.id})).join('')}</div></div></div>
       `; }).join('')}
-      ${archivedCount ? `<button class="archive-toggle" id="archiveToggleBtn">${state.showArchived ? `${icon('back',14)} Back to active documents` : `View archived (${archivedCount})`}</button>` : ''}
+      ${state.showArchived
+        ? `<button class="archive-toggle" id="archiveToggleBtn">${icon('back',14)} Back to active documents</button>`
+        : archivedCount ? `<button class="archive-toggle" id="archiveToggleBtn">View archived (${archivedCount})</button>` : ''}
       ${!state.showArchived && deletedCount ? `<button class="archive-toggle" id="deletedToggleBtn">Recently deleted (${deletedCount})</button>` : ''}
       <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
@@ -3444,8 +3456,8 @@ function renderVault(app){
   document.querySelectorAll('[data-menu-toggle]').forEach(el => {
     el.onclick = (e) => {
       e.stopPropagation();
-      const id = el.getAttribute('data-menu-toggle');
-      state.openActionMenu = state.openActionMenu === id ? null : id;
+      const key = el.getAttribute('data-menu-toggle'); // per-card-render instance key, not a bare doc id
+      state.openActionMenu = state.openActionMenu === key ? null : key;
       render();
     };
   });
@@ -3476,7 +3488,7 @@ function renderVault(app){
   actionMenuOutsideClickHandler = null;
   if(state.openActionMenu){
     actionMenuOutsideClickHandler = () => {
-      const openId = state.openActionMenu;
+      const openKey = state.openActionMenu; // per-card-render instance key, not a bare doc id
       state.openActionMenu = null;
       actionMenuOutsideClickHandler = null;
       // A plain click ANYWHERE ELSE in the app while a menu happens to be open is an extremely
@@ -3485,9 +3497,9 @@ function renderVault(app){
       // look like the whole app was refreshing on every unrelated tap. Removing just this one
       // menu (and fixing up the toggle button's own state) is the same targeted-DOM-update
       // approach category-collapse already uses instead of a full render().
-      const menuEl = document.getElementById('actionMenu-' + openId);
+      const menuEl = document.getElementById('actionMenu-' + openKey);
       if(menuEl) menuEl.remove();
-      const toggleBtn = document.querySelector(`[data-menu-toggle="${openId}"]`);
+      const toggleBtn = document.querySelector(`[data-menu-toggle="${openKey}"]`);
       if(toggleBtn) toggleBtn.setAttribute('aria-expanded', 'false');
     };
     document.addEventListener('click', actionMenuOutsideClickHandler, {once: true});
@@ -3549,7 +3561,11 @@ function renderDocCard(d, opts){
     const style = isExpired ? 'background:var(--danger-bg);color:var(--danger);' : days<=7 ? 'background:var(--danger-bg);color:var(--danger);' : days<=30 ? 'background:var(--warning-bg);color:var(--warning);' : 'background:var(--success-bg);color:var(--success);';
     expiryBadge = `<span class="doc-expiry" style="${style}">${isExpired ? 'Expired' : 'Expires'} ${formatExpiryDate(d.expiry)}</span>`;
   }
-  const menuOpen = state.openActionMenu === d.id;
+  // A pinned doc renders twice (once here, once again under its own category — see the
+  // Pinned/grouped call sites), sharing the same d.id. instanceKey disambiguates the two DOM
+  // instances so opening one card's ⋮ menu doesn't also flag the other instance's menu as open.
+  const instanceKey = opts.instanceKey || d.id;
+  const menuOpen = state.openActionMenu === instanceKey;
   // Denormalized both directions (see confirmRenewExpired) so either end of the pair can show a
   // note with no extra lookup beyond the already-loaded state.documents list.
   const supersededByDoc = d.supersededBy ? state.documents.find(x => x.id === d.supersededBy) : null;
@@ -3575,9 +3591,9 @@ function renderDocCard(d, opts){
           <button class="chip-btn secondary" data-share-doc="${d.id}">Share</button>
           ${isExpired && !d.archived ? `<button class="chip-btn danger" data-renew-doc="${d.id}">Renew</button>` : ''}
           <div class="action-menu-wrap">
-            <button class="icon-only-btn small" data-menu-toggle="${d.id}" aria-label="More actions" aria-haspopup="true" aria-expanded="${menuOpen}">${icon('more',18)}</button>
+            <button class="icon-only-btn small" data-menu-toggle="${instanceKey}" aria-label="More actions" aria-haspopup="true" aria-expanded="${menuOpen}">${icon('more',18)}</button>
             ${menuOpen ? `
-              <div class="action-menu" id="actionMenu-${d.id}">
+              <div class="action-menu" id="actionMenu-${instanceKey}">
                 <button data-menu-action="pin" data-doc="${d.id}">${icon('star',15)} ${d.pinned ? 'Unpin' : 'Pin to top'}</button>
                 <button data-menu-action="edit" data-doc="${d.id}">${icon('edit',15)} Edit</button>
                 ${!d.ocrText ? `<button data-menu-action="extractText" data-doc="${d.id}">${icon('search',15)} Extract text</button>` : ''}
@@ -4294,11 +4310,11 @@ function renderModal(){
     overlay.innerHTML = `
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
-        <h3>${alreadyEnabled ? 'Change PIN' : 'Set up app lock'}</h3>
-        <p class="sub">A quick PIN to re-open Vault, on top of staying signed in to Google. Stored only on this device — a new device starts fresh.</p>
-        <label class="field-label">New PIN (4–8 digits)</label>
+        <h3 id="lockSetupTitle">${alreadyEnabled ? 'Change PIN' : 'Set up app lock'}</h3>
+        <p class="sub" id="lockSetupSub">A quick PIN to re-open Vault, on top of staying signed in to Google. Stored only on this device — a new device starts fresh.</p>
+        <label class="field-label" id="newLockPinLabel">New PIN (4–8 digits)</label>
         <input type="password" inputmode="numeric" pattern="[0-9]*" id="newLockPin" maxlength="8" />
-        <label class="field-label">Confirm PIN</label>
+        <label class="field-label" id="confirmLockPinLabel">Confirm PIN</label>
         <input type="password" inputmode="numeric" pattern="[0-9]*" id="confirmLockPin" maxlength="8" />
         <div class="error-text" id="lockSetupErr" style="display:none;"></div>
         <button class="primary" id="saveLockPinBtn">${alreadyEnabled ? 'Update PIN' : 'Turn on app lock'}</button>
@@ -4331,6 +4347,20 @@ function renderModal(){
         // requires is saved. This used to close unconditionally right here, which meant the only
         // way to ever reach biometric setup was reopening this same modal via "Change PIN"
         // afterward — both for first-time setup and for re-enabling after turning it off.
+        //
+        // But leaving the form exactly as it looked pre-save reads as a silent failure — the PIN
+        // step genuinely already succeeded (isAppLockEnabled() is true, the hash is stored), so
+        // update the existing DOM in place to say so before handing off to the biometric step.
+        // Deliberately not re-rendering the modal: that would tear down this very closure
+        // (bioSetupOfferedThisModal, errEl) that the rest of this handler and setupBioBtn rely on.
+        const titleEl = document.getElementById('lockSetupTitle');
+        const subEl = document.getElementById('lockSetupSub');
+        if(titleEl) titleEl.textContent = alreadyEnabled ? 'PIN updated — add biometric too?' : 'App lock is on — add biometric too?';
+        if(subEl) subEl.textContent = 'Your PIN is saved on this device. Add a fingerprint or face unlock for faster access next time.';
+        ['newLockPinLabel', 'newLockPin', 'confirmLockPinLabel', 'confirmLockPin', 'saveLockPinBtn'].forEach(id => {
+          const el = document.getElementById(id);
+          if(el) el.style.display = 'none';
+        });
         return;
       }
       closeModal();
