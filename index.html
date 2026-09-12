@@ -668,7 +668,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.09 · 08:57';
+const APP_VERSION = '2026.09.12 · 13:41';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -993,6 +993,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.12 · 13:41',
+    items: [
+      "Deleting your account no longer requires signing all the way out and back in first when Google asks for a fresh sign-in — it now re-confirms it's you right in the same screen (a quick Google popup, same as signing in) and finishes the delete immediately, without ending your session first."
+    ]
+  },
   {
     version: '2026.09.09 · 08:57',
     items: [
@@ -5947,9 +5953,32 @@ async function deleteEverything(){
     armExitGuardIfIdle();
   } catch(e){
     console.error('Delete account failed', e);
+    // By this point everything else above (Firestore data, the Drive folder) is already gone —
+    // only auth.currentUser.delete() itself failed, because Firebase blocks deleting the account
+    // record without a *recent* sign-in (a defense against a stale/stolen session doing something
+    // this sensitive). Previously this just told the user to sign all the way out and back in —
+    // real friction for one missing step. Re-authenticating right here, with the same Google popup
+    // already familiar from signing in, confirms it's really them without ever signing them out,
+    // so the one remaining step (deleting the auth record) can finish immediately after.
     if(e && e.code === 'auth/requires-recent-login'){
-      if(errEl){ errEl.textContent = 'For your security, Google requires a recent sign-in before deleting your account. Sign out, sign back in, then try deleting again right away.'; errEl.style.display = 'block'; }
-    } else if(errEl){
+      if(btn) btn.textContent = "Confirming it's really you…";
+      try{
+        await auth.currentUser.reauthenticateWithPopup(new firebase.auth.GoogleAuthProvider());
+        await auth.currentUser.delete();
+        toast('Account and vault deleted');
+        clearOfflineCache();
+        resetToLoggedOutState();
+        render();
+        armExitGuardIfIdle();
+        return;
+      } catch(reauthErr){
+        console.error('Re-authentication before delete failed', reauthErr);
+        if(errEl){ errEl.textContent = "Couldn't confirm it was you — try again, or sign out and back in first."; errEl.style.display = 'block'; }
+        if(btn){ btn.disabled = false; btn.textContent = 'Permanently delete everything'; }
+        return;
+      }
+    }
+    if(errEl){
       errEl.textContent = friendlyCloudError(e);
       errEl.style.display = 'block';
     }
