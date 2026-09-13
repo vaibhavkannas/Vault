@@ -698,7 +698,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.13 · 14:43';
+const APP_VERSION = '2026.09.13 · 15:03';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -4218,6 +4218,19 @@ function renderVault(app){
   const archivedCount = state.documents.filter(d => d.archived && !d.deletedAt).length;
   const deletedCount = state.documents.filter(d => d.deletedAt).length;
 
+  // One {key, entries} section per document-card-grid the template below renders (Pinned, plus one
+  // per category) — used after the innerHTML assignment to reconcile each grid's actual children
+  // instead of re-rendering them via the template. Grid keys here must exactly match the
+  // data-grid-key values the template emits below.
+  const gridSections = [];
+  if(pinnedDocs.length) gridSections.push({key: 'pinned', entries: pinnedDocs.map((d,i) => ({doc: d, opts: {showCategory: true, i, instanceKey: 'pinned:'+d.id}}))});
+  catOrder.forEach(cat => {
+    gridSections.push({key: 'cat:'+cat, entries: grouped[cat].map((d,i) => ({doc: d, opts: {i, instanceKey: 'cat:'+cat+':'+d.id}}))});
+  });
+  // Must run BEFORE the innerHTML assignment below wipes out the currently-rendered grids — see
+  // captureExistingDocGrids().
+  const existingDocGrids = captureExistingDocGrids(app);
+
   app.innerHTML = `
     <header class="topbar">
       <div class="brand"><div class="brand-mark">${brandMarkSvg(20)}</div><div class="brand-name">Vault</div><span class="conn-indicator ${isAppOnline() ? 'online' : 'offline'}" title="${isAppOnline() ? 'Online' : 'Offline'}" role="status" aria-label="${isAppOnline() ? 'Online' : 'Offline'}"><span class="conn-dot"></span>${isAppOnline() ? '' : '<span class="conn-label">Offline</span>'}</span></div>
@@ -4264,7 +4277,7 @@ function renderVault(app){
 
       ${pinnedDocs.length ? `
         <div class="section-title">Pinned</div>
-        <div class="doc-card-grid">${pinnedDocs.map((d,i) => renderDocCard(d, {showCategory: true, i, instanceKey: 'pinned:'+d.id})).join('')}</div>
+        <div class="doc-card-grid" data-grid-key="pinned"></div>
       ` : ''}
 
       ${!state.searchQuery && !state.showArchived && !state.selectMode && upcoming.length ? `
@@ -4302,7 +4315,7 @@ function renderVault(app){
           <span class="cat-title-label">${categoryIconHtml(meta,15)} ${escapeHtml(meta.label)}</span>
           <span class="cat-count">${grouped[cat].length}<span class="cat-chevron ${isCollapsed ? 'collapsed' : ''}">${icon('chevronDown',15)}</span></span>
         </div>
-        <div class="doc-card-grid-wrap ${isCollapsed ? 'is-collapsed' : ''}" data-cat-panel="${cat}"><div class="doc-card-grid-inner ${isCollapsed ? '' : 'overflow-visible'}"><div class="doc-card-grid">${grouped[cat].map((d,i) => renderDocCard(d, {i, instanceKey: 'cat:'+cat+':'+d.id})).join('')}</div></div></div>
+        <div class="doc-card-grid-wrap ${isCollapsed ? 'is-collapsed' : ''}" data-cat-panel="${cat}"><div class="doc-card-grid-inner ${isCollapsed ? '' : 'overflow-visible'}"><div class="doc-card-grid" data-grid-key="cat:${cat}"></div></div></div>
       `; }).join('')}
       ${state.showArchived
         ? `<button class="archive-toggle" id="archiveToggleBtn">${icon('back',14)} Back to active documents</button>`
@@ -4323,6 +4336,11 @@ function renderVault(app){
       </div>
     ` : ''}
   `;
+
+  // Swap each just-templated empty grid placeholder for its old, populated element (if any) and
+  // reconcile its children against gridSections — see the big comment above wireDocCardEvents()
+  // for why, and reconcileDocGridsAfterRender()/reconcileDocCardGrid() for how.
+  reconcileDocGridsAfterRender(app, existingDocGrids, gridSections);
 
   const renewalStripEl = document.querySelector('.renewal-strip');
   if(renewalStripEl){
@@ -4569,6 +4587,127 @@ function wireDocCardEvents(){
   }
 }
 
+// ---------- document-card-grid keyed reconciliation ----------
+// renderVault() and renderUpcoming() both used to rebuild their entire document-card grid(s) via
+// one big innerHTML template on every single render() — pinning a document, toggling a checkbox in
+// select mode, searching, changing sort — destroying and recreating every visible card even for a
+// one-document change. This section extends the same "targeted DOM update instead of full rebuild"
+// spirit that category-collapse/expand and the action-menu outside-click handler above already use
+// (neither of which goes through render() at all) to the card grids themselves, the same keyed
+// reconciliation technique React/Vue use for lists. See renderVault()/renderUpcoming() for how a
+// grid container's placeholder gets swapped for its old, populated element before this runs.
+
+// instanceKey -> the exact HTML string renderDocCard(doc, opts) produced for it last time it was
+// reconciled. Shared (module-level, not per-screen) since a document can be reconciled from either
+// renderVault() (pinned and/or its category section) or renderUpcoming() (its bucket), each under
+// its own distinct instanceKey — see reconcileDocCardGrid()'s cache lookup below. A stale entry
+// left behind when a whole screen changes (so its grids never went through reconcileDocCardGrid on
+// the way out) is harmlessly cleaned up the next time that same section IS reconciled again, via
+// the leftover-removal pass at the bottom of that function.
+const docCardHtmlCache = new Map();
+
+// Parses one renderDocCard() HTML string into a real, detached DOM node.
+function buildDocCardNode(html){
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html.trim();
+  return tpl.content.firstElementChild;
+}
+
+// Reconciles one document-card-grid element's actual children against `entries` — the ordered list
+// of {doc, opts} pairs that belong in it for this render, in the exact order they should appear —
+// instead of the innerHTML-based full rebuild every other part of a render still does.
+//
+// Each entry's stable identity across renders is opts.instanceKey (falling back to the doc's own
+// id, same convention renderDocCard itself uses internally). For each entry: if a current child of
+// `gridEl` is already tagged with that instanceKey (via renderDocCard's own data-card-key attribute)
+// AND the cached HTML this function last rendered for that key is unchanged, that exact DOM node is
+// left completely alone — not even a class-list touch — which is the entire point of this exercise.
+// Otherwise (new key, or its rendered HTML actually differs — a tag/sort/keep-offline-badge/
+// select-mode-checkbox/pin change, a menu opening, etc. all naturally change renderDocCard's output
+// for that instanceKey) a fresh node is built from the newly rendered HTML and swapped in.
+//
+// CRITICAL: every entry — unchanged nodes included — still gets moved into its correct final
+// position below. Changing "Sort by" leaves every individual card's rendered HTML byte-for-byte
+// identical (same doc, same instanceKey; renderDocCard's output no longer depends on list position
+// at all now that the dead --i ordering variable is gone — see renderDocCard) and only the desired
+// ORDER of the same set of cards changes, so a reconciler that repositioned only newly-created or
+// changed nodes would silently fail to visually reorder anything.
+//
+// Finally, any leftover child whose key is no longer present in `entries` (the document was
+// deleted, archived out of view, moved to a different category/bucket, etc.) is removed from the
+// grid and dropped from docCardHtmlCache too, so that cache doesn't grow forever over a long
+// session.
+function reconcileDocCardGrid(gridEl, entries){
+  const existingByKey = new Map();
+  Array.from(gridEl.children).forEach(child => {
+    const key = child.getAttribute('data-card-key');
+    if(key !== null) existingByKey.set(key, child);
+  });
+  const usedKeys = new Set();
+  let afterNode = null; // each entry's node gets moved to immediately follow this one, in order
+  entries.forEach(({doc, opts}) => {
+    const key = opts.instanceKey || doc.id;
+    usedKeys.add(key);
+    const html = renderDocCard(doc, opts);
+    let node = existingByKey.get(key);
+    if(!node || docCardHtmlCache.get(key) !== html){
+      // Rebuilding: if a stale node for this same key was already sitting in the grid (its content
+      // changed — a menu toggle, a pin/tag/keep-offline change, anything), it must be removed here,
+      // not just left for insertBefore below to sort out — insertBefore only ever ADDS the new node
+      // to the DOM, it has no idea the old one (a completely different element reference) is meant
+      // to be replaced. Leaving it would orphan the stale node as a permanent duplicate: it's still
+      // tagged with this same data-card-key, so the leftover-removal pass at the bottom (which only
+      // removes keys NOT in usedKeys) would never touch it either, since this key IS in usedKeys.
+      const staleNode = node;
+      node = buildDocCardNode(html);
+      docCardHtmlCache.set(key, html);
+      if(staleNode) staleNode.remove();
+    }
+    const wantedNext = afterNode ? afterNode.nextSibling : gridEl.firstChild;
+    if(wantedNext !== node) gridEl.insertBefore(node, wantedNext);
+    afterNode = node;
+  });
+  existingByKey.forEach((node, key) => {
+    if(!usedKeys.has(key)){
+      node.remove();
+      docCardHtmlCache.delete(key);
+    }
+  });
+}
+
+// Shared by renderVault()/renderUpcoming(): captures every document-card-grid container currently
+// in `app` (tagged with data-grid-key — see both render functions), keyed by that attribute's
+// value, BEFORE the caller's own innerHTML assignment wipes them out. Naturally empty/irrelevant on
+// a first render or a screen change — a grid key from a totally different screen never matches
+// anything captured here — so no "did the screen change" special-casing is needed.
+function captureExistingDocGrids(app){
+  const map = new Map();
+  app.querySelectorAll('[data-grid-key]').forEach(el => map.set(el.getAttribute('data-grid-key'), el));
+  return map;
+}
+
+// Shared by renderVault()/renderUpcoming(): called once right after the caller's own innerHTML
+// assignment has just created a fresh, EMPTY placeholder `<div data-grid-key="...">` for each
+// section in `gridSections` ({key, entries}). For each one, swaps in the matching old, already-
+// populated grid element captured by captureExistingDocGrids() (if any — a brand new section has
+// none, and the freshly-created empty placeholder is used as-is), then reconciles that grid's
+// children against `entries` via reconcileDocCardGrid().
+function reconcileDocGridsAfterRender(app, existingGrids, gridSections){
+  const freshPlaceholders = new Map();
+  app.querySelectorAll('[data-grid-key]').forEach(el => freshPlaceholders.set(el.getAttribute('data-grid-key'), el));
+  gridSections.forEach(({key, entries}) => {
+    const placeholder = freshPlaceholders.get(key);
+    if(!placeholder) return; // shouldn't happen — every gridSections key has a matching template placeholder
+    const oldGrid = existingGrids.get(key);
+    let gridEl = placeholder;
+    if(oldGrid){
+      placeholder.replaceWith(oldGrid);
+      gridEl = oldGrid;
+    }
+    reconcileDocCardGrid(gridEl, entries);
+  });
+}
+
 // The trash view — deliberately a separate, simpler render path from renderVault() rather than a
 // third value threaded through visibleDocs/catOrder/etc.: it's not a daily-use screen (no search,
 // no pinning, no categories, no add-document FAB), just a flat list of what's awaiting restore or
@@ -4671,7 +4810,7 @@ function renderDocCard(d, opts){
   const selected = state.selectMode && state.selectedDocIds.has(d.id);
   const openOrSelectAttr = state.selectMode ? `data-select-doc="${d.id}"` : `data-open-doc="${d.id}"`;
   return `
-    <div class="doc-card ${d.archived ? 'is-archived' : ''} ${offlineUnavailable ? 'is-offline-unavailable' : ''} ${selected ? 'is-selected' : ''}" style="--i:${opts.i||0}">
+    <div class="doc-card ${d.archived ? 'is-archived' : ''} ${offlineUnavailable ? 'is-offline-unavailable' : ''} ${selected ? 'is-selected' : ''}" data-card-key="${instanceKey}">
       ${state.selectMode ? `<input type="checkbox" class="doc-select-checkbox" data-select-doc="${d.id}" ${selected ? 'checked' : ''} aria-label="Select ${escapeHtml(d.title)}" />` : ''}
       <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" ${openOrSelectAttr} role="button" tabindex="0" aria-label="${state.selectMode ? 'Select' : 'View'} ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
       <div class="doc-body">
@@ -4753,6 +4892,16 @@ function renderUpcoming(app){
     .map(b => ({label: b.label, docs: docs.filter(b.test)}))
     .filter(b => b.docs.length);
 
+  // One {key, entries} section per bucket's document-card-grid — same purpose as renderVault()'s
+  // gridSections above. Prefixed distinctly from renderVault()'s own grid keys ('pinned', 'cat:...')
+  // so the two screens' keys can never collide in the shared docCardHtmlCache/DOM lookups even
+  // though a document can appear in both at once (once here, once — under its own separate
+  // instanceKey — in the vault's Pinned/category sections).
+  const gridSections = buckets.map(b => ({key: 'upcoming-bucket:'+b.label, entries: b.docs.map((d,i) => ({doc: d, opts: {showCategory: true, i, instanceKey: 'upcoming:'+d.id}}))}));
+  // Must run BEFORE the innerHTML assignment below wipes out the currently-rendered grids — see
+  // captureExistingDocGrids().
+  const existingDocGrids = captureExistingDocGrids(app);
+
   app.innerHTML = `
     <div class="settings-header">
       <button class="icon-only-btn" id="backToVaultBtn" aria-label="Back">${icon('back',22)}</button>
@@ -4768,10 +4917,15 @@ function renderUpcoming(app){
         <div class="empty-state">Nothing expiring in the next ${windowDays} days.</div>
       ` : buckets.map(b => `
         <div class="section-title">${b.label}</div>
-        <div class="doc-card-grid">${b.docs.map((d,i) => renderDocCard(d, {showCategory: true, i, instanceKey: 'upcoming:'+d.id})).join('')}</div>
+        <div class="doc-card-grid" data-grid-key="upcoming-bucket:${b.label}"></div>
       `).join('')}
     </div>
   `;
+
+  // Swap each just-templated empty grid placeholder for its old, populated element (if any) and
+  // reconcile its children against gridSections — see reconcileDocGridsAfterRender()/
+  // reconcileDocCardGrid() above wireDocCardEvents().
+  reconcileDocGridsAfterRender(app, existingDocGrids, gridSections);
 
   document.getElementById('backToVaultBtn').onclick = () => goBackOneLayer();
   // A filter change, not a navigation — re-renders this screen's own content in place with no new
