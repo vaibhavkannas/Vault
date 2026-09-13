@@ -23,15 +23,9 @@
     document.querySelector('meta[name="theme-color"]').setAttribute('content', isDark ? '#111214' : '#1a73e8');
   } catch(e){}
 </script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js"></script>
-<script src="https://accounts.google.com/gsi/client"></script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap">
 <style>
   :root{
@@ -580,7 +574,10 @@
 // plugin — the whole reason it replaced "open in a new tab" for viewing: that depended on each
 // browser's own PDF handling, which turned out to vary (some browsers just downloaded the file
 // instead of previewing it). Rendering with canvas behaves identically everywhere.
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+// (Its GlobalWorkerOptions.workerSrc assignment used to live here as a top-level statement, back
+// when pdf.min.js was a blocking <head> script tag guaranteed to have already defined pdfjsLib by
+// this point. Now that pdf.min.js loads lazily — see loadPdfJsScript() — that assignment moved
+// into the loader itself, since pdfjsLib doesn't exist yet at top-level script execution time.)
 
 const firebaseConfig = {
   apiKey: "AIzaSyC9zVPWgTekPiDUDn1YcLDInHBFRRUgW9w",
@@ -663,7 +660,8 @@ async function mintDriveAccessToken(){
 }
 
 let gisCodeClient = null;
-function grantDriveAccessOneTime(){
+async function grantDriveAccessOneTime(){
+  await loadGisScript();
   return new Promise((resolve, reject) => {
     if(!gisCodeClient){
       gisCodeClient = google.accounts.oauth2.initCodeClient({
@@ -729,7 +727,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.13 · 16:22';
+const APP_VERSION = '2026.09.13 · 21:21';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1171,6 +1169,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.13 · 21:21',
+    items: [
+      "Vault now opens noticeably faster — scanning, backups, and push notifications now load their own tools only when you actually use them, instead of every time you open the app."
+    ]
+  },
   {
     version: '2026.09.13 · 16:22',
     items: [
@@ -1957,6 +1961,7 @@ function isPushDenied(){
 // script block, an uncaught throw here would break the entire app, not just push.
 async function getMessagingIfSupported(){
   try{
+    await loadFirebaseMessagingScript();
     if(!isPushSupported()) return null;
     if(firebase.messaging && firebase.messaging.isSupported && !(await firebase.messaging.isSupported())) return null;
     return firebase.messaging();
@@ -3024,6 +3029,7 @@ function downscaleForOcr(dataUrl){
 
 async function runOcr(dataUrl, onProgress){
   try{
+    await loadTesseractScript();
     const ocrInput = await downscaleForOcr(dataUrl);
     const result = await Tesseract.recognize(ocrInput, 'eng', {
       logger: m => { if(m.status === 'recognizing text' && onProgress) onProgress(m.progress); }
@@ -3054,6 +3060,7 @@ function withTimeout(promise, ms, fallbackValue){
 // from more detail than a preview needs; capped so an unusually large page doesn't run OCR against
 // an oversized, slow-to-process image for no real accuracy gain.
 async function runOcrOnPdfFile(file, onProgress){
+  await loadPdfJsScript();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
   const pageTexts = [];
@@ -5090,11 +5097,15 @@ let categoryManuallyChanged = false;
 // actually finishes, since text search wouldn't otherwise pick up whatever it hadn't found yet.
 let pendingOcrRunning = false;
 
-function openAddModal(){ state.modal = 'add'; state.renewalUploadTargetId = null; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+// The 'add' modal accepts either an image or a PDF upload, either of which is about to need OCR
+// (runOcr / runOcrOnPdfFile) the moment a file is picked — so, like wireCropOverlay() warming
+// OpenCV early for the crop screen, kick off both loaders here non-blockingly (swallowing any
+// rejection) so they're very likely already loaded by the time they're actually awaited.
+function openAddModal(){ state.modal = 'add'; state.renewalUploadTargetId = null; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); loadTesseractScript().catch(() => {}); loadPdfJsScript().catch(() => {}); }
 // Opens the same 'add' modal, but flagged so saveDocument() links the new file to oldDocId as its
 // replacement and archives oldDocId once the upload succeeds — the direct "upload now" path from
 // the Renew flow, rather than only being able to pick an already-existing document as the reason.
-function openAddModalForRenewal(oldDocId){ state.modal = 'add'; state.renewalUploadTargetId = oldDocId; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+function openAddModalForRenewal(oldDocId){ state.modal = 'add'; state.renewalUploadTargetId = oldDocId; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); loadTesseractScript().catch(() => {}); loadPdfJsScript().catch(() => {}); }
 function closeModal(){
   goBackOneLayer();
 }
@@ -6426,6 +6437,10 @@ async function startCamera(){
 function stopCamera(){
   if(state.cameraStream){ state.cameraStream.getTracks().forEach(t=>t.stop()); state.cameraStream = null; }
 }
+// The camera flow OCRs each captured page (runOcr) and, on Save, builds the pages into a PDF via
+// jsPDF (saveCameraDocument) — both very likely needed the moment this modal is used, so — like
+// wireCropOverlay() warming OpenCV early for the crop screen — kick off both loaders here
+// non-blockingly (swallowing any rejection) so they're very likely already loaded by then.
 function openCameraModal(){
   state.modal = 'camera'; state.capturedPages = []; state.capturedPagesRaw = []; state.capturedPageEnhance = [];
   state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropEnhanceOn = true;
@@ -6433,6 +6448,7 @@ function openCameraModal(){
   pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = ''; pendingCamCategory = null; pendingCamExpiry = '';
   pendingCamReminderDaysText = ''; pendingCamTagsText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
+  loadTesseractScript().catch(() => {}); loadJsPdfScript().catch(() => {});
 }
 // Opens the same camera flow, but flagged (like openAddModalForRenewal) so saveCameraDocument()
 // links the new capture to oldDocId as its replacement and archives oldDocId once the capture
@@ -6446,6 +6462,7 @@ function openCameraModalForRenewal(oldDocId){
   pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = oldDoc ? oldDoc.title : ''; pendingCamCategory = oldDoc ? oldDoc.category : null;
   pendingCamExpiry = ''; pendingCamReminderDaysText = ''; pendingCamTagsText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
+  loadTesseractScript().catch(() => {}); loadJsPdfScript().catch(() => {});
 }
 
 // OpenCV.js is only needed for this one screen (the crop step's perspective correction), so it's
@@ -6476,6 +6493,133 @@ function waitForOpenCvReady(){
     cv['onRuntimeInitialized'] = () => resolve();
     setTimeout(() => reject(new Error('opencv_timeout')), 20000);
   }));
+}
+
+// jsPDF, Tesseract.js and PDF.js follow the exact same lazy-load shape as OpenCV.js above — each is
+// only actually needed for one specific action (building a scanned PDF, running OCR, reading an
+// uploaded PDF file) rather than for opening the vault and viewing what's already there, so each is
+// loaded on first use instead of via a blocking <head> script tag. The service worker still caches
+// each URL (see sw.js CACHE_FIRST_URLS) once it's been fetched once, so every use after the first
+// works offline exactly as it did when these were static <head> tags.
+
+const JSPDF_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+let jsPdfScriptPromise = null;
+function loadJsPdfScript(){
+  if(jsPdfScriptPromise) return jsPdfScriptPromise;
+  jsPdfScriptPromise = new Promise((resolve, reject) => {
+    if(window.jspdf){ resolve(); return; }
+    const script = document.createElement('script');
+    script.src = JSPDF_URL;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('jspdf_load_failed'));
+    document.head.appendChild(script);
+  });
+  return jsPdfScriptPromise;
+}
+
+const TESSERACT_JS_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js';
+let tesseractScriptPromise = null;
+function loadTesseractScript(){
+  if(tesseractScriptPromise) return tesseractScriptPromise;
+  tesseractScriptPromise = new Promise((resolve, reject) => {
+    if(typeof Tesseract !== 'undefined'){ resolve(); return; }
+    const script = document.createElement('script');
+    script.src = TESSERACT_JS_URL;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('tesseract_load_failed'));
+    document.head.appendChild(script);
+  });
+  return tesseractScriptPromise;
+}
+
+// Unlike the other two loaders, this one also has to set pdfjsLib.GlobalWorkerOptions.workerSrc —
+// previously a top-level statement (see the comment further up where it used to live) that ran
+// immediately at script-parse time, back when pdf.min.js was itself a blocking <head> tag guaranteed
+// to have already defined pdfjsLib by then. Now it has to happen here instead: exactly once, right
+// after the script defining pdfjsLib finishes loading, before this loader's promise resolves — done
+// unconditionally on every resolution path (including the already-loaded case) since setting it more
+// than once to the same value is harmless.
+const PDFJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const PDFJS_WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+let pdfJsScriptPromise = null;
+function loadPdfJsScript(){
+  if(pdfJsScriptPromise) return pdfJsScriptPromise;
+  pdfJsScriptPromise = new Promise((resolve, reject) => {
+    if(typeof pdfjsLib !== 'undefined'){
+      pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+      resolve();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = PDFJS_URL;
+    script.onload = () => {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+      resolve();
+    };
+    script.onerror = () => reject(new Error('pdfjs_load_failed'));
+    document.head.appendChild(script);
+  });
+  return pdfJsScriptPromise;
+}
+
+// JSZip follows the exact same lazy-load shape as the loaders above — only needed for building/
+// reading a backup zip (export, pre-delete-account backup, import-restore), not for opening the
+// vault and viewing what's already there. The service worker still caches this URL (see sw.js
+// CACHE_FIRST_URLS) once it's been fetched once, so every use after the first works offline.
+const JSZIP_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+let jsZipScriptPromise = null;
+function loadJsZipScript(){
+  if(jsZipScriptPromise) return jsZipScriptPromise;
+  jsZipScriptPromise = new Promise((resolve, reject) => {
+    if(typeof JSZip !== 'undefined'){ resolve(); return; }
+    const script = document.createElement('script');
+    script.src = JSZIP_URL;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('jszip_load_failed'));
+    document.head.appendChild(script);
+  });
+  return jsZipScriptPromise;
+}
+
+// Firebase Messaging (push notifications) follows the exact same lazy-load shape — unlike
+// firebase-app/auth/firestore (loaded eagerly in <head>, since sign-in state and the document list
+// both need them immediately), the messaging compat SDK is only needed once push support is
+// actually queried (see getMessagingIfSupported() below). The service worker still caches this URL
+// (see sw.js CACHE_FIRST_URLS) once it's been fetched once, so every use after the first works
+// offline.
+const FIREBASE_MESSAGING_URL = 'https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js';
+let firebaseMessagingScriptPromise = null;
+function loadFirebaseMessagingScript(){
+  if(firebaseMessagingScriptPromise) return firebaseMessagingScriptPromise;
+  firebaseMessagingScriptPromise = new Promise((resolve, reject) => {
+    if(firebase.messaging){ resolve(); return; }
+    const script = document.createElement('script');
+    script.src = FIREBASE_MESSAGING_URL;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('firebase_messaging_load_failed'));
+    document.head.appendChild(script);
+  });
+  return firebaseMessagingScriptPromise;
+}
+
+// Google Identity Services follows the exact same lazy-load shape — only needed for the one-time
+// Drive consent popup (see grantDriveAccessOneTime() below), not for opening the vault. Unlike the
+// other lazy-loaded libraries here, this URL is NOT version-pinned, so sw.js correctly treats it as
+// network-first rather than cache-first (see sw.js NETWORK_FIRST_OPAQUE_URLS) — this loader still
+// works offline off whatever was last cached, same as any other network-first asset.
+const GIS_URL = 'https://accounts.google.com/gsi/client';
+let gisScriptPromise = null;
+function loadGisScript(){
+  if(gisScriptPromise) return gisScriptPromise;
+  gisScriptPromise = new Promise((resolve, reject) => {
+    if(typeof google !== 'undefined' && google.accounts){ resolve(); return; }
+    const script = document.createElement('script');
+    script.src = GIS_URL;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('gis_load_failed'));
+    document.head.appendChild(script);
+  });
+  return gisScriptPromise;
 }
 
 // Standard "scan a document" contour pipeline: grayscale → blur → Canny edges → find the largest
@@ -6931,6 +7075,7 @@ async function saveCameraDocument(){
   const needsBackgroundOcr = pendingOcrRunning;
 
   try{
+    await loadJsPdfScript();
     // Always a PDF, even for a single page — a scanned document should behave like one
     // regardless of how many pages it took, not silently become a plain JPEG below 2 pages.
     const { jsPDF } = window.jspdf;
@@ -7189,6 +7334,7 @@ async function renderPdfInto(contentEl, blob, id){
   const arrayBuffer = await blob.arrayBuffer();
   // Bailed out or moved to a different document while the PDF was loading/rendering.
   if(state.modal !== 'viewFile' || state.viewDocId !== id) return;
+  await loadPdfJsScript();
   const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
   const wrap = document.createElement('div');
   wrap.className = 'pdf-pages';
@@ -8014,6 +8160,15 @@ function exportDocumentListCsv(){
 // Active and archived documents alike, since the point of a backup is completeness, not just
 // what's currently in view. One bad/unreachable file is skipped, not fatal to the rest.
 async function buildDocumentsZipBlob(onProgress){
+  // JSZip is lazy-loaded (see loadJsZipScript() above) — if that fails (offline on a first-ever
+  // use, CDN unreachable), report it the exact same way a per-document fetch failure already is:
+  // {blob: null, done: 0, failed: state.documents.length}. Every existing caller (exportAllDocuments,
+  // deleteEverything's pre-delete backup step) already treats that shape as "nothing could be backed
+  // up" and shows its own appropriate error, so this needs no caller changes.
+  try{ await loadJsZipScript(); } catch(e){
+    console.error('JSZip unavailable', e);
+    return {blob: null, done: 0, failed: state.documents.length};
+  }
   const zip = new JSZip();
   // Per-category, not one global set — mirroring Drive's own layout means uniqueness only needs
   // to hold within a folder, same as Drive itself only requires. Folder names come from the exact
@@ -8131,6 +8286,7 @@ async function handleImportBackupFileChosen(e){
   if(statusEl) statusEl.textContent = 'Reading backup…';
   let zip, manifestDocs;
   try{
+    await loadJsZipScript();
     zip = await JSZip.loadAsync(f);
     const manifestFile = zip.file('vault-manifest.json');
     const parsed = manifestFile ? JSON.parse(await manifestFile.async('string')) : null;
