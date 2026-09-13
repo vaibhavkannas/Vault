@@ -703,7 +703,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.13 · 15:12';
+const APP_VERSION = '2026.09.13 · 15:15';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1063,7 +1063,7 @@ const EXIT_CONFIRM_WINDOW_MS = 2500;
 // repeating its own copy of the condition, which is exactly how the quickref screen fell through
 // the cracks the first time: two independent copies of this list, one of them missing an entry.
 function isIdleRootScreen(){
-  return !state.modal && !state.selectMode && !state.showArchived && state.screen !== 'settings' && state.screen !== 'quickref' && state.screen !== 'upcoming';
+  return !state.modal && !state.selectMode && !state.showArchived && !state.showDeleted && state.screen !== 'settings' && state.screen !== 'quickref' && state.screen !== 'upcoming';
 }
 function armExitGuardIfIdle(){
   if(!guardArmed && isIdleRootScreen()){
@@ -1121,6 +1121,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.13 · 15:15',
+    items: [
+      "Fixed: going back from \"Recently deleted\" could close the app instead of returning to your documents."
+    ]
+  },
   {
     version: '2026.09.13 · 15:12',
     items: [
