@@ -698,7 +698,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.13 · 14:28';
+const APP_VERSION = '2026.09.13 · 14:43';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1001,6 +1001,10 @@ function clearTopLayerState(){
     state.renewalUploadTargetId = null; state.editQuickRefId = null; state.pendingChangelogItems = null; state.capturedPages = [];
     state.qrEditDecryptedValue = null; state.qrUnlockThen = null;
     pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false;
+    // Closing the 'confirmImportBackup' modal any way other than actually confirming (X, Cancel,
+    // Escape, backdrop tap, or the browser Back button — all of which end up here) shouldn't leave
+    // a whole parsed backup zip sitting in memory for no reason.
+    pendingImportZip = null; pendingImportManifest = null;
   } else if(state.selectMode){
     // Checked right after the modal branch above (never before it) — a bulk-confirm modal
     // (confirmBulkArchive/Delete/Move) deliberately pushes no history layer of its own (see
@@ -1112,6 +1116,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.13 · 14:43',
+    items: [
+      "Added: restore documents from a backup ZIP — brings back title, category, expiry, reminders, tags, pin, and keep-offline state along with the files, and skips anything that looks already restored.",
+    ]
+  },
   {
     version: '2026.09.13 · 14:28',
     items: [
@@ -2784,6 +2794,17 @@ function extensionForMime(mime){
 function safeFilename(title, mime){
   return title.replace(/[\\/:*?"<>|]/g, '_') + '.' + extensionForMime(mime);
 }
+// Roughly reverses extensionForMime() — used only by backup import, where a manifest entry
+// deliberately carries no mimeType of its own (see buildDocumentsZipBlob's manifest comment) and
+// the file's extension inside the zip (which safeFilename() derived from the mimeType at export
+// time) is all that's left to recover a Content-Type for the fresh Drive upload from.
+function mimeTypeFromFilename(name){
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  if(ext === 'pdf') return 'application/pdf';
+  if(ext === 'png') return 'image/png';
+  if(ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  return 'application/octet-stream';
+}
 
 // Best-effort: scans OCR text for a date and returns it as "YYYY-MM-DD", or null. Prefers a
 // line that mentions expiry-ish keywords over the first date found anywhere. Ambiguous
@@ -3435,6 +3456,10 @@ function renderSettings(app){
         <div class="settings-row"><span>Export document list (CSV)</span><button class="icon-btn" id="exportCsvBtn">Export</button></div>
         <div class="settings-row"><span>Download every document as a backup (ZIP)</span><button class="icon-btn" id="exportAllBtn">Download</button></div>
         <div class="search-hint" id="exportAllStatus"></div>
+        <div class="settings-row"><span>Restore documents from a backup (ZIP)</span><button class="icon-btn" id="importBackupBtn" ${importBackupRunning ? 'disabled' : ''}>Choose file</button></div>
+        <input type="file" id="importBackupInput" accept=".zip" style="display:none;" />
+        <div class="search-hint" id="importBackupStatus"></div>
+        <p class="field-hint">Restores documents made with "Download every document as a backup" above — title, category, expiry, reminders, tags, pin, and keep-offline state, plus the files themselves. It doesn't restore Quick Reference entries or share links; those are separate features with their own data.</p>
       </div>
 
       <div class="settings-section">
@@ -3576,6 +3601,8 @@ function renderSettings(app){
   document.getElementById('syncDriveBtn').onclick = runSyncFromDrive;
   document.getElementById('exportCsvBtn').onclick = exportDocumentListCsv;
   document.getElementById('exportAllBtn').onclick = exportAllDocuments;
+  document.getElementById('importBackupBtn').onclick = () => document.getElementById('importBackupInput').click();
+  document.getElementById('importBackupInput').onchange = handleImportBackupFileChosen;
   document.getElementById('signOutBtn').onclick = () => signOutUser();
   document.getElementById('deleteAccountBtn').onclick = openDeleteAccountModal;
 
@@ -5219,6 +5246,30 @@ function renderModal(){
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('cancelCacheCatBtn').onclick = closeModal;
     document.getElementById('confirmCacheCatBtn').onclick = () => { const id = cat.id; closeModal(); cacheCategoryDocuments(id); };
+  }
+
+  if(state.modal === 'confirmImportBackup'){
+    const docs = pendingImportManifest || [];
+    // Defensive only — handleImportBackupFileChosen() never opens this modal for an empty
+    // manifest in the first place (see its own "nothing to import" short-circuit).
+    if(!docs.length){ goBackOneLayer(); return; }
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Restore ${docs.length} document${docs.length===1?'':'s'}?</h3>
+        <p class="sub">Uploads each file to Drive again as a new document, carrying over its category, expiry, reminders, tags, pin, and keep-offline state from the backup. Anything that looks already present (same title, category, and added date) is skipped rather than duplicated.</p>
+        <button class="primary" id="confirmImportBackupBtn">Restore ${docs.length} document${docs.length===1?'':'s'}</button>
+        <button class="ghost" id="cancelImportBackupBtn">Cancel</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('cancelImportBackupBtn').onclick = closeModal;
+    document.getElementById('confirmImportBackupBtn').onclick = () => {
+      const zip = pendingImportZip, manifest = pendingImportManifest;
+      closeModal();
+      performBackupImport(zip, manifest);
+    };
   }
 
   if(state.modal === 'changelog'){
@@ -7665,6 +7716,12 @@ async function buildDocumentsZipBlob(onProgress){
   // in Drive is what makes Sync able to pick this backup back up later.
   const usedNamesByCategory = {};
   let done = 0, failed = 0;
+  // One entry per document that actually made it into the zip (see vault-manifest.json below) —
+  // built alongside the per-document loop rather than derived from state.documents afterward, so
+  // it can record the *exact* zip path (catLabel/name, including any " (2)" de-duplication suffix
+  // below) each document actually landed at, which is what lets a later import match a manifest
+  // entry back to its file with a plain zip.file(entry.filename) lookup.
+  const manifestEntries = [];
   for(const doc of state.documents){
     if(onProgress) onProgress(done + failed + 1, state.documents.length);
     try{
@@ -7682,7 +7739,14 @@ async function buildDocumentsZipBlob(onProgress){
         name = candidate;
       }
       usedNames.add(name);
-      zip.file(`${catLabel}/${name}`, blob);
+      const zipPath = `${catLabel}/${name}`;
+      zip.file(zipPath, blob);
+      manifestEntries.push({
+        id: doc.id, title: doc.title, category: doc.category,
+        expiry: doc.expiry || null, reminderDays: doc.reminderDays || null,
+        tags: doc.tags || [], pinned: !!doc.pinned, keepOffline: !!doc.keepOffline,
+        archived: !!doc.archived, addedAt: doc.addedAt, filename: zipPath
+      });
       done++;
     } catch(e){
       console.error('Export: could not fetch ' + doc.title, e);
@@ -7696,6 +7760,14 @@ async function buildDocumentsZipBlob(onProgress){
   if(state.quickRefs.length){
     zip.file('quickrefs.json', JSON.stringify({version: 1, exportedAt: new Date().toISOString(), items: state.quickRefs}, null, 2));
   }
+  // vault-manifest.json is what turns this from "just the raw files" into a restorable structured
+  // backup — see handleImportBackupFileChosen()/performBackupImport() below, the only things that
+  // ever read it back. Three things are deliberately left out of each entry: driveFileId
+  // (meaningless once re-uploaded to a brand-new Drive file on import), ocrText (regenerable —
+  // cheap to redo on next view/edit if the file gets re-processed, and dropping it keeps this
+  // manifest small even for a large vault), and anything from Quick Reference or share links,
+  // which are separate features with their own data this backup format was never meant to cover.
+  zip.file('vault-manifest.json', JSON.stringify({version: 1, exportedAt: new Date().toISOString(), documents: manifestEntries}, null, 2));
   if(!done && !state.quickRefs.length) return {blob: null, done, failed};
   const blob = await zip.generateAsync({type: 'blob'});
   return {blob, done, failed};
@@ -7724,6 +7796,124 @@ async function exportAllDocuments(){
   if(btn) btn.disabled = false;
   if(statusEl) statusEl.textContent = '';
   toast(failed ? `Exported ${done} of ${state.documents.length} — ${failed} couldn't be fetched` : `Exported ${done} document${done===1?'':'s'}`);
+}
+
+/* ---------- import (restore from backup) ----------
+   The read side of buildDocumentsZipBlob's vault-manifest.json (see that function's own comment
+   for what a manifest entry deliberately does and doesn't carry). This is necessarily a re-import,
+   not an in-place restore — the original Drive file behind each document is long gone by the time
+   anyone actually needs a backup, so every restored document gets a brand-new id and a brand-new
+   Drive upload, same as any other new document created through this app. */
+
+// Parsed result of a chosen backup zip, held here — not in `state` — between choosing the file and
+// confirming the import in the 'confirmImportBackup' modal, same reasoning as pendingFile above: a
+// JSZip instance isn't meaningful to carry through state's own render-triggering assignments.
+// Cleared in clearTopLayerState() whenever that modal closes any way other than confirming.
+let pendingImportZip = null;
+let pendingImportManifest = null;
+// Guards the "Choose file" control against re-entry while a restore is already running — the
+// single-action equivalent of categoryCacheRunningIds for the per-category cache button.
+let importBackupRunning = false;
+
+async function handleImportBackupFileChosen(e){
+  const f = e.target.files[0];
+  e.target.value = ''; // lets choosing the exact same path again re-fire 'change' (e.g. a retry)
+  if(!f) return;
+  const btn = document.getElementById('importBackupBtn');
+  const statusEl = document.getElementById('importBackupStatus');
+  if(btn) btn.disabled = true;
+  if(statusEl) statusEl.textContent = 'Reading backup…';
+  let zip, manifestDocs;
+  try{
+    zip = await JSZip.loadAsync(f);
+    const manifestFile = zip.file('vault-manifest.json');
+    const parsed = manifestFile ? JSON.parse(await manifestFile.async('string')) : null;
+    // Anything other than the expected {documents: [...]} shape (no manifest at all, a manifest
+    // that isn't valid JSON, or one that parsed but isn't shaped like ours) is treated the same
+    // way: this isn't a Vault backup, full stop — not a partial/best-effort import attempt.
+    if(!parsed || !Array.isArray(parsed.documents)) throw new Error('NOT_A_VAULT_BACKUP');
+    manifestDocs = parsed.documents;
+  } catch(err){
+    console.error('Could not read backup zip', err);
+    if(btn) btn.disabled = false;
+    if(statusEl) statusEl.textContent = '';
+    toast("This doesn't look like a Vault backup — couldn't find a valid manifest in that ZIP.");
+    return;
+  }
+  if(btn) btn.disabled = false;
+  if(statusEl) statusEl.textContent = '';
+  if(!manifestDocs.length){ toast('Nothing to import — that backup has no documents in it.'); return; }
+  pendingImportZip = zip;
+  pendingImportManifest = manifestDocs;
+  state.modal = 'confirmImportBackup';
+  pushAppHistoryState();
+  render();
+}
+
+// Restores documents from an already-parsed backup (see handleImportBackupFileChosen and the
+// 'confirmImportBackup' modal above) — sequentially, one document at a time like
+// buildDocumentsZipBlob's own export loop, so this never holds more than one file's bytes in memory
+// regardless of how large the vault being restored is, and so the progress line below can say
+// exactly which document is in flight. Each entry is caught individually: one corrupt/missing file
+// inside an otherwise-good backup can't abort the rest.
+async function performBackupImport(zip, manifest){
+  if(!zip || !manifest || !manifest.length) return;
+  importBackupRunning = true;
+  render();
+  let done = 0, skipped = 0, failed = 0;
+  for(let i=0; i<manifest.length; i++){
+    const entry = manifest[i];
+    const statusEl = document.getElementById('importBackupStatus');
+    if(statusEl) statusEl.textContent = `Restoring ${i+1} of ${manifest.length}…`;
+    if(!entry || !entry.filename || !entry.title){ failed++; continue; }
+    try{
+      // categoryFor() already falls back to a real, existing category (see its own comment) when
+      // entry.category no longer exists in this vault — e.g. the category was deleted since the
+      // backup was taken — so this never crashes or drops the document over a stale category id.
+      const cat = categoryFor(entry.category);
+      // Same title + resolved category + original addedAt is treated as "this looks like the same
+      // document already here" — checked against `cat.id` (the resolved category), not the raw
+      // entry.category, so re-running the same import twice resolves to the same match both times
+      // even when the original category no longer exists.
+      const alreadyPresent = state.documents.some(d => d.title === entry.title && d.category === cat.id && d.addedAt === entry.addedAt);
+      if(alreadyPresent){ skipped++; continue; }
+      const zipEntry = zip.file(entry.filename);
+      if(!zipEntry){ failed++; continue; }
+      const blob = await zipEntry.async('blob');
+      const mimeType = mimeTypeFromFilename(entry.filename);
+      const driveFileId = await driveUpload(blob, safeFilename(entry.title, mimeType), mimeType, cat.driveFolderId);
+      const doc = {
+        id: 'doc_restore_' + Date.now() + '_' + i,
+        title: entry.title, category: cat.id,
+        expiry: entry.expiry || null, reminderDays: entry.reminderDays || null,
+        tags: entry.tags || [],
+        driveFileId, mimeType, size: blob.size || 0,
+        ocrText: '', // not in the manifest — see buildDocumentsZipBlob's own comment on why
+        addedAt: entry.addedAt || new Date().toISOString(), // preserved, not re-stamped — a restored
+                                                              // vault should still sort/display by
+                                                              // when a document was originally added
+        archived: !!entry.archived,
+        pinned: !!entry.pinned,
+        keepOffline: !!entry.keepOffline
+      };
+      await persistDocument(doc);
+      state.documents.unshift(doc);
+      done++;
+    } catch(err){
+      console.error('Could not restore a document from backup', entry, err);
+      failed++;
+    }
+  }
+  importBackupRunning = false;
+  render();
+  if(!skipped && !failed){
+    toast(`Restored ${done} document${done===1?'':'s'}`);
+  } else {
+    const bits = [];
+    if(skipped) bits.push(`${skipped} already present`);
+    if(failed) bits.push(`${failed} couldn't be restored`);
+    toast(`Restored ${done} of ${manifest.length} — ${bits.join(', ')}`);
+  }
 }
 
 /* ---------- sign out / delete account ---------- */
