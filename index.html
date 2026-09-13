@@ -351,6 +351,15 @@
 
   .toast{position:fixed;bottom:max(24px, calc(env(safe-area-inset-bottom) + 8px));left:50%;transform:translateX(-50%);background:#333537;color:#f1f1f1;padding:12px 20px;border-radius:8px;font-size:13.5px;z-index:100;opacity:0;transition:opacity 0.25s ease, transform 0.25s ease;pointer-events:none;max-width:88%;text-align:center;box-shadow:var(--elevation-2);}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(-6px);}
+  /* A toast carrying an Undo button (see toast()'s opts.onAction) needs to accept taps, unlike a
+     plain toast which stays pointer-events:none so taps pass through to whatever's underneath.
+     Its width is also capped well below the plain toast's 88% -- the .fab button sits fixed at
+     the bottom-right (see .fab above) and a full-width toast on a narrow phone would sit right
+     under it, silently stealing the FAB's taps since the toast renders on top (z-index:100). */
+  .toast-action{display:inline-flex;align-items:center;gap:14px;text-align:left;pointer-events:auto;max-width:min(88vw, 320px);}
+  .toast-action-btn{border:none;background:none;padding:4px 6px;margin:-4px -6px -4px 0;flex:none;font:inherit;font-weight:700;color:#8ab4f8;border-radius:6px;cursor:pointer;}
+  .toast-action-btn:hover{background:rgba(255,255,255,0.14);}
+  .toast-action-btn:focus-visible{background:rgba(255,255,255,0.14);outline:2px solid #8ab4f8;outline-offset:1px;}
 
 
   /* Camera modal */
@@ -668,7 +677,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.12 · 21:40';
+const APP_VERSION = '2026.09.13 · 08:19';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -823,15 +832,54 @@ function categoryFor(id){
     || {id:'other', label:'Other', icon:'doc'};
 }
 
-function toast(msg){
+let activeToastEl = null;
+let activeToastTimer = null;
+
+// Shared cleanup for a toast's DOM element -- used both by the auto-dismiss timeout below and by
+// an action button's click handler (see toast()), so both paths land on the same code instead of
+// each hand-rolling their own removal. `immediate` skips the fade-out delay (the toast is being
+// replaced or acted on right now). No-ops if `el` isn't the currently-tracked toast -- e.g. a
+// stale reference from a toast a newer one has already replaced.
+function dismissToast(el, immediate){
+  if(el !== activeToastEl) return;
+  if(activeToastTimer){ clearTimeout(activeToastTimer); activeToastTimer = null; }
+  activeToastEl = null;
+  el.classList.remove('show');
+  if(immediate) el.remove();
+  else setTimeout(()=> el.remove(), 300);
+}
+
+// opts (all optional): {actionLabel, onAction, duration}. Passing onAction adds an inline action
+// button (default label "Undo") for actions like Archive/Pin that can be reversed by calling the
+// same toggle function again -- see toggleArchive()/togglePin(). Only one toast shows at a time;
+// a new call clears whatever's currently on screen first.
+function toast(msg, opts){
+  opts = opts || {};
+  if(activeToastEl) dismissToast(activeToastEl, true);
   const el = document.createElement('div');
-  el.className = 'toast';
+  el.className = opts.onAction ? 'toast toast-action' : 'toast';
   el.setAttribute('role', 'status');
   el.setAttribute('aria-live', 'polite');
   el.textContent = msg;
+  if(opts.onAction){
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'toast-action-btn';
+    btn.textContent = opts.actionLabel || 'Undo';
+    btn.onclick = () => {
+      // Clear the auto-dismiss timer before anything else so a click racing the timeout can
+      // never let onAction() fire twice.
+      if(activeToastTimer){ clearTimeout(activeToastTimer); activeToastTimer = null; }
+      dismissToast(el, true);
+      opts.onAction();
+    };
+    el.appendChild(btn);
+  }
   document.body.appendChild(el);
+  activeToastEl = el;
   requestAnimationFrame(()=> el.classList.add('show'));
-  setTimeout(()=>{ el.classList.remove('show'); setTimeout(()=> el.remove(), 300); }, 2400);
+  const duration = opts.duration != null ? opts.duration : (opts.onAction ? 5000 : 2400);
+  activeToastTimer = setTimeout(()=> dismissToast(el, false), duration);
 }
 
 /* ---------- back-button navigation ----------
@@ -892,7 +940,7 @@ function clearTopLayerState(){
     state.purgeDocId = null; state.pendingArchiveRetentionDays = null;
     state.editCategoryId = null; state.viewDocId = null; state.renewDocId = null; state.archiveDocId = null;
     state.renewalUploadTargetId = null; state.editQuickRefId = null; state.pendingChangelogItems = null; state.capturedPages = [];
-    pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false;
+    pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false;
   } else if(state.showArchived){
     state.showArchived = false; state.searchQuery = '';
   } else if(state.showDeleted){
@@ -995,6 +1043,13 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.13 · 08:19',
+    items: [
+      "Added: Undo, right on the toast — archiving or pinning a document now shows an inline Undo action instead of only being reversible via the ⋮ menu.",
+      "Added: scanning or photographing a document now suggests a title too (not just category and expiry) based on the scanned text — always editable, never overwrites anything you've already typed."
+    ]
+  },
   {
     version: '2026.09.12 · 21:40',
     items: [
@@ -2426,6 +2481,56 @@ function guessCategory(ocrText){
   return null;
 }
 
+// Separate from CATEGORY_GUESS_KEYWORDS above on purpose — "id"/"bill" are category BUCKET ids,
+// not something you'd ever want to see in the title field. These map straight to a usable
+// per-document title instead. Checked in this order (first match wins) against the whole OCR text.
+const TITLE_GUESS_PHRASES = [
+  [/aadhaar|aadhar/i, 'Aadhaar Card'],
+  [/permanent account number|\bpan\s*card\b/i, 'PAN Card'],
+  [/passport/i, 'Passport'],
+  [/driving licen[cs]e/i, 'Driving Licence'],
+  [/insurance policy|policyholder|sum insured/i, 'Insurance Policy'],
+  [/warranty|guarantee card/i, 'Warranty Card'],
+  [/\binvoice\b/i, 'Invoice'],
+  [/electricity bill|utility bill|water bill|gas bill/i, 'Utility Bill'],
+  [/registration certificate|certificate of registration/i, 'Registration Certificate'],
+];
+// A line that's nothing but a date (in any of the shapes guessExpiryDate above recognizes,
+// including a named month like "12 MAY 2024") makes a bad title and must be rejected outright
+// rather than cleaned up and used anyway.
+const BARE_DATE_LINE_RE = /^\s*(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{4}|\d{4}[\/\-.]\d{1,2}[\/\-.]\d{1,2}|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4})\s*$/i;
+
+// Best-effort document-title guess, same "always editable, never authoritative" spirit as
+// guessExpiryDate/guessCategory above. Tries the recognizable-document-type phrases first; when
+// none of those hit, falls back to treating the OCR'd document's own first plausible-looking line
+// (its printed heading, most of the time) as the title. Returns null rather than a bad guess.
+function guessTitle(ocrText){
+  if(!ocrText) return null;
+  for(const [pattern, label] of TITLE_GUESS_PHRASES){
+    if(pattern.test(ocrText)) return label;
+  }
+  return guessTitleFromFirstLine(ocrText);
+}
+function guessTitleFromFirstLine(ocrText){
+  const lines = ocrText.split('\n').map(l => l.trim()).filter(Boolean).slice(0, 8);
+  for(const line of lines){
+    if(line.length < 4 || line.length > 80) continue; // not too short, not a paragraph either
+    if(!/[A-Za-z]{3,}/.test(line)) continue; // needs real letters, not just numbers/punctuation
+    if(BARE_DATE_LINE_RE.test(line)) continue; // a bare date is never a usable title
+    return cleanTitleGuess(line);
+  }
+  return null;
+}
+// Collapses whitespace, strips trailing punctuation, turns a shouted ALL-CAPS line into Title
+// Case, and caps the result at 60 chars.
+function cleanTitleGuess(line){
+  let cleaned = line.replace(/\s+/g, ' ').trim().replace(/[\s.,:;\-–—]+$/, '');
+  if(cleaned === cleaned.toUpperCase() && /[A-Za-z]/.test(cleaned)){
+    cleaned = cleaned.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+  }
+  return cleaned.length > 60 ? cleaned.slice(0, 60).trim() : cleaned;
+}
+
 /* ---------- OCR ---------- */
 // Tesseract's runtime scales with pixel count, not text complexity — recognition accuracy gets no
 // real benefit past a couple thousand pixels on the long edge, so feeding it a much larger capture
@@ -3615,6 +3720,7 @@ let pendingFile = null;
 let pendingOcrText = '';
 let pendingExpirySuggested = false;
 let pendingCategorySuggested = false;
+let pendingTitleSuggested = false;
 let categoryManuallyChanged = false;
 // No longer blocks Save — the user shouldn't have to wait for on-device OCR just to save a
 // document. Still tracked so saveDocument()/saveCameraDocument() know whether to kick off
@@ -3622,11 +3728,11 @@ let categoryManuallyChanged = false;
 // actually finishes, since text search wouldn't otherwise pick up whatever it hadn't found yet.
 let pendingOcrRunning = false;
 
-function openAddModal(){ state.modal = 'add'; state.renewalUploadTargetId = null; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+function openAddModal(){ state.modal = 'add'; state.renewalUploadTargetId = null; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
 // Opens the same 'add' modal, but flagged so saveDocument() links the new file to oldDocId as its
 // replacement and archives oldDocId once the upload succeeds — the direct "upload now" path from
 // the Renew flow, rather than only being able to pick an already-existing document as the reason.
-function openAddModalForRenewal(oldDocId){ state.modal = 'add'; state.renewalUploadTargetId = oldDocId; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
+function openAddModalForRenewal(oldDocId){ state.modal = 'add'; state.renewalUploadTargetId = oldDocId; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); }
 function closeModal(){
   goBackOneLayer();
 }
@@ -3799,6 +3905,7 @@ function renderModal(){
         <div class="progress-row" id="ocrProgress" style="display:none;"></div>
         <label class="field-label">Document title</label>
         <input type="text" id="docTitle" placeholder="e.g. Aadhaar card" value="${renewalTarget ? escapeHtml(renewalTarget.title) : ''}" />
+        <div class="suggest-note" id="titleSuggestNote" style="display:none;"></div>
         <label class="field-label">Category</label>
         <select id="docCategory">${categoryOptionsHtml(renewalTarget ? renewalTarget.category : undefined)}</select>
         <div class="suggest-note" id="categorySuggestNote" style="display:none;"></div>
@@ -3835,6 +3942,7 @@ function renderModal(){
       pendingOcrText = '';
       pendingExpirySuggested = false;
       pendingCategorySuggested = false;
+      pendingTitleSuggested = false;
       const drop = document.getElementById('fileDrop');
       drop.textContent = f.name; drop.classList.add('has-file');
       document.getElementById('pdfNote').style.display = f.type === 'application/pdf' ? 'block' : 'none';
@@ -3850,6 +3958,7 @@ function renderModal(){
         applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
         syncReminderDaysEnabled('docExpiry', 'docReminderDays', 'docReminderWrap');
         applyCategorySuggestionIfUntouched('docCategory', 'categorySuggestNote', pendingOcrText);
+        applyTitleSuggestionIfEmpty('docTitle', 'titleSuggestNote', pendingOcrText);
         pendingOcrRunning = false;
       } else if(f.type === 'application/pdf'){
         pendingOcrRunning = true;
@@ -3858,6 +3967,7 @@ function renderModal(){
           applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
           syncReminderDaysEnabled('docExpiry', 'docReminderDays', 'docReminderWrap');
           applyCategorySuggestionIfUntouched('docCategory', 'categorySuggestNote', pendingOcrText);
+          applyTitleSuggestionIfEmpty('docTitle', 'titleSuggestNote', pendingOcrText);
         } catch(err){ console.error('PDF OCR failed', err); }
         document.getElementById('ocrProgress').style.display = 'none';
         pendingOcrRunning = false;
@@ -4225,6 +4335,7 @@ function renderModal(){
           <div class="progress-row" id="ocrProgress" style="display:none;"></div>
           <label class="field-label">Document title</label>
           <input type="text" id="camTitle" placeholder="e.g. Electricity bill" value="${escapeHtml(pendingCamTitle)}" />
+          <div class="suggest-note" id="camTitleSuggestNote" style="display:none;"></div>
           <label class="field-label">Category</label>
           <select id="camCategory">${categoryOptionsHtml(pendingCamCategory)}</select>
           <div class="suggest-note" id="camCategorySuggestNote" style="display:none;"></div>
@@ -4488,6 +4599,23 @@ function applyCategorySuggestionIfUntouched(selectId, noteId, ocrText){
   }
 }
 
+// Same plain "input.value is empty" guard as applyExpirySuggestionIfEmpty above (not the
+// category one's separate manually-changed flag) — a text input's emptiness is itself enough
+// signal for "untouched", and it's exactly what already keeps this from overwriting a title the
+// user typed themselves, or a renewal flow's pre-filled title (openAddModalForRenewal/
+// openCameraModalForRenewal both pre-fill docTitle/camTitle before OCR ever runs).
+function applyTitleSuggestionIfEmpty(inputId, noteId, ocrText){
+  const input = document.getElementById(inputId);
+  const note = document.getElementById(noteId);
+  if(!input || pendingTitleSuggested || input.value) return;
+  const guess = guessTitle(ocrText);
+  if(guess){
+    input.value = guess;
+    pendingTitleSuggested = true;
+    if(note){ note.textContent = "Title suggested from the scan — edit it if that's not right."; note.style.display = 'block'; }
+  }
+}
+
 function setOcrProgress(pct, pageNum, total){
   const el = document.getElementById('ocrProgress');
   if(!el) return;
@@ -4671,7 +4799,7 @@ function openCameraModal(){
   state.modal = 'camera'; state.capturedPages = []; state.capturedPagesRaw = []; state.capturedPageEnhance = [];
   state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropEnhanceOn = true;
   state.renewalUploadTargetId = null;
-  pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false;
+  pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = ''; pendingCamCategory = null; pendingCamExpiry = '';
   pendingCamReminderDaysText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
 }
@@ -4684,7 +4812,7 @@ function openCameraModalForRenewal(oldDocId){
   state.modal = 'camera'; state.capturedPages = []; state.capturedPagesRaw = []; state.capturedPageEnhance = [];
   state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropEnhanceOn = true;
   state.renewalUploadTargetId = oldDocId;
-  pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false;
+  pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = oldDoc ? oldDoc.title : ''; pendingCamCategory = oldDoc ? oldDoc.category : null;
   pendingCamExpiry = ''; pendingCamReminderDaysText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
 }
@@ -5124,7 +5252,8 @@ async function confirmCrop(){
   applyExpirySuggestionIfEmpty('camExpiry', 'camExpirySuggestNote', pendingOcrText);
   syncReminderDaysEnabled('camExpiry', 'camReminderDays', 'camReminderWrap');
   applyCategorySuggestionIfUntouched('camCategory', 'camCategorySuggestNote', pendingOcrText);
-  // Re-snapshot — a suggestion above may have just written into the expiry/category fields
+  applyTitleSuggestionIfEmpty('camTitle', 'camTitleSuggestNote', pendingOcrText);
+  // Re-snapshot — a suggestion above may have just written into the title/expiry/category fields
   // directly, so this picks that up too, ready for the next renderModal().
   snapshotCamFormFields();
   pendingOcrRunning = false;
@@ -5484,7 +5613,7 @@ async function toggleArchive(id){
   // from a previous archive.
   doc.archivedAt = doc.archived ? new Date().toISOString() : null;
   render();
-  toast(doc.archived ? 'Archived' : 'Restored');
+  toast(doc.archived ? 'Archived' : 'Restored', {onAction: () => toggleArchive(id)});
   try{ await userDoc().collection('documents').doc(id).update({archived: doc.archived, archivedAt: doc.archivedAt}); }
   catch(e){ console.error('Failed to update archive state', e); }
 }
@@ -5532,7 +5661,7 @@ async function togglePin(id){
   if(!doc) return;
   doc.pinned = !doc.pinned;
   render();
-  toast(doc.pinned ? 'Pinned to top' : 'Unpinned');
+  toast(doc.pinned ? 'Pinned to top' : 'Unpinned', {onAction: () => togglePin(id)});
   try{ await userDoc().collection('documents').doc(id).update({pinned: doc.pinned}); }
   catch(e){ console.error('Failed to update pin state', e); }
 }
