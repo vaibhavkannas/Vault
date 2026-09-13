@@ -265,6 +265,9 @@
   .chip-btn.secondary{background:none;color:var(--ink-soft);padding:10px 12px;}
   .chip-btn.danger{background:var(--danger-bg);color:var(--danger);}
   .doc-link-note{font-size:11.5px;color:var(--ink-soft);margin:4px 0 0;}
+  .tag-chip-row{display:flex;flex-wrap:wrap;gap:5px;margin:4px 0 0;}
+  .tag-chip{background:none;border:1px solid var(--line);color:var(--ink-soft);border-radius:999px;padding:2px 9px;font-size:11px;font-weight:400;cursor:pointer;font-family:inherit;line-height:1.6;}
+  .tag-chip:hover{color:var(--ink);border-color:var(--ink-soft);}
   .icon-btn{border:1px solid var(--line);background:var(--paper-2);border-radius:var(--radius-sm);padding:6px 10px;font-size:11.5px;cursor:pointer;color:var(--ink);}
   /* A native <input type="date"> has no visible way to clear it once set on several mobile
      browsers (no built-in × the way desktop Chrome shows one) — this pairs an explicit Clear
@@ -677,7 +680,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.13 · 08:19';
+const APP_VERSION = '2026.09.13 · 08:37';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1043,6 +1046,14 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.13 · 08:37',
+    items: [
+      "Added: freeform tags — label documents with your own tags (e.g. \"car\", \"warranty\"), searchable right alongside titles and text.",
+      "Added: sort documents within a category by date added, expiry, or title, from a new \"Sort by\" control.",
+      "Added: reorder your categories from Settings using the new ↑ / ↓ buttons on each row."
+    ]
+  },
   {
     version: '2026.09.13 · 08:19',
     items: [
@@ -1426,6 +1437,19 @@ function updateThemeColorMeta(theme){
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   if(currentTheme() === 'system') updateThemeColorMeta('system');
 });
+
+/* ---------- document sort preference ----------
+   Same getter/setter shape as currentTheme()/applyTheme() above: a plain localStorage string,
+   swallowed try/catch on both read and write, default chosen so a user who's never touched the
+   control sees no change at all. 'date-added-descending' reproduces the order documents already
+   come back in from Firestore (see prefetchUserMetaReads's orderBy('addedAt','desc')), which is
+   today's existing on-screen order. */
+function currentDocSort(){
+  try{ return localStorage.getItem('vault-doc-sort') || 'date-added-descending'; } catch(e){ return 'date-added-descending'; }
+}
+function setDocSort(mode){
+  try{ localStorage.setItem('vault-doc-sort', mode); } catch(e){}
+}
 
 /* ---------- app lock ----------
    An optional, opt-in local gate on top of the already-persistent Google sign-in — the whole
@@ -3014,10 +3038,14 @@ function renderSettings(app){
 
       <div class="settings-section">
         <h4>Categories</h4>
-        ${state.categories.map(c => `
+        ${state.categories.map((c,i) => `
           <div class="cat-manage-row">
             <span class="cm-icon">${categoryIconHtml(c, 17)}</span>
             <span class="cm-label">${escapeHtml(c.label)}</span>
+            ${state.categories.length > 1 ? `
+              <button class="icon-btn" data-cat-move="${c.id}" data-cat-dir="up" aria-label="Move ${escapeHtml(c.label)} up" ${(i===0 || categoryReorderInFlight) ? 'disabled' : ''}>↑</button>
+              <button class="icon-btn" data-cat-move="${c.id}" data-cat-dir="down" aria-label="Move ${escapeHtml(c.label)} down" ${(i===state.categories.length-1 || categoryReorderInFlight) ? 'disabled' : ''}>↓</button>
+            ` : ''}
             <button class="icon-btn" data-rename-cat="${c.id}">Rename</button>
             <button class="icon-btn danger" data-delete-cat="${c.id}">Delete</button>
           </div>
@@ -3120,6 +3148,9 @@ function renderSettings(app){
   if(archiveRetentionSelect) archiveRetentionSelect.onchange = () => requestArchiveRetentionChange(+archiveRetentionSelect.value || null);
 
   document.getElementById('addCategoryBtn').onclick = openAddCategoryModal;
+  document.querySelectorAll('[data-cat-move]').forEach(btn => {
+    btn.onclick = () => moveCategoryOrder(btn.getAttribute('data-cat-move'), btn.getAttribute('data-cat-dir') === 'up' ? -1 : 1);
+  });
   document.querySelectorAll('[data-rename-cat]').forEach(btn => {
     btn.onclick = () => openEditCategoryModal(btn.getAttribute('data-rename-cat'));
   });
@@ -3145,12 +3176,21 @@ function matchesSearch(doc){
   if(doc.title.toLowerCase().includes(q)) return {match:true, snippet:null};
   const text = doc.ocrText || '';
   const idx = text.toLowerCase().indexOf(q);
-  if(idx === -1) return {match:false, snippet:null};
-  const start = Math.max(0, idx-28);
-  const end = Math.min(text.length, idx+q.length+28);
-  const re = new RegExp('('+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','ig');
-  const snippet = escapeHtml(text.slice(start,end)).replace(re, '<mark>$1</mark>');
-  return {match:true, snippet: (start>0?'…':'') + snippet + (end<text.length?'…':'')};
+  if(idx !== -1){
+    const start = Math.max(0, idx-28);
+    const end = Math.min(text.length, idx+q.length+28);
+    const re = new RegExp('('+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','ig');
+    const snippet = escapeHtml(text.slice(start,end)).replace(re, '<mark>$1</mark>');
+    return {match:true, snippet: (start>0?'…':'') + snippet + (end<text.length?'…':'')};
+  }
+  // Every document created before tags shipped has no tags field at all — (doc.tags || []) keeps
+  // those matching (or not) exactly as they did before this branch existed.
+  const matchedTag = (doc.tags || []).find(t => t.toLowerCase().includes(q));
+  if(matchedTag){
+    const re = new RegExp('('+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','ig');
+    return {match:true, snippet: 'Tag: ' + escapeHtml(matchedTag).replace(re, '<mark>$1</mark>')};
+  }
+  return {match:false, snippet:null};
 }
 
 // ---------- Quick Reference ----------
@@ -3308,6 +3348,37 @@ async function confirmDeleteQuickRef(){
   }
 }
 
+/* ---------- document sort ----------
+   Applies the current sort-mode preference (see currentDocSort() above) to the documents WITHIN
+   one section -- the Pinned list, or a single category's grouped list, in renderVault() below.
+   Never applied to the Renewals strip (its own fixed, hardcoded soonest-expiry-first order) or to
+   Recently Deleted (its own separate, already-correct sort) -- and never changes which section a
+   document appears under or the order of the sections themselves (categories keep the order their
+   `order` field gives them; see the category-reorder feature in Settings). Pure: returns a new
+   array, never mutates `docs`. */
+function sortDocumentsForDisplay(docs, mode){
+  const sorted = docs.slice();
+  if(mode === 'expiry-ascending'){
+    // No-expiry documents always sort to the very end, regardless of direction -- there's no
+    // sensible position for "no date" among real ones, and treating a missing expiry as some
+    // default date would silently misplace it (and risks comparing against undefined/null).
+    sorted.sort((a,b) => {
+      if(!a.expiry && !b.expiry) return 0;
+      if(!a.expiry) return 1;
+      if(!b.expiry) return -1;
+      return a.expiry.localeCompare(b.expiry);
+    });
+  } else if(mode === 'alphabetical'){
+    sorted.sort((a,b) => (a.title||'').toLowerCase().localeCompare((b.title||'').toLowerCase()));
+  } else {
+    // 'date-added-descending' (the default) -- same comparator loadOfflineDocumentList() already
+    // uses, and the order documents already come back from Firestore in, so this reproduces
+    // today's on-screen order exactly for anyone who never touches the sort control.
+    sorted.sort((a,b) => (b.addedAt||'').localeCompare(a.addedAt||''));
+  }
+  return sorted;
+}
+
 function renderVault(app){
   if(state.showDeleted) return renderDeletedView(app);
   // Try to self-heal before ever showing "Reconnect" — see attemptSilentDriveRefresh(). Fire-and-
@@ -3331,10 +3402,15 @@ function renderVault(app){
   // expands that section) — excluding pinned docs from their category used to mean pinning your
   // only document in a category made that category vanish from the list entirely, since its count
   // was computed only from unpinned docs.
-  const pinnedDocs = filtered.filter(d => d.pinned);
+  const docSort = currentDocSort();
+  const pinnedDocs = sortDocumentsForDisplay(filtered.filter(d => d.pinned), docSort);
 
   const grouped = {};
   filtered.forEach(d => { (grouped[d.category] = grouped[d.category] || []).push(d); });
+  // Sorting happens within each category's own list only — never changes which category a document
+  // groups under, and never touches knownCatOrder/catOrder below (that's the section order itself,
+  // driven separately by each category's `order` field — see Settings' category reorder feature).
+  Object.keys(grouped).forEach(cat => { grouped[cat] = sortDocumentsForDisplay(grouped[cat], docSort); });
   const knownCatOrder = state.categories.map(c=>c.id).filter(c => grouped[c] && grouped[c].length);
   // Categories aren't part of the offline cache (see the offline document cache section above) —
   // in offline mode state.categories is empty, which would otherwise silently drop every document
@@ -3368,10 +3444,19 @@ function renderVault(app){
       ` : ''}
       <div class="search-bar">
         <span class="sicon">${icon('search',18)}</span>
-        <input type="text" id="searchInput" placeholder="Search titles or text inside documents" value="${escapeHtml(state.searchQuery)}" />
+        <input type="text" id="searchInput" placeholder="Search titles, text, or tags" value="${escapeHtml(state.searchQuery)}" />
         ${state.searchQuery ? `<button type="button" class="search-clear" id="searchClearBtn" aria-label="Clear search">×</button>` : ''}
       </div>
       ${state.searchQuery ? `<div class="search-hint">${filtered.length} result${filtered.length===1?'':'s'} for "${escapeHtml(state.searchQuery)}"</div>` : ''}
+
+      <div class="settings-row">
+        <span>Sort by</span>
+        <select id="docSortSelect" style="width:auto;margin-bottom:0;padding:8px 10px;" aria-label="Sort documents by">
+          <option value="date-added-descending" ${docSort==='date-added-descending' ? 'selected' : ''}>Date added</option>
+          <option value="expiry-ascending" ${docSort==='expiry-ascending' ? 'selected' : ''}>Expiry date</option>
+          <option value="alphabetical" ${docSort==='alphabetical' ? 'selected' : ''}>Alphabetical</option>
+        </select>
+      </div>
 
       ${pinnedDocs.length ? `
         <div class="section-title">Pinned</div>
@@ -3434,6 +3519,8 @@ function renderVault(app){
 
   document.getElementById('openSettingsBtn').onclick = () => { state.screen = 'settings'; pushAppHistoryState(); render(); refreshDriveStorageInfo(); };
   document.getElementById('openQuickRefBtn').onclick = () => { state.screen = 'quickref'; pushAppHistoryState(); render(); };
+  const docSortSelect = document.getElementById('docSortSelect');
+  if(docSortSelect) docSortSelect.onchange = () => { setDocSort(docSortSelect.value); render(); };
   const addBtn = document.getElementById('addDocBtn');
   if(addBtn) addBtn.onclick = () => openAddModal();
   const camBtn = document.getElementById('cameraFabBtn');
@@ -3483,6 +3570,17 @@ function renderVault(app){
     const freshInput = document.getElementById('searchInput');
     if(freshInput) freshInput.focus();
   };
+
+  // Tapping a tag chip overwrites the search box with that tag's text outright — same immediate,
+  // non-debounced render() as the search-clear button above, not the typing path's 150ms debounce.
+  // Deliberately a plain overwrite, never combined with whatever was already in the search box.
+  document.querySelectorAll('[data-filter-tag]').forEach(btn => {
+    btn.onclick = () => {
+      clearTimeout(searchRenderTimer);
+      state.searchQuery = btn.getAttribute('data-filter-tag');
+      render();
+    };
+  });
 
   document.querySelectorAll('.cat-toggle').forEach(el => {
     // Mutates the already-rendered DOM directly instead of calling render() — collapse/expand used
@@ -3655,6 +3753,16 @@ function renderDeletedView(app){
   renderModal();
 }
 
+// Small escaped chip per tag, for display atop a document card — data-filter-tag carries the raw
+// tag text so the vault's event wiring (see renderVault) can turn a tap into "search for this tag".
+// Returns '' for an absent/empty array so a document with no tags (i.e. every document that existed
+// before this feature shipped) renders pixel-identical to today — always call with (d.tags || []),
+// never d.tags directly.
+function renderTagChipsHtml(tags){
+  if(!tags || !tags.length) return '';
+  return `<div class="tag-chip-row">${tags.map(t => `<button type="button" class="tag-chip" data-filter-tag="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join('')}</div>`;
+}
+
 function renderDocCard(d, opts){
   opts = opts || {};
   const meta = categoryFor(d.category);
@@ -3688,6 +3796,7 @@ function renderDocCard(d, opts){
       <div class="doc-body">
         <p class="doc-title" data-open-doc="${d.id}" role="button" tabindex="0">${escapeHtml(d.title)}${state.offlineDocIds.has(d.id) ? `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>` : offlineUnavailable ? `<span class="offline-badge unavailable">Not available offline</span>` : ''}</p>
         <p class="doc-meta">${opts.showCategory ? `${escapeHtml(meta.label)} · ` : ''}Added ${formatDate(d.addedAt)}${d.archived ? ' · archived' : ''}</p>
+        ${renderTagChipsHtml(d.tags || [])}
         ${d.snippet ? `<p class="doc-snippet">${d.snippet}</p>` : ''}
         ${expiryBadge}
         ${linkNote}
@@ -3920,6 +4029,8 @@ function renderModal(){
           <input type="text" id="docReminderDays" placeholder="e.g. 90, 30, 7" />
           <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
         </div>
+        <label class="field-label">Tags (optional)</label>
+        <input type="text" id="docTags" placeholder="e.g. car, warranty, 2026" />
         <div class="error-text" id="addErr" style="display:none;"></div>
         <button class="primary" id="saveDocBtn">${renewalTarget ? 'Save & archive old document' : 'Save document'}</button>
       </div>
@@ -3998,6 +4109,8 @@ function renderModal(){
           <input type="text" id="editReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml((doc.reminderDays || []).join(', '))}" />
           <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
         </div>
+        <label class="field-label">Tags (optional)</label>
+        <input type="text" id="editTags" placeholder="e.g. car, warranty, 2026" value="${escapeHtml((doc.tags || []).join(', '))}" />
         <div class="error-text" id="editErr" style="display:none;"></div>
         <button class="primary" id="saveEditBtn">Save changes</button>
       </div>
@@ -4350,6 +4463,8 @@ function renderModal(){
             <input type="text" id="camReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml(pendingCamReminderDaysText)}" />
             <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
           </div>
+          <label class="field-label">Tags (optional)</label>
+          <input type="text" id="camTags" placeholder="e.g. car, warranty, 2026" value="${escapeHtml(pendingCamTagsText)}" />
           <div class="error-text" id="camErr" style="display:none;"></div>
           <button class="primary" id="saveCamBtn" ${state.capturedPages.length ? '' : 'disabled'}>${renewalTarget ? 'Save & archive old' : 'Save as PDF'} (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
         </div>
@@ -4639,6 +4754,7 @@ async function saveDocument(){
   // disabled/cleared while expiry is empty (see syncReminderDaysEnabled), this is the save-time
   // backstop against that same case.
   const reminderDays = expiry ? parseReminderDaysInput(document.getElementById('docReminderDays').value) : null;
+  const tags = parseTagsInput(document.getElementById('docTags').value);
   const errEl = document.getElementById('addErr');
   const saveBtn = document.getElementById('saveDocBtn');
   const renewalTargetId = state.renewalUploadTargetId;
@@ -4657,7 +4773,7 @@ async function saveDocument(){
   const needsBackgroundOcr = pendingOcrRunning;
 
   try{
-    const newDoc = await finalizeAndStoreDocument({title, category, expiry, reminderDays, blob: pendingFile, mimeType: pendingFile.type, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
+    const newDoc = await finalizeAndStoreDocument({title, category, expiry, reminderDays, tags, blob: pendingFile, mimeType: pendingFile.type, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
     state.renewalUploadTargetId = null;
     closeModal();
     if(renewalTargetId){
@@ -4705,13 +4821,14 @@ async function linkRenewalAndArchiveOld(oldId, newId){
   }
 }
 
-async function finalizeAndStoreDocument({title, category, expiry, reminderDays, blob, mimeType, ocrText, onUploadProgress}){
+async function finalizeAndStoreDocument({title, category, expiry, reminderDays, tags, blob, mimeType, ocrText, onUploadProgress}){
   const cat = categoryFor(category);
   const id = 'doc_' + Date.now();
   const filename = safeFilename(title, mimeType);
   const driveFileId = await driveUpload(blob, filename, mimeType, cat.driveFolderId, onUploadProgress);
   const doc = {
     id, title, category: cat.id, expiry: expiry || null, reminderDays: reminderDays || null,
+    tags: tags || [],
     driveFileId, mimeType, size: blob.size || 0,
     ocrText: ocrText || '',
     addedAt: new Date().toISOString(),
@@ -4749,13 +4866,16 @@ let pendingCamTitle = '';
 let pendingCamCategory = null;
 let pendingCamExpiry = '';
 let pendingCamReminderDaysText = '';
+let pendingCamTagsText = '';
 function snapshotCamFormFields(){
   const t = document.getElementById('camTitle'), c = document.getElementById('camCategory'),
-        e = document.getElementById('camExpiry'), r = document.getElementById('camReminderDays');
+        e = document.getElementById('camExpiry'), r = document.getElementById('camReminderDays'),
+        g = document.getElementById('camTags');
   if(t) pendingCamTitle = t.value;
   if(c) pendingCamCategory = c.value;
   if(e) pendingCamExpiry = e.value;
   if(r) pendingCamReminderDaysText = r.value;
+  if(g) pendingCamTagsText = g.value;
 }
 async function startCamera(){
   const video = document.getElementById('cameraVideo');
@@ -4801,7 +4921,7 @@ function openCameraModal(){
   state.renewalUploadTargetId = null;
   pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = ''; pendingCamCategory = null; pendingCamExpiry = '';
-  pendingCamReminderDaysText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
+  pendingCamReminderDaysText = ''; pendingCamTagsText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
 }
 // Opens the same camera flow, but flagged (like openAddModalForRenewal) so saveCameraDocument()
 // links the new capture to oldDocId as its replacement and archives oldDocId once the capture
@@ -4814,7 +4934,7 @@ function openCameraModalForRenewal(oldDocId){
   state.renewalUploadTargetId = oldDocId;
   pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = oldDoc ? oldDoc.title : ''; pendingCamCategory = oldDoc ? oldDoc.category : null;
-  pendingCamExpiry = ''; pendingCamReminderDaysText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
+  pendingCamExpiry = ''; pendingCamReminderDaysText = ''; pendingCamTagsText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
 }
 
 // OpenCV.js is only needed for this one screen (the crop step's perspective correction), so it's
@@ -5283,6 +5403,7 @@ async function saveCameraDocument(){
   const category = document.getElementById('camCategory').value;
   const expiry = document.getElementById('camExpiry').value;
   const reminderDays = expiry ? parseReminderDaysInput(document.getElementById('camReminderDays').value) : null;
+  const tags = parseTagsInput(document.getElementById('camTags').value);
   const errEl = document.getElementById('camErr');
   const saveBtn = document.getElementById('saveCamBtn');
 
@@ -5313,7 +5434,7 @@ async function saveCameraDocument(){
     const blob = dataUrlToBlob(pdf.output('datauristring'));
     const mimeType = 'application/pdf';
 
-    const newDoc = await finalizeAndStoreDocument({title, category, expiry, reminderDays, blob, mimeType, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
+    const newDoc = await finalizeAndStoreDocument({title, category, expiry, reminderDays, tags, blob, mimeType, ocrText: pendingOcrText, onUploadProgress: setUploadProgress});
     state.renewalUploadTargetId = null;
     stopCamera();
     closeModal();
@@ -5366,6 +5487,28 @@ function parseReminderDaysInput(value){
   return unique.length ? unique : null;
 }
 
+// Freeform per-document labels layered on top of the fixed category — same comma-separated shape
+// as parseReminderDaysInput above, just for arbitrary text instead of numbers: split, trim, drop
+// empty pieces, cap each tag's length and the total count so one enormous paste can't bloat a
+// document record, and de-duplicate case-insensitively (keeping whichever casing was typed first)
+// so "Car" and "car" don't end up as two visually-identical tags. A tag can't contain a literal
+// comma — same accepted limitation as parseReminderDaysInput's own comma-separated input.
+function parseTagsInput(value){
+  if(!value || !value.trim()) return [];
+  const seen = new Set();
+  const tags = [];
+  for(const raw of value.split(',')){
+    const tag = raw.trim().slice(0, 30);
+    if(!tag) continue;
+    const key = tag.toLowerCase();
+    if(seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+    if(tags.length >= 20) break;
+  }
+  return tags;
+}
+
 async function saveEditedDocument(){
   const doc = state.documents.find(d => d.id === state.editDocId);
   if(!doc) return;
@@ -5373,6 +5516,7 @@ async function saveEditedDocument(){
   const category = document.getElementById('editCategory').value;
   const expiry = document.getElementById('editExpiry').value;
   const reminderDays = expiry ? parseReminderDaysInput(document.getElementById('editReminderDays').value) : null;
+  const tags = parseTagsInput(document.getElementById('editTags').value);
   const errEl = document.getElementById('editErr');
   const saveBtn = document.getElementById('saveEditBtn');
   if(!title){ errEl.textContent='Enter a document title.'; errEl.style.display='block'; return; }
@@ -5385,7 +5529,7 @@ async function saveEditedDocument(){
     if(newCat.id !== oldCat.id){
       await driveMoveFile(doc.driveFileId, oldCat.driveFolderId, newCat.driveFolderId);
     }
-    const updated = {...doc, title, category: newCat.id, expiry: expiry || null, reminderDays};
+    const updated = {...doc, title, category: newCat.id, expiry: expiry || null, reminderDays, tags};
     await persistDocument(updated);
     Object.assign(doc, updated);
     closeModal();
@@ -5899,6 +6043,51 @@ async function deleteCategory(id){
   }
 }
 
+// Blocks a second reorder write from firing while one is still being committed — a fast enough
+// double-click on an up/down arrow can otherwise beat the disabled-button re-render below, letting
+// two overlapping batch writes race each other and leave `order` corrupted. Deliberately a plain
+// module-level flag, not part of `state` — it's transient click-guard bookkeeping the rest of the
+// app never needs to reason about, same idea as silentDriveRetryInFlight above.
+let categoryReorderInFlight = false;
+
+// Swaps the category at `id` with its neighbor in the given direction (-1 = up, +1 = down) and
+// persists the result as a single atomic multi-document write, same batch pattern as
+// saveNewCategory/toggleEmailDigest above. Unlike those optimistic updates, this deliberately does
+// NOT touch state.categories until the write actually succeeds — a failed reorder should visibly
+// snap back to exactly the prior order, not sit on a locally-applied order Firestore never agreed
+// to.
+async function moveCategoryOrder(id, direction){
+  if(categoryReorderInFlight) return;
+  const idx = state.categories.findIndex(c => c.id === id);
+  if(idx === -1) return;
+  const swapIdx = idx + direction;
+  if(swapIdx < 0 || swapIdx >= state.categories.length) return;
+
+  const reordered = state.categories.slice();
+  [reordered[idx], reordered[swapIdx]] = [reordered[swapIdx], reordered[idx]];
+
+  categoryReorderInFlight = true;
+  render(); // re-renders with every row's arrows disabled to show the pending state
+
+  try{
+    // Renumbers ALL categories to clean sequential integers, not just the two swapped — this makes
+    // the write self-healing against any historical gaps or duplicates in the stored `order` field.
+    const batch = db.batch();
+    reordered.forEach((c,i) => batch.update(userDoc().collection('categories').doc(c.id), {order: i}));
+    await batch.commit();
+    reordered.forEach((c,i) => { c.order = i; });
+    state.categories = reordered;
+  } catch(e){
+    console.error('Failed to reorder categories', e);
+    toast(friendlyCloudError(e));
+    // No mutation on failure — state.categories is untouched, so the render() in `finally` below
+    // redraws the on-screen order exactly as it was before this click.
+  } finally {
+    categoryReorderInFlight = false;
+    render();
+  }
+}
+
 /* ---------- sync from Drive ----------
    Picks up files added straight into a category's Drive subfolder outside the app: the
    subfolder a file was found in becomes its category, its filename (minus extension) becomes
@@ -5942,6 +6131,7 @@ async function runSyncFromDrive(){
         const doc = {
           id: 'doc_sync_' + Date.now() + '_' + importedCount,
           title, category: cat.id, expiry: null,
+          tags: [], // nothing in a raw synced file to derive tags from
           driveFileId: f.id, mimeType: f.mimeType || 'application/octet-stream', size: +(f.size || 0),
           ocrText, addedAt: new Date().toISOString(), archived: false
         };
@@ -5967,9 +6157,11 @@ async function runSyncFromDrive(){
 
 /* ---------- export ---------- */
 function exportDocumentListCsv(){
-  const rows = [['Title','Category','Expiry','Added','Archived','Drive link']];
+  const rows = [['Title','Category','Expiry','Tags','Added','Archived','Drive link']];
   state.documents.forEach(d => {
-    rows.push([d.title, categoryFor(d.category).label, d.expiry || '', formatDate(d.addedAt), d.archived ? 'Yes' : 'No', `https://drive.google.com/file/d/${d.driveFileId}/view`]);
+    // Semicolon-joined, not comma-joined — a comma inside this one cell would otherwise be
+    // indistinguishable from the CSV's own column delimiter once opened in a spreadsheet.
+    rows.push([d.title, categoryFor(d.category).label, d.expiry || '', (d.tags||[]).join('; '), formatDate(d.addedAt), d.archived ? 'Yes' : 'No', `https://drive.google.com/file/d/${d.driveFileId}/view`]);
   });
   // A cell starting with =, +, -, or @ opens as a live formula in Excel/Sheets — prefix a leading
   // apostrophe (a spreadsheet's own documented escape) so a synced Drive filename can't smuggle one
