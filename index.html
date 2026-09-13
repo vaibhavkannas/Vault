@@ -445,6 +445,16 @@
   .crop-magnifier::before, .crop-magnifier::after{content:'';position:absolute;background:#1a73e8;}
   .crop-magnifier::before{left:50%;top:0;bottom:0;width:1px;transform:translateX(-50%);}
   .crop-magnifier::after{top:50%;left:0;right:0;height:1px;transform:translateY(-50%);}
+  /* Ties the magnifier back to the exact point it's zoomed in on — see updateMagnifier()'s own
+     comment for why a floating, unconnected circle read as "confusing" on a real touch device: the
+     loupe is deliberately positioned AWAY from the finger so it isn't covered, but with nothing
+     visually linking the two, there's no obvious relationship between "this magnified circle" and
+     "the spot under my finger." A short line from the loupe's edge straight to the touch point
+     (positioned/rotated in JS, see updateMagnifierTail()) makes that connection immediate at a
+     glance, the same way iOS's own text-selection loupe is a teardrop pointing at its target rather
+     than a plain disconnected circle. transform-origin:left keeps rotation anchored at the loupe's
+     edge, since its length (not just its angle) changes every frame as the finger moves. */
+  .crop-magnifier-tail{position:absolute;height:2px;background:#fff;box-shadow:0 0 3px rgba(0,0,0,0.5);pointer-events:none;display:none;transform-origin:left center;}
   .progress-row{font-size:12.5px;color:var(--ink-soft);text-align:center;margin:10px 0;}
   .progress-track{height:4px;background:var(--surface-container);border-radius:4px;overflow:hidden;margin-bottom:6px;}
   .progress-fill{height:100%;background:var(--brass);transition:width 0.2s ease;}
@@ -727,7 +737,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.13 · 21:32';
+const APP_VERSION = '2026.09.13 · 21:55';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1169,6 +1179,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.13 · 21:55',
+    items: [
+      "Improved: the crop screen's magnifier now shows a line pointing to exactly where your finger is, so it's clear what it's zoomed in on."
+    ]
+  },
   {
     version: '2026.09.13 · 21:32',
     items: [
@@ -5973,6 +5989,7 @@ function renderModal(){
             <div class="crop-handle" data-handle="tr"></div>
             <div class="crop-handle" data-handle="bl"></div>
             <div class="crop-handle" data-handle="br"></div>
+            <div class="crop-magnifier-tail" id="cropMagnifierTail"></div>
             <div class="crop-magnifier" id="cropMagnifier"></div>
           </div>
           <label class="settings-row" style="cursor:pointer;">
@@ -6755,6 +6772,7 @@ function wireCropOverlay(){
   };
   const EDGE_CORNERS = {top: ['tl', 'tr'], right: ['tr', 'br'], bottom: ['bl', 'br'], left: ['tl', 'bl']};
   const magnifier = document.getElementById('cropMagnifier');
+  const magnifierTail = document.getElementById('cropMagnifierTail');
   if(state.cropEnhanceOn) img.style.filter = ENHANCE_FILTER;
 
   // Cached once per gesture (onPointerDown) / once at initial layout (initQuad), not re-read on
@@ -6823,8 +6841,12 @@ function wireCropOverlay(){
     if(!magnifier) return;
     magnifier.style.backgroundImage = `url("${state.cropSourceDataUrl}")`;
     magnifier.style.display = 'block';
+    if(magnifierTail) magnifierTail.style.display = 'block';
   }
-  function hideMagnifier(){ if(magnifier) magnifier.style.display = 'none'; }
+  function hideMagnifier(){
+    if(magnifier) magnifier.style.display = 'none';
+    if(magnifierTail) magnifierTail.style.display = 'none';
+  }
   function updateMagnifier(pt){
     if(!magnifier) return;
     const half = CROP_MAG_SIZE / 2;
@@ -6836,6 +6858,23 @@ function wireCropOverlay(){
     magnifier.style.top = (my - half) + 'px';
     magnifier.style.backgroundSize = (stageW * CROP_MAG_ZOOM) + 'px ' + (stageH * CROP_MAG_ZOOM) + 'px';
     magnifier.style.backgroundPosition = (-(pt.x * CROP_MAG_ZOOM - half)) + 'px ' + (-(pt.y * CROP_MAG_ZOOM - half)) + 'px';
+    // The tether from the loupe's edge to the actual touch point — see .crop-magnifier-tail's own
+    // comment for why this exists. mx/my (the loupe's CENTER, already clamped above) and pt (the
+    // real touch point) are rarely a clean vertical line once clamping has shifted the loupe away
+    // from directly above/below the point (near the stage's left/right edges) — computing the real
+    // angle rather than assuming "always straight down" keeps the line actually pointing at pt in
+    // that case instead of visibly missing it.
+    if(magnifierTail){
+      const dx = pt.x - mx, dy = pt.y - my;
+      const dist = Math.hypot(dx, dy);
+      const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+      const edgeX = mx + Math.cos(angle * Math.PI / 180) * half;
+      const edgeY = my + Math.sin(angle * Math.PI / 180) * half;
+      magnifierTail.style.left = edgeX + 'px';
+      magnifierTail.style.top = edgeY + 'px';
+      magnifierTail.style.width = Math.max(0, dist - half) + 'px';
+      magnifierTail.style.transform = `rotate(${angle}deg)`;
+    }
   }
 
   function onPointerDown(mode, e){
