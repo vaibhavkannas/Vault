@@ -412,8 +412,15 @@
   /* Sized to the image's own rendered box (inline-block shrinks to content) so the crop quad's
      points land directly in the image's on-screen coordinate space — no letterboxing offset math
      needed anywhere in wireCropOverlay(). */
-  .crop-stage{position:relative;display:inline-block;margin:0 auto 14px;max-width:100%;touch-action:none;}
-  .crop-stage img{display:block;max-width:100%;max-height:56vh;width:auto;height:auto;border-radius:8px;user-select:none;-webkit-user-drag:none;}
+  /* -webkit-touch-callout:none is what actually stops iOS Safari's long-press "Copy/Save/Share
+     Photo" menu on the image underneath a handle — touch-action:none (already set everywhere here)
+     only blocks the browser's own scroll/zoom gestures, it does nothing for that separate callout,
+     and preventDefault() in onPointerDown isn't reliable against it either since the callout's timer
+     is driven by iOS itself, not by JS event handling. Set on the whole stage (covers the image and
+     every handle as descendants) and repeated explicitly below since -webkit-touch-callout's
+     inheritance isn't consistent enough across engines to rely on the shorthand alone. */
+  .crop-stage{position:relative;display:inline-block;margin:0 auto 14px;max-width:100%;touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;}
+  .crop-stage img{display:block;max-width:100%;max-height:56vh;width:auto;height:auto;border-radius:8px;user-select:none;-webkit-user-drag:none;-webkit-touch-callout:none;}
   /* A free-form quad (not necessarily an axis-aligned rectangle) can't be drawn with the old
      box-shadow-spread trick, which only darkens outside a rectangle — an SVG path with fill-rule
      evenodd (the full stage rect, minus the quad, as one compound path) gives the same "spotlight"
@@ -421,7 +428,7 @@
      hit-target. */
   .crop-mask{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
   .crop-quad{pointer-events:auto;cursor:move;touch-action:none;}
-  .crop-handle{position:absolute;width:40px;height:40px;margin:-20px;border-radius:50%;background:rgba(26,115,232,0.35);border:2px solid var(--brass);touch-action:none;cursor:grab;}
+  .crop-handle{position:absolute;width:40px;height:40px;margin:-20px;border-radius:50%;background:rgba(26,115,232,0.35);border:2px solid var(--brass);touch-action:none;cursor:grab;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;}
   /* The visible dot/pill stays exactly this size — this invisible layer is what a finger actually
      has to land on, sized well past it (a fingertip's contact patch is bigger than a 14px-thin edge
      pill). Centered on the handle's own center regardless of its margin-based positioning trick, so
@@ -436,10 +443,10 @@
   .crop-handle-edge::before{width:44px;height:44px;}
   .crop-handle-edge-h{width:34px;height:14px;margin:-7px -17px;}
   .crop-handle-edge-v{width:14px;height:34px;margin:-17px -7px;}
-  /* Loupe shown while dragging a corner/edge handle — a finger covers the exact point it's
-     touching, so this mirrors that same point at a fixed offset above (or below, near the top
-     edge) where it's actually visible, zoomed in so the real edge is easy to land on precisely.
-     pointer-events:none so it never itself becomes a drag target; last in the stage's DOM order
+  /* Loupe shown while dragging a corner/edge handle — the handle itself already floats clear of the
+     finger (see HANDLE_OFFSET in wireCropOverlay), so this just centers on that same point, zoomed
+     in, for precisely lining it up against the document's real edge. pointer-events:none so it never
+     itself becomes a drag target; last in the stage's DOM order
      (see the crop screen markup) so it paints above the mask/handles with no z-index needed. */
   .crop-magnifier{position:absolute;width:110px;height:110px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 12px rgba(0,0,0,0.45),0 0 0 1px rgba(0,0,0,0.15);pointer-events:none;background-repeat:no-repeat;display:none;overflow:hidden;}
   .crop-magnifier::before, .crop-magnifier::after{content:'';position:absolute;background:#1a73e8;}
@@ -737,7 +744,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.13 · 22:35';
+const APP_VERSION = '2026.09.13 · 22:58';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1179,6 +1186,14 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.13 · 22:58',
+    items: [
+      "Fixed: the new floating crop handles couldn't reach the very edge of the frame (e.g. the left-most corner) — they now do.",
+      "Fixed: dragging a crop handle could trigger the phone's \"copy/save/share photo\" popup instead of dragging.",
+      "Fixed: a one-time delay before the first crop handle touch registered right after opening the camera."
+    ]
+  },
   {
     version: '2026.09.13 · 22:35',
     items: [
@@ -6512,9 +6527,16 @@ function stopCamera(){
   if(state.cameraStream){ state.cameraStream.getTracks().forEach(t=>t.stop()); state.cameraStream = null; }
 }
 // The camera flow OCRs each captured page (runOcr) and, on Save, builds the pages into a PDF via
-// jsPDF (saveCameraDocument) — both very likely needed the moment this modal is used, so — like
-// wireCropOverlay() warming OpenCV early for the crop screen — kick off both loaders here
-// non-blockingly (swallowing any rejection) so they're very likely already loaded by then.
+// jsPDF (saveCameraDocument) — both very likely needed the moment this modal is used, so kick off
+// both loaders here non-blockingly (swallowing any rejection) so they're very likely already loaded
+// by then. OpenCV is warmed here too now, not just in wireCropOverlay() — its ~8MB script needs to
+// download AND compile, and if that compile is still running main-thread work by the time the crop
+// screen opens, the user's first touch on a handle sits queued behind it, felt as a one-time input
+// delay right when they first try to drag. Starting it here instead gives it the several seconds a
+// user spends framing/capturing the shot as a head start, so it has almost always already finished
+// well before they reach a handle. wireCropOverlay()'s own call stays as a fallback for any path that
+// reaches the crop screen without going through here (loadOpenCvScript caches its promise, so calling
+// it again here is free, not a second fetch).
 function openCameraModal(){
   state.modal = 'camera'; state.capturedPages = []; state.capturedPagesRaw = []; state.capturedPageEnhance = [];
   state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropEnhanceOn = true;
@@ -6522,7 +6544,7 @@ function openCameraModal(){
   pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = ''; pendingCamCategory = null; pendingCamExpiry = '';
   pendingCamReminderDaysText = ''; pendingCamTagsText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
-  loadTesseractScript().catch(() => {}); loadJsPdfScript().catch(() => {});
+  loadTesseractScript().catch(() => {}); loadJsPdfScript().catch(() => {}); waitForOpenCvReady().catch(() => {});
 }
 // Opens the same camera flow, but flagged (like openAddModalForRenewal) so saveCameraDocument()
 // links the new capture to oldDocId as its replacement and archives oldDocId once the capture
@@ -6536,7 +6558,7 @@ function openCameraModalForRenewal(oldDocId){
   pendingPageOcrTexts = []; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false;
   categoryManuallyChanged = false; pendingCamTitle = oldDoc ? oldDoc.title : ''; pendingCamCategory = oldDoc ? oldDoc.category : null;
   pendingCamExpiry = ''; pendingCamReminderDaysText = ''; pendingCamTagsText = ''; pendingOcrRunning = false; pushAppHistoryState(); render();
-  loadTesseractScript().catch(() => {}); loadJsPdfScript().catch(() => {});
+  loadTesseractScript().catch(() => {}); loadJsPdfScript().catch(() => {}); waitForOpenCvReady().catch(() => {});
 }
 
 // OpenCV.js is only needed for this one screen (the crop step's perspective correction), so it's
@@ -6797,6 +6819,20 @@ function wireCropOverlay(){
     tl: {x: D, y: D}, tr: {x: -D, y: D}, bl: {x: D, y: -D}, br: {x: -D, y: -D},
     top: {x: 0, y: A}, bottom: {x: 0, y: -A}, left: {x: A, y: 0}, right: {x: -A, y: 0}
   };
+  // The offset above can't just be added unconditionally: a corner sitting near the stage's own
+  // edge (e.g. cropping right up against the actual left edge of the document) needs the finger to
+  // land at raw-position + offset past that edge to place it there — but on a real touchscreen the
+  // stage very often runs almost flush with the screen's own edge, so there is no physical room for
+  // a finger to go that far past it. Without this, those positions were simply unreachable (reported
+  // as "can't drag to the left-most corner"). Instead of a flat add, the offset ramps down to 0 over
+  // exactly its own magnitude as the raw (un-offset) point nears the edge the offset points away
+  // from, so the handle can still land exactly on that edge — it just coincides with the finger
+  // there, same as before this whole feature, instead of asking the finger to leave the screen.
+  function reachableOffset(p, o, extent){
+    if(!o) return 0;
+    if(o > 0) return o * clamp(p / o, 0, 1);
+    return o * clamp((extent - p) / (-o), 0, 1);
+  }
   const magnifier = document.getElementById('cropMagnifier');
   const magnifierTail = document.getElementById('cropMagnifierTail');
   if(state.cropEnhanceOn) img.style.filter = ENHANCE_FILTER;
@@ -6941,22 +6977,30 @@ function wireCropOverlay(){
       // An edge handle moves its two corners together, by the same delta — nudging a whole side
       // (e.g. correcting a wonky top edge) without disturbing the other two corners at all. Each
       // corner is still clamped individually, so one side of the pair hitting the stage edge
-      // doesn't block the other from continuing to move. HANDLE_OFFSET shifts both by the same fixed
-      // amount, inward, so the edge itself renders clear of the dragging finger.
+      // doesn't block the other from continuing to move. HANDLE_OFFSET shifts both by the same
+      // amount, inward, so the edge itself renders clear of the dragging finger — the shared delta is
+      // computed once from the edge's own midpoint (reachableOffset), so both corners shift in
+      // parallel rather than skewing relative to each other.
       const [a, b] = EDGE_CORNERS[dragMode];
       const off = HANDLE_OFFSET[dragMode];
+      const pax = startQuad[a].x + dx, pay = startQuad[a].y + dy;
+      const pbx = startQuad[b].x + dx, pby = startQuad[b].y + dy;
+      const deltaX = reachableOffset((pax + pbx) / 2, off.x, stageW);
+      const deltaY = reachableOffset((pay + pby) / 2, off.y, stageH);
       state.cropQuad = {...state.cropQuad,
-        [a]: {x: clamp(startQuad[a].x + dx + off.x, 0, stageW), y: clamp(startQuad[a].y + dy + off.y, 0, stageH)},
-        [b]: {x: clamp(startQuad[b].x + dx + off.x, 0, stageW), y: clamp(startQuad[b].y + dy + off.y, 0, stageH)}
+        [a]: {x: clamp(pax + deltaX, 0, stageW), y: clamp(pay + deltaY, 0, stageH)},
+        [b]: {x: clamp(pbx + deltaX, 0, stageW), y: clamp(pby + deltaY, 0, stageH)}
       };
     } else {
       // A single corner follows the pointer, clamped to the stage bounds — free-form, not
       // constrained to a rectangle, which is the whole point of a real scanner-style crop. Offset
-      // inward by HANDLE_OFFSET so the corner itself renders clear of the dragging finger.
+      // inward by HANDLE_OFFSET (via reachableOffset) so the corner itself renders clear of the
+      // dragging finger without making the stage's own edges undraggable-to.
       const off = HANDLE_OFFSET[dragMode];
+      const px = startQuad[dragMode].x + dx, py = startQuad[dragMode].y + dy;
       state.cropQuad = {...state.cropQuad, [dragMode]: {
-        x: clamp(startQuad[dragMode].x + dx + off.x, 0, stageW),
-        y: clamp(startQuad[dragMode].y + dy + off.y, 0, stageH)
+        x: clamp(px + reachableOffset(px, off.x, stageW), 0, stageW),
+        y: clamp(py + reachableOffset(py, off.y, stageH), 0, stageH)
       }};
     }
     paintQuad();
