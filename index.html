@@ -96,6 +96,11 @@
   .app{max-width:480px;margin:0 auto;min-height:100vh;background:var(--paper);position:relative;}
   header.topbar{display:flex;align-items:center;justify-content:space-between;padding:20px 16px 12px;}
   .topbar-actions{display:flex;align-items:center;gap:2px;}
+  /* Bulk multi-select mode's topbar (see renderVault) — replaces the Quick Reference/Settings
+     icons with a plain count label plus a single Cancel (×), reusing .icon-only-btn for that × so
+     it matches every other bare-glyph icon-only button's size/tap-target in this file. */
+  .select-mode-bar{gap:10px;}
+  .select-count-label{font-size:13.5px;font-weight:500;color:var(--ink);white-space:nowrap;}
   .brand{display:flex;align-items:center;gap:10px;}
   .brand-mark{width:36px;height:36px;border-radius:28%;background:var(--brass);display:flex;align-items:center;justify-content:center;flex:none;}
   .brand-name{font-size:22px;font-weight:400;letter-spacing:0;}
@@ -249,6 +254,11 @@
   .doc-card.is-archived .doc-meta, .doc-card.is-archived .doc-snippet{opacity:0.65;}
   .doc-card.is-offline-unavailable .doc-icon, .doc-card.is-offline-unavailable .doc-title,
   .doc-card.is-offline-unavailable .doc-meta, .doc-card.is-offline-unavailable .doc-snippet{opacity:0.55;}
+  /* Bulk multi-select mode (see renderDocCard/renderVault) — a checked card gets a tinted
+     background so the selection is obvious at a glance across a whole grid of cards, same
+     --primary-container tint the ⋮ menu's own hover state already uses elsewhere. */
+  .doc-card.is-selected{background:var(--primary-container);}
+  .doc-select-checkbox{width:22px;height:22px;margin:2px 2px 0 0;flex:none;cursor:pointer;accent-color:var(--brass);}
   .doc-icon{width:44px;height:44px;border-radius:50%;background:var(--primary-container);color:var(--on-primary-container);display:flex;align-items:center;justify-content:center;flex:none;position:relative;cursor:pointer;}
   .doc-icon.ocr-badge::after{content:'';position:absolute;bottom:-1px;right:-1px;width:10px;height:10px;border-radius:50%;background:var(--success);border:2px solid var(--paper-2);}
   .doc-body{flex:1;min-width:0;}
@@ -266,6 +276,7 @@
   .chip-btn{background:var(--primary-container);color:var(--on-primary-container);border:none;border-radius:8px;padding:10px 14px;font-size:12.5px;font-weight:500;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:5px;min-height:20px;}
   .chip-btn.secondary{background:none;color:var(--ink-soft);padding:10px 12px;}
   .chip-btn.danger{background:var(--danger-bg);color:var(--danger);}
+  .chip-btn:disabled{opacity:0.45;cursor:default;}
   .doc-link-note{font-size:11.5px;color:var(--ink-soft);margin:4px 0 0;}
   .tag-chip-row{display:flex;flex-wrap:wrap;gap:5px;margin:4px 0 0;}
   .tag-chip{background:none;border:1px solid var(--line);color:var(--ink-soft);border-radius:999px;padding:2px 9px;font-size:11px;font-weight:400;cursor:pointer;font-family:inherit;line-height:1.6;}
@@ -315,6 +326,11 @@
   .fab button{pointer-events:all;}
   .fab .primary{width:auto;height:56px;padding:0 22px;border-radius:16px;box-shadow:var(--elevation-2);display:flex;align-items:center;gap:8px;}
   .fab .camera-fab{width:56px;height:56px;flex:none;background:var(--primary-container);color:var(--on-primary-container);border:none;border-radius:16px;box-shadow:var(--elevation-2);display:flex;align-items:center;justify-content:center;}
+  /* Bulk action bar replacing the Add/Camera FAB while select mode is active (see renderVault) —
+     reuses .fab's fixed bottom positioning (including its own "button{pointer-events:all}" rule
+     above), just spread edge-to-edge with three equal-width buttons instead of flex-end with two. */
+  .fab.bulk-action-bar{justify-content:space-between;gap:10px;}
+  .fab.bulk-action-bar .chip-btn{flex:1;justify-content:center;padding:13px 10px;border-radius:16px;box-shadow:var(--elevation-2);}
 
   .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:flex-end;justify-content:center;z-index:50;animation:overlayFadeIn 0.2s ease;}
   /* --paper-2 rather than --paper: in light mode they're identical (both white), but in dark mode
@@ -682,7 +698,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.13 · 09:23';
+const APP_VERSION = '2026.09.13 · 14:28';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -694,6 +710,7 @@ const ICONS = {
   plus: '<line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>',
   back: '<line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline>',
   more: '<circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"></circle><circle cx="12" cy="6" r="1.6" fill="currentColor" stroke="none"></circle><circle cx="12" cy="18" r="1.6" fill="currentColor" stroke="none"></circle>',
+  select: '<rect x="3" y="3" width="18" height="18" rx="4"></rect><polyline points="7 12.5 10.5 16 17 8"></polyline>',
   chevronDown: '<polyline points="6 9 12 15 18 9"></polyline>',
   calendar: '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line>',
   eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle>',
@@ -774,7 +791,7 @@ function wireIconPicker(inputId){
 let authFlowInProgress = false;
 
 const state = {
-  screen: 'checking', // 'checking' | 'login' | 'reconnect' | 'vault' | 'settings' | 'quickref'
+  screen: 'checking', // 'checking' | 'login' | 'reconnect' | 'vault' | 'settings' | 'quickref' | 'upcoming'
   user: null,           // {name, email, uid, photoURL}
   driveAccessToken: null,     // OAuth token for Drive API calls; separate from the Firebase auth session
   driveTokenExpiresAt: null,  // ms epoch; Google doesn't silently refresh this client-side (no backend)
@@ -820,6 +837,17 @@ const state = {
   openActionMenu: null, // instance key (see renderDocCard's opts.instanceKey — distinguishes a
                         // pinned-section card from its own-category copy of the same doc) whose
                         // card's ⋮ overflow menu is currently open, or null
+  selectMode: false, // true while the bulk multi-select action bar (Move/Archive/Delete) is active
+                      // over the document list — see enterSelectMode()/exitSelectMode() below
+  selectedDocIds: new Set(), // ids of documents currently checked in select mode. Deliberately
+                             // keyed by the document's BARE id — NOT by the per-card instanceKey
+                             // openActionMenu above uses. A pinned document renders as two separate
+                             // on-screen cards sharing one id (Pinned section + its own category);
+                             // keying by bare id means both copies naturally show the same checked
+                             // state on every render with zero extra synchronization code. Keying
+                             // this any other way would reintroduce, for selection checkboxes, the
+                             // exact class of "two on-screen copies disagree" bug a recent fix just
+                             // resolved for the action-menu above — do not "fix" this to match it.
   offlineDocIds: new Set(), // doc ids with a file blob cached in IndexedDB for offline viewing
   // Doc ids currently being downloaded for a *deliberate* "keep offline" reason (the auto-download
   // after load, the per-document toggle, or a category's bulk "cache existing documents" action) —
@@ -973,11 +1001,20 @@ function clearTopLayerState(){
     state.renewalUploadTargetId = null; state.editQuickRefId = null; state.pendingChangelogItems = null; state.capturedPages = [];
     state.qrEditDecryptedValue = null; state.qrUnlockThen = null;
     pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false;
+  } else if(state.selectMode){
+    // Checked right after the modal branch above (never before it) — a bulk-confirm modal
+    // (confirmBulkArchive/Delete/Move) deliberately pushes no history layer of its own (see
+    // requestBulkArchive() etc.), so it "borrows" this same select-mode layer. That means the
+    // modal branch above must keep first claim on every Back press while one of those modals is
+    // open, so Back closes just the modal and leaves select mode (and the selection) intact; only
+    // once the modal is gone does a further Back press reach here and actually exit select mode.
+    state.selectMode = false;
+    state.selectedDocIds = new Set();
   } else if(state.showArchived){
     state.showArchived = false; state.searchQuery = '';
   } else if(state.showDeleted){
     state.showDeleted = false;
-  } else if(state.screen === 'settings' || state.screen === 'quickref'){
+  } else if(state.screen === 'settings' || state.screen === 'quickref' || state.screen === 'upcoming'){
     state.screen = 'vault';
     state.quickRefSearchQuery = '';
   }
@@ -1017,7 +1054,7 @@ const EXIT_CONFIRM_WINDOW_MS = 2500;
 // repeating its own copy of the condition, which is exactly how the quickref screen fell through
 // the cracks the first time: two independent copies of this list, one of them missing an entry.
 function isIdleRootScreen(){
-  return !state.modal && !state.showArchived && state.screen !== 'settings' && state.screen !== 'quickref';
+  return !state.modal && !state.selectMode && !state.showArchived && state.screen !== 'settings' && state.screen !== 'quickref' && state.screen !== 'upcoming';
 }
 function armExitGuardIfIdle(){
   if(!guardArmed && isIdleRootScreen()){
@@ -1075,6 +1112,13 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.13 · 14:28',
+    items: [
+      "Added: select multiple documents at once to archive, delete, or move them to a different category together.",
+      "Added: a dedicated \"Upcoming\" view listing everything expiring in the next 30/60/90 days across all your categories — tap \"See all\" on Renewals, or find it in Settings."
+    ]
+  },
   {
     version: '2026.09.13 · 09:23',
     items: [
@@ -1709,7 +1753,7 @@ document.addEventListener('visibilitychange', () => {
     // to, and re-fetches the document from scratch) on something as routine as a notification
     // banner briefly stealing focus. Now it only re-renders when there's something for the lock to
     // actually do, leaving an open document/modal/gesture untouched otherwise.
-    if((state.screen === 'vault' || state.screen === 'settings' || state.screen === 'quickref') && isAppLockDue()) render();
+    if((state.screen === 'vault' || state.screen === 'settings' || state.screen === 'quickref' || state.screen === 'upcoming') && isAppLockDue()) render();
   }
 });
 
@@ -2939,7 +2983,7 @@ function renderImmediate(){
   // state.screen value, so it needs no history-layer bookkeeping of its own: it's a gate on
   // rendering, not a place the user deliberately navigates. Turning the lock off is still reachable
   // once unlocked — re-verifying doesn't block that, it just requires it first, same as the vault.
-  if((state.screen === 'vault' || state.screen === 'settings' || state.screen === 'quickref') && isAppLockDue()){
+  if((state.screen === 'vault' || state.screen === 'settings' || state.screen === 'quickref' || state.screen === 'upcoming') && isAppLockDue()){
     // A modal (e.g. the document viewer) left open when the lock engages must be torn down here,
     // not just logically closed — its DOM node is appended directly to <body> (position:fixed,
     // painted above everything) and would otherwise keep floating on top of the lock screen with
@@ -2956,6 +3000,7 @@ function renderImmediate(){
   }
   if(state.screen === 'settings'){ renderSettings(app); armExitGuardIfIdle(); return; }
   if(state.screen === 'quickref'){ renderQuickRef(app); armExitGuardIfIdle(); return; }
+  if(state.screen === 'upcoming'){ renderUpcoming(app); armExitGuardIfIdle(); return; }
   renderVault(app);
   armExitGuardIfIdle();
 }
@@ -2980,7 +3025,7 @@ let hasRenderedOnce = false;
 // bit of state changed but we're still looking at the same screen" (not worth one). Mirrors
 // renderImmediate()'s own branching so the two can never disagree about what's on screen.
 function currentScreenKey(){
-  if((state.screen === 'vault' || state.screen === 'settings' || state.screen === 'quickref') && isAppLockDue()) return 'locked';
+  if((state.screen === 'vault' || state.screen === 'settings' || state.screen === 'quickref' || state.screen === 'upcoming') && isAppLockDue()) return 'locked';
   return state.screen;
 }
 let lastScreenKey = null;
@@ -3324,6 +3369,10 @@ function renderSettings(app){
       <div class="settings-section">
         <h4>Reminders</h4>
         <div class="settings-row">
+          <span>See every document expiring soon, across all categories</span>
+          <button class="icon-btn" id="viewUpcomingBtn">View</button>
+        </div>
+        <div class="settings-row">
           <span>Daily email digest of documents expiring soon</span>
           ${switchHtml('emailDigestSwitch', isEmailDigestEnabled(), false, 'Daily email digest')}
         </div>
@@ -3488,6 +3537,7 @@ function renderSettings(app){
   const forgotQrPassphraseBtn = document.getElementById('forgotQrPassphraseBtn');
   if(forgotQrPassphraseBtn) forgotQrPassphraseBtn.onclick = () => { state.modal = 'quickRefForgotPassphrase'; pushAppHistoryState(); render(); };
 
+  document.getElementById('viewUpcomingBtn').onclick = () => { state.screen = 'upcoming'; pushAppHistoryState(); render(); };
   const emailDigestSwitch = document.getElementById('emailDigestSwitch');
   if(emailDigestSwitch) emailDigestSwitch.onchange = toggleEmailDigest;
   const pushSwitch = document.getElementById('pushSwitch');
@@ -4144,10 +4194,18 @@ function renderVault(app){
   app.innerHTML = `
     <header class="topbar">
       <div class="brand"><div class="brand-mark">${brandMarkSvg(20)}</div><div class="brand-name">Vault</div><span class="conn-indicator ${isAppOnline() ? 'online' : 'offline'}" title="${isAppOnline() ? 'Online' : 'Offline'}" role="status" aria-label="${isAppOnline() ? 'Online' : 'Offline'}"><span class="conn-dot"></span>${isAppOnline() ? '' : '<span class="conn-label">Offline</span>'}</span></div>
-      <div class="topbar-actions">
-        <button class="icon-only-btn" id="openQuickRefBtn" aria-label="Quick Reference" title="Quick Reference">${icon('clipboard',22)}</button>
-        <button class="icon-only-btn" id="openSettingsBtn" aria-label="Settings" title="Settings">${icon('settings',22)}</button>
-      </div>
+      ${state.selectMode ? `
+        <div class="topbar-actions select-mode-bar">
+          <span class="select-count-label">${state.selectedDocIds.size} selected</span>
+          <button class="icon-only-btn" id="exitSelectModeBtn" aria-label="Cancel selection" title="Cancel">×</button>
+        </div>
+      ` : `
+        <div class="topbar-actions">
+          <button class="icon-only-btn" id="openQuickRefBtn" aria-label="Quick Reference" title="Quick Reference">${icon('clipboard',22)}</button>
+          <button class="icon-only-btn" id="openSettingsBtn" aria-label="Settings" title="Settings">${icon('settings',22)}</button>
+          ${filtered.length ? `<button class="icon-only-btn" id="enterSelectModeBtn" aria-label="Select documents" title="Select">${icon('select',22)}</button>` : ''}
+        </div>
+      `}
     </header>
     <div class="vault">
       ${state.isOfflineMode ? `
@@ -4182,8 +4240,11 @@ function renderVault(app){
         <div class="doc-card-grid">${pinnedDocs.map((d,i) => renderDocCard(d, {showCategory: true, i, instanceKey: 'pinned:'+d.id})).join('')}</div>
       ` : ''}
 
-      ${!state.searchQuery && !state.showArchived && upcoming.length ? `
-        <div class="section-title">Renewals</div>
+      ${!state.searchQuery && !state.showArchived && !state.selectMode && upcoming.length ? `
+        <div class="section-title">
+          <span>Renewals</span>
+          <button type="button" class="privacy-link" id="seeAllUpcomingBtn" style="display:inline;margin:0;">See all</button>
+        </div>
         <div class="renewal-strip-wrap">
           <div class="renewal-strip">
             ${upcoming.map((d,i) => `
@@ -4222,7 +4283,13 @@ function renderVault(app){
       ${!state.showArchived && deletedCount ? `<button class="archive-toggle" id="deletedToggleBtn">Recently deleted (${deletedCount})</button>` : ''}
       <div class="version-tag">Version ${APP_VERSION}</div>
     </div>
-    ${!state.showArchived ? `
+    ${state.selectMode ? `
+      <div class="fab bulk-action-bar">
+        <button class="chip-btn" id="bulkMoveBtn" ${state.selectedDocIds.size ? '' : 'disabled'}>${icon('folder',16)} Move</button>
+        <button class="chip-btn" id="bulkArchiveBtn" ${state.selectedDocIds.size ? '' : 'disabled'}>${icon(state.showArchived?'restore':'archive',16)} ${state.showArchived ? 'Restore' : 'Archive'}</button>
+        <button class="chip-btn danger" id="bulkDeleteBtn" ${state.selectedDocIds.size ? '' : 'disabled'}>${icon('trash',16)} Delete</button>
+      </div>
+    ` : !state.showArchived ? `
       <div class="fab">
         <button class="camera-fab" id="cameraFabBtn" aria-label="Capture with camera">${icon('camera',22)}</button>
         <button class="primary" id="addDocBtn">${icon('plus',20)} Add document</button>
@@ -4236,8 +4303,28 @@ function renderVault(app){
     if(wrap && renewalStripEl.scrollWidth > renewalStripEl.clientWidth + 1) wrap.classList.add('has-overflow');
   }
 
-  document.getElementById('openSettingsBtn').onclick = () => { state.screen = 'settings'; pushAppHistoryState(); render(); refreshDriveStorageInfo(); };
-  document.getElementById('openQuickRefBtn').onclick = () => { state.screen = 'quickref'; pushAppHistoryState(); render(); };
+  // openSettingsBtn/openQuickRefBtn/enterSelectModeBtn only exist in the topbar's non-select-mode
+  // branch above (and exitSelectModeBtn only in its select-mode branch), unlike every other
+  // element wired below that's unconditionally in the template — each needs the same null-guard
+  // the FAB/archive-toggle buttons already use here for the same reason.
+  const openSettingsBtn = document.getElementById('openSettingsBtn');
+  if(openSettingsBtn) openSettingsBtn.onclick = () => { state.screen = 'settings'; pushAppHistoryState(); render(); refreshDriveStorageInfo(); };
+  const openQuickRefBtn = document.getElementById('openQuickRefBtn');
+  if(openQuickRefBtn) openQuickRefBtn.onclick = () => { state.screen = 'quickref'; pushAppHistoryState(); render(); };
+  // Only rendered alongside the Renewals section itself (see the template above), same reasoning
+  // as openSettingsBtn/openQuickRefBtn's null-guards.
+  const seeAllUpcomingBtn = document.getElementById('seeAllUpcomingBtn');
+  if(seeAllUpcomingBtn) seeAllUpcomingBtn.onclick = () => { state.screen = 'upcoming'; pushAppHistoryState(); render(); };
+  const enterSelectModeBtn = document.getElementById('enterSelectModeBtn');
+  if(enterSelectModeBtn) enterSelectModeBtn.onclick = () => enterSelectMode();
+  const exitSelectModeBtn = document.getElementById('exitSelectModeBtn');
+  if(exitSelectModeBtn) exitSelectModeBtn.onclick = () => exitSelectMode();
+  const bulkMoveBtn = document.getElementById('bulkMoveBtn');
+  if(bulkMoveBtn) bulkMoveBtn.onclick = () => requestBulkMove();
+  const bulkArchiveBtn = document.getElementById('bulkArchiveBtn');
+  if(bulkArchiveBtn) bulkArchiveBtn.onclick = () => requestBulkArchive();
+  const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
+  if(bulkDeleteBtn) bulkDeleteBtn.onclick = () => requestBulkDelete();
   const docSortSelect = document.getElementById('docSortSelect');
   if(docSortSelect) docSortSelect.onchange = () => { setDocSort(docSortSelect.value); render(); };
   const addBtn = document.getElementById('addDocBtn');
@@ -4357,6 +4444,18 @@ function renderVault(app){
     btn.onclick = (e) => { e.stopPropagation(); openRenewExpiredModal(btn.getAttribute('data-renewal-renew')); };
   });
 
+  wireDocCardEvents();
+
+  renderModal();
+}
+
+// Wires every interaction a rendered document card (renderDocCard's output) can have — opening it,
+// view/share/renew, opening and closing its ⋮ overflow menu, and (select mode) its selection
+// checkbox — so both renderVault() and renderUpcoming() get identical card behavior from one
+// definition instead of two copies drifting apart. Pure DOM wiring: closes over nothing but
+// module-level state (`state`, `actionMenuOutsideClickHandler`), so it needs no arguments and no
+// screen-specific context from its caller.
+function wireDocCardEvents(){
   // A pinned document's card renders twice — once in the Pinned section, once again in its own
   // category section — so wiring by id (getElementById only ever finds the first match in document
   // order) silently left the second copy dead. querySelectorAll wires every matching element
@@ -4365,6 +4464,20 @@ function renderVault(app){
     const open = () => viewDocument(el.getAttribute('data-open-doc'));
     el.onclick = open;
     el.onkeydown = (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } };
+  });
+  // While select mode is active, renderDocCard swaps a card's data-open-doc icon/title (and its
+  // own checkbox) to data-select-doc instead — the normal "open this document" tap target toggles
+  // selection in select mode rather than opening the viewer. The checkbox binds via onchange (same
+  // convention as the other bare checkboxes in this file, e.g. data-cat-keep-offline-default);
+  // the icon/title divs bind via onclick+onkeydown like every other role="button" tap target above.
+  document.querySelectorAll('[data-select-doc]').forEach(el => {
+    const toggle = () => toggleDocSelected(el.getAttribute('data-select-doc'));
+    if(el.tagName === 'INPUT'){
+      el.onchange = toggle;
+    } else {
+      el.onclick = toggle;
+      el.onkeydown = (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); toggle(); } };
+    }
   });
   document.querySelectorAll('[data-view-doc]').forEach(el => {
     el.onclick = () => viewDocument(el.getAttribute('data-view-doc'));
@@ -4427,8 +4540,6 @@ function renderVault(app){
     };
     document.addEventListener('click', actionMenuOutsideClickHandler, {once: true});
   }
-
-  renderModal();
 }
 
 // The trash view — deliberately a separate, simpler render path from renderVault() rather than a
@@ -4526,16 +4637,24 @@ function renderDocCard(d, opts){
   } else if(offlineUnavailable){
     offlineBadgeHtml = `<span class="offline-badge unavailable">Not available offline</span>`;
   }
+  // Select mode replaces the "open this document" tap target (the icon + title) with a "toggle
+  // this document's checkbox" one instead — reads state.selectedDocIds by d's own BARE id (see
+  // that field's comment in the state object for why), never by instanceKey, so a pinned doc's
+  // two on-screen copies always agree with zero extra synchronization code.
+  const selected = state.selectMode && state.selectedDocIds.has(d.id);
+  const openOrSelectAttr = state.selectMode ? `data-select-doc="${d.id}"` : `data-open-doc="${d.id}"`;
   return `
-    <div class="doc-card ${d.archived ? 'is-archived' : ''} ${offlineUnavailable ? 'is-offline-unavailable' : ''}" style="--i:${opts.i||0}">
-      <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" data-open-doc="${d.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
+    <div class="doc-card ${d.archived ? 'is-archived' : ''} ${offlineUnavailable ? 'is-offline-unavailable' : ''} ${selected ? 'is-selected' : ''}" style="--i:${opts.i||0}">
+      ${state.selectMode ? `<input type="checkbox" class="doc-select-checkbox" data-select-doc="${d.id}" ${selected ? 'checked' : ''} aria-label="Select ${escapeHtml(d.title)}" />` : ''}
+      <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" ${openOrSelectAttr} role="button" tabindex="0" aria-label="${state.selectMode ? 'Select' : 'View'} ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
       <div class="doc-body">
-        <p class="doc-title" data-open-doc="${d.id}" role="button" tabindex="0">${escapeHtml(d.title)}${offlineBadgeHtml}</p>
+        <p class="doc-title" ${openOrSelectAttr} role="button" tabindex="0">${escapeHtml(d.title)}${offlineBadgeHtml}</p>
         <p class="doc-meta">${opts.showCategory ? `${escapeHtml(meta.label)} · ` : ''}Added ${formatDate(d.addedAt)}${d.archived ? ' · archived' : ''}</p>
         ${renderTagChipsHtml(d.tags || [])}
         ${d.snippet ? `<p class="doc-snippet">${d.snippet}</p>` : ''}
         ${expiryBadge}
         ${linkNote}
+        ${state.selectMode ? '' : `
         <div class="doc-actions">
           <button class="chip-btn" data-view-doc="${d.id}">View</button>
           <button class="chip-btn secondary" data-share-doc="${d.id}">Share</button>
@@ -4556,9 +4675,87 @@ function renderDocCard(d, opts){
             ` : ''}
           </div>
         </div>
+        `}
       </div>
     </div>
   `;
+}
+
+/* ---------- upcoming renewals (all categories) ----------
+   A dedicated, all-categories view of every non-archived, non-deleted document with an expiry
+   date — reachable from the vault's Renewals section via its "See all" link (only present when
+   the strip itself is: no search, not viewing archived, not in select mode, and at least one
+   document actually upcoming) and from Settings' "View upcoming renewals" row, which stays
+   reachable regardless of any of that. Unlike the Renewals strip — fixed at its own 60-day/
+   30-day-grace window with no way to see further out or narrow in — this screen lets that window
+   itself be widened or narrowed, and groups results into labeled buckets instead of one flat
+   scroll-past strip. */
+// Transient, session-only UI preference for which window this screen shows — never persisted
+// (unlike e.g. currentDocSort()'s localStorage-backed choice), so like every other plain
+// top-level `let` of this kind (categoryReorderInFlight, quickRefRevealedPlain, ...) it simply
+// resets to its default the moment the page reloads, by virtue of this script re-running from
+// the top rather than any explicit reset code.
+let upcomingWindowDays = 60; // 30 | 60 | 90
+
+function renderUpcoming(app){
+  const windowDays = upcomingWindowDays;
+  // Recomputed fresh from state.documents on every single render — never a separately cached
+  // list — so a document that becomes archived/deleted while this screen is open simply stops
+  // matching on the very next render, with no invalidation code needed. Same plain truthiness
+  // check on d.expiry the Renewals strip itself already uses (see renderVault's `upcoming`) to
+  // exclude documents with no expiry at all, and the same EXPIRED_REMINDER_GRACE_DAYS cutoff for
+  // how far past expiry a document still counts as "Overdue" rather than dropping off entirely.
+  const docs = state.documents
+    .filter(d => d.expiry && !d.archived && !d.deletedAt)
+    .map(d => ({...d, days: daysUntil(d.expiry)}))
+    .filter(d => d.days<=windowDays && d.days>=-EXPIRED_REMINDER_GRACE_DAYS)
+    .sort((a,b)=>a.days-b.days);
+
+  // Each bucket's predicate slices the already-sorted `docs` array, so "soonest first within and
+  // across buckets" falls out for free with no separate per-bucket sort. The 60/90-day buckets are
+  // additionally gated on the selected window so a 30-day view never shows an (always-empty, given
+  // the days<=windowDays filter above) "Next 60 days" header at all.
+  const buckets = [
+    {label: 'Overdue', test: d => d.days<0},
+    {label: 'This week', test: d => d.days>=0 && d.days<=7},
+    {label: 'This month', test: d => d.days>7 && d.days<=30},
+    {label: 'Next 60 days', test: d => d.days>30 && d.days<=60, minWindow: 60},
+    {label: 'Next 90 days', test: d => d.days>60 && d.days<=90, minWindow: 90},
+  ]
+    .filter(b => !b.minWindow || windowDays>=b.minWindow)
+    .map(b => ({label: b.label, docs: docs.filter(b.test)}))
+    .filter(b => b.docs.length);
+
+  app.innerHTML = `
+    <div class="settings-header">
+      <button class="icon-only-btn" id="backToVaultBtn" aria-label="Back">${icon('back',22)}</button>
+      <div class="brand-name">Upcoming renewals</div>
+    </div>
+    <div class="settings">
+      <div class="theme-toggle-row">
+        <button data-upcoming-window="30" class="${windowDays===30?'active':''}" aria-pressed="${windowDays===30}">30 days</button>
+        <button data-upcoming-window="60" class="${windowDays===60?'active':''}" aria-pressed="${windowDays===60}">60 days</button>
+        <button data-upcoming-window="90" class="${windowDays===90?'active':''}" aria-pressed="${windowDays===90}">90 days</button>
+      </div>
+      ${buckets.length === 0 ? `
+        <div class="empty-state">Nothing expiring in the next ${windowDays} days.</div>
+      ` : buckets.map(b => `
+        <div class="section-title">${b.label}</div>
+        <div class="doc-card-grid">${b.docs.map((d,i) => renderDocCard(d, {showCategory: true, i, instanceKey: 'upcoming:'+d.id})).join('')}</div>
+      `).join('')}
+    </div>
+  `;
+
+  document.getElementById('backToVaultBtn').onclick = () => goBackOneLayer();
+  // A filter change, not a navigation — re-renders this screen's own content in place with no new
+  // history layer, so one Back press always lands straight back on the vault no matter how many
+  // times the window was switched.
+  document.querySelectorAll('[data-upcoming-window]').forEach(btn => {
+    btn.onclick = () => { upcomingWindowDays = +btn.getAttribute('data-upcoming-window'); render(); };
+  });
+
+  wireDocCardEvents();
+  renderModal();
 }
 
 /* ---------- add document (file upload) ---------- */
@@ -4921,6 +5118,69 @@ function renderModal(){
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('cancelArchiveBtn').onclick = closeModal;
     document.getElementById('confirmArchiveBtn').onclick = () => { const id = state.archiveDocId; closeModal(); toggleArchive(id); };
+  }
+
+  // The three bulk-confirm modals below back the multi-select action bar (see enterSelectMode()/
+  // performBulkArchive()/performBulkDelete()/performBulkMove() in the bulk actions section). Their
+  // Cancel/× buttons use the ordinary closeModal() — only their primary confirm button routes into
+  // the async bulk operation itself, which does its own modal-clearing + single goBackOneLayer()
+  // on completion instead (see requestBulkArchive() etc. for why these never pushed a layer of
+  // their own to begin with).
+  if(state.modal === 'confirmBulkArchive'){
+    const docs = resolveSelectedDocs();
+    if(!docs.length){ goBackOneLayer(); return; }
+    const restoring = state.showArchived;
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>${restoring ? 'Restore' : 'Archive'} ${docs.length} document${docs.length===1?'':'s'}?</h3>
+        <p class="sub">${restoring ? 'They\'ll be moved back to your active documents.' : archiveModalMessage()}</p>
+        <button class="danger-solid" id="confirmBulkArchiveBtn">${restoring ? 'Restore' : 'Archive'}</button>
+        <button class="ghost" id="cancelBulkArchiveBtn">Cancel</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('cancelBulkArchiveBtn').onclick = closeModal;
+    document.getElementById('confirmBulkArchiveBtn').onclick = performBulkArchive;
+  }
+
+  if(state.modal === 'confirmBulkDelete'){
+    const docs = resolveSelectedDocs();
+    if(!docs.length){ goBackOneLayer(); return; }
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Delete ${docs.length} document${docs.length===1?'':'s'}?</h3>
+        <p class="sub">Moves them to "Recently deleted" — you'll have ${TRASH_RETENTION_DAYS} days to restore from there before they're gone for good.</p>
+        <button class="danger-solid" id="confirmBulkDeleteBtn">Move to Recently deleted</button>
+        <button class="ghost" id="cancelBulkDeleteBtn">Cancel</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('cancelBulkDeleteBtn').onclick = closeModal;
+    document.getElementById('confirmBulkDeleteBtn').onclick = performBulkDelete;
+  }
+
+  if(state.modal === 'confirmBulkMove'){
+    const docs = resolveSelectedDocs();
+    if(!docs.length){ goBackOneLayer(); return; }
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Move ${docs.length} document${docs.length===1?'':'s'}</h3>
+        <p class="sub">Moves the file(s) to the new category's folder in Drive. Any already in the chosen category are left alone.</p>
+        <label class="field-label">Move to category</label>
+        <select id="bulkMoveCategorySelect">${categoryOptionsHtml()}</select>
+        <button class="primary" id="confirmBulkMoveBtn">Move</button>
+        <button class="ghost" id="cancelBulkMoveBtn">Cancel</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('cancelBulkMoveBtn').onclick = closeModal;
+    document.getElementById('confirmBulkMoveBtn').onclick = performBulkMove;
   }
 
   if(state.modal === 'confirmArchiveRetention'){
@@ -6831,6 +7091,209 @@ async function restoreDeletedDocument(id){
   }
 }
 
+/* ---------- bulk actions (multi-select) ----------
+   An explicit multi-select mode over the document list (active OR archived — same code path for
+   both) so Move/Archive/Delete can be applied to several documents at once instead of one card's
+   ⋮ menu at a time. See state.selectMode/state.selectedDocIds above for the selection model. */
+
+// Splits an array into groups of at most `size` — used below to keep a Firestore batch write
+// under its real ~500-document limit, chunked at a smaller 400 as a defensive margin rather than
+// relying on the exact ceiling.
+function chunkArray(arr, size){
+  const chunks = [];
+  for(let i=0; i<arr.length; i+=size) chunks.push(arr.slice(i, i+size));
+  return chunks;
+}
+
+// Turns select mode on, pushing one history layer — Back (via exitSelectMode()/goBackOneLayer()
+// below) peels it the same way every other layer in this app closes. Always starts with a clean
+// selection, even if some stale ids were somehow left over from a previous session.
+function enterSelectMode(){
+  state.selectMode = true;
+  state.selectedDocIds = new Set();
+  pushAppHistoryState();
+  render();
+}
+// Routed through the app's single "go back one layer" mechanism rather than clearing
+// state.selectMode itself — so the topbar's Cancel (×) button and the hardware/browser Back
+// button are the exact same code path. clearTopLayerState()'s selectMode branch (see above) is
+// what actually turns select mode off; this never duplicates that logic.
+function exitSelectMode(){
+  goBackOneLayer();
+}
+// Toggles one document's BARE id in/out of the selection set — see state.selectedDocIds above
+// for why this is keyed by bare id, not by renderDocCard's per-instance key.
+function toggleDocSelected(id){
+  if(state.selectedDocIds.has(id)) state.selectedDocIds.delete(id);
+  else state.selectedDocIds.add(id);
+  render();
+}
+
+// The three bulk-confirm openers below deliberately do NOT call pushAppHistoryState() — unlike
+// every other `state.modal = ...; pushAppHistoryState(); render();` opener in this file. They're a
+// sub-step of the already-pushed select-mode layer (see enterSelectMode() above), not a new
+// top-level navigation of their own: the modal branch of clearTopLayerState() (checked before the
+// selectMode branch) already closes just the modal on Back, leaving select mode and the selection
+// intact, and each bulk operation's own completion step below pops the select-mode layer exactly
+// once on finishing. Adding a push here would need an extra Back press per modal open, AND would
+// make each operation's single closing goBackOneLayer() below only close the modal instead of also
+// exiting select mode — a future maintainer "fixing" this missing push as an oversight would
+// reintroduce that double-pop-on-completion bug.
+function requestBulkArchive(){
+  if(!state.selectedDocIds.size) return;
+  state.modal = 'confirmBulkArchive';
+  render();
+}
+function requestBulkDelete(){
+  if(!state.selectedDocIds.size) return;
+  state.modal = 'confirmBulkDelete';
+  render();
+}
+function requestBulkMove(){
+  if(!state.selectedDocIds.size) return;
+  state.modal = 'confirmBulkMove';
+  render();
+}
+
+// Resolves the current selection against the FULL document list (never the filtered/visible one —
+// selection must survive the search box narrowing what's on screen, see state.selectedDocIds
+// above) and drops any id that no longer resolves to a document (deleted/purged by some other
+// means while sitting selected) — fails safe instead of crashing on a stale id.
+function resolveSelectedDocs(){
+  return Array.from(state.selectedDocIds).map(id => state.documents.find(d => d.id === id)).filter(Boolean);
+}
+
+// Bulk archive/restore: "flip" is deliberate, not "set to true" — reused as-is whether the
+// selection came from the active list (flips false→true, archiving) or the archived list (flips
+// true→false, restoring), so select mode works identically over either list per the same
+// toggleArchive() semantics a single card's ⋮ menu already uses.
+async function performBulkArchive(){
+  const docs = resolveSelectedDocs();
+  const btn = document.getElementById('confirmBulkArchiveBtn');
+  if(!docs.length){ state.modal = null; goBackOneLayer(); return; }
+  const restoring = !!docs[0].archived; // every selected doc shares one archived state — see point above
+  if(btn){ btn.disabled = true; btn.textContent = restoring ? 'Restoring…' : 'Archiving…'; }
+  const previous = docs.map(d => ({id: d.id, archived: d.archived, archivedAt: d.archivedAt || null}));
+  docs.forEach(d => {
+    d.archived = !d.archived;
+    d.archivedAt = d.archived ? new Date().toISOString() : null;
+  });
+  // Deliberately NOT rendered yet — this confirm modal is still open, and renderModal() always
+  // tears down and rebuilds whatever modal is currently showing (see its own top: it unconditionally
+  // removes #modalOverlay and recreates it) rather than patching one in place. Rendering here, before
+  // the batch below has actually committed, would replace this very button with a fresh, un-disabled
+  // one mid-flight — reopening exactly the double-submit window the disabled/"Archiving…" state
+  // above exists to close. performBulkDelete()/performBulkMove() already get this right by only
+  // rendering once their own async work is fully done; this mirrors that, rendering only after the
+  // batch commits (success) or fails (below) — never while it's still in flight.
+  try{
+    for(const chunk of chunkArray(docs, 400)){
+      const batch = db.batch();
+      chunk.forEach(d => batch.update(userDoc().collection('documents').doc(d.id), {archived: d.archived, archivedAt: d.archivedAt}));
+      await batch.commit();
+    }
+    render();
+    toast(restoring ? `Restored ${docs.length} document${docs.length===1?'':'s'}` : `Archived ${docs.length} document${docs.length===1?'':'s'}`);
+    // Only clear+pop if this modal is still the one we opened — if the user already backed out of
+    // it (Back/Escape/backdrop tap) while this was in flight, that Back press already popped the
+    // select-mode layer itself, and doing it again here would pop one layer too many.
+    if(state.modal === 'confirmBulkArchive'){ state.modal = null; goBackOneLayer(); }
+  } catch(e){
+    console.error('Bulk archive failed', e);
+    previous.forEach(p => {
+      const d = state.documents.find(x => x.id === p.id);
+      if(d){ d.archived = p.archived; d.archivedAt = p.archivedAt; }
+    });
+    render();
+    if(btn){ btn.disabled = false; btn.textContent = restoring ? 'Restore' : 'Archive'; }
+    toast(friendlyCloudError(e));
+  }
+}
+
+// Bulk delete: same soft-delete-into-"Vault/Deleted" move as confirmDeleteDocument(), but the
+// per-document Drive move runs concurrently via a settled-results call (not a plain Promise.all)
+// so one document's failure can't abort the rest — then only the succeeded subset gets its
+// deletedAt written, in one atomic batch (chunked defensively, see chunkArray above).
+async function performBulkDelete(){
+  const docs = resolveSelectedDocs();
+  const btn = document.getElementById('confirmBulkDeleteBtn');
+  if(!docs.length){ state.modal = null; goBackOneLayer(); return; }
+  if(btn){ btn.disabled = true; btn.textContent = 'Deleting…'; }
+  try{
+    const deletedFolderId = await ensureDeletedFolderId();
+    const results = await Promise.allSettled(docs.map(d =>
+      d.driveFileId ? driveMoveFile(d.driveFileId, categoryFor(d.category).driveFolderId, deletedFolderId) : Promise.resolve()
+    ));
+    const succeeded = docs.filter((d,i) => results[i].status === 'fulfilled');
+    const failed = docs.length - succeeded.length;
+    if(succeeded.length){
+      const deletedAt = new Date().toISOString();
+      for(const chunk of chunkArray(succeeded, 400)){
+        const batch = db.batch();
+        chunk.forEach(d => batch.update(userDoc().collection('documents').doc(d.id), {deletedAt}));
+        await batch.commit();
+      }
+      await db.collection('trashSubscribers').doc(state.user.uid).set({uid: state.user.uid, updatedAt: deletedAt});
+      succeeded.forEach(d => { d.deletedAt = deletedAt; removeOfflineDocument(d.id); });
+    }
+    render();
+    toast(failed
+      ? `Deleted ${succeeded.length} of ${docs.length} — ${failed} couldn't be moved, still in your vault`
+      : `Moved ${succeeded.length} document${succeeded.length===1?'':'s'} to Recently deleted`);
+    if(state.modal === 'confirmBulkDelete'){ state.modal = null; goBackOneLayer(); }
+  } catch(e){
+    console.error('Bulk delete failed', e);
+    render();
+    if(btn){ btn.disabled = false; btn.textContent = 'Move to Recently deleted'; }
+    toast(friendlyCloudError(e));
+  }
+}
+
+// Bulk move to a different category: same settled-results Drive move as performBulkDelete()
+// above, then a category field batch write for the succeeded subset only. Any selected document
+// already in the target category is a no-op — skipped up front, never touched.
+async function performBulkMove(){
+  const targetSelect = document.getElementById('bulkMoveCategorySelect');
+  const targetCat = categoryFor(targetSelect ? targetSelect.value : undefined);
+  const allDocs = resolveSelectedDocs();
+  const docs = allDocs.filter(d => d.category !== targetCat.id);
+  const btn = document.getElementById('confirmBulkMoveBtn');
+  if(!allDocs.length){ state.modal = null; goBackOneLayer(); return; }
+  if(!docs.length){
+    state.modal = null;
+    toast(`Already in ${targetCat.label}`);
+    goBackOneLayer();
+    return;
+  }
+  if(btn){ btn.disabled = true; btn.textContent = 'Moving…'; }
+  try{
+    const results = await Promise.allSettled(docs.map(d => {
+      const oldCat = categoryFor(d.category);
+      return d.driveFileId ? driveMoveFile(d.driveFileId, oldCat.driveFolderId, targetCat.driveFolderId) : Promise.resolve();
+    }));
+    const succeeded = docs.filter((d,i) => results[i].status === 'fulfilled');
+    const failed = docs.length - succeeded.length;
+    if(succeeded.length){
+      for(const chunk of chunkArray(succeeded, 400)){
+        const batch = db.batch();
+        chunk.forEach(d => batch.update(userDoc().collection('documents').doc(d.id), {category: targetCat.id}));
+        await batch.commit();
+      }
+      succeeded.forEach(d => { d.category = targetCat.id; });
+    }
+    render();
+    toast(failed
+      ? `Moved ${succeeded.length} of ${docs.length} to ${targetCat.label} — ${failed} couldn't be moved`
+      : `Moved ${succeeded.length} document${succeeded.length===1?'':'s'} to ${targetCat.label}`);
+    if(state.modal === 'confirmBulkMove'){ state.modal = null; goBackOneLayer(); }
+  } catch(e){
+    console.error('Bulk move failed', e);
+    render();
+    if(btn){ btn.disabled = false; btn.textContent = 'Move'; }
+    toast(friendlyCloudError(e));
+  }
+}
+
 /* ---------- sharing ---------- */
 function openShareModal(docId){ state.modal='share'; state.shareDocId=docId; pushAppHistoryState(); render(); }
 // Hands the actual file to the OS share sheet (Messages, Email, WhatsApp, whatever the user has).
@@ -7269,6 +7732,7 @@ function resetToLoggedOutState(){
     screen: 'login', user: null, driveAccessToken: null, driveTokenExpiresAt: null,
     vaultFolderId: null, deletedFolderId: null, categories: [], documents: [], modal: null, quickRefsDriveFileId: null,
     searchQuery: '', showArchived: false, showDeleted: false, collapsedCats: {}, openActionMenu: null, isOfflineMode: false,
+    selectMode: false, selectedDocIds: new Set(), // no stale bulk-select state should survive into the next signed-in session
     keepOfflineInFlightIds: new Set(), // no stale "downloading" markers should survive into the next signed-in session
     // A derived Quick Reference encryption key is exactly the kind of in-memory secret that must
     // never survive a sign-out — reset alongside everything else session-scoped here.
