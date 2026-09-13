@@ -256,6 +256,8 @@
   .offline-badge{display:inline-flex;vertical-align:middle;color:var(--success);margin-left:4px;}
   .offline-badge svg{display:block;}
   .offline-badge.unavailable{color:var(--ink-soft);font-size:11px;font-weight:400;font-style:italic;}
+  .offline-badge.with-label{gap:3px;font-size:11px;font-weight:400;}
+  .offline-badge.downloading{color:var(--ink-soft);font-style:italic;}
   .doc-meta{font-size:12px;color:var(--ink-soft);margin:0;}
   .doc-snippet{font-size:12px;color:var(--ink-soft);margin:4px 0 0;background:var(--surface-container);padding:6px 9px;border-radius:8px;}
   .doc-snippet mark{background:var(--primary-container);color:var(--on-primary-container);padding:0 1px;border-radius:2px;}
@@ -680,7 +682,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.13 · 08:37';
+const APP_VERSION = '2026.09.13 · 09:23';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -790,6 +792,7 @@ const state = {
   viewDocId: null,
   renewDocId: null,
   archiveDocId: null, // doc awaiting a tap-to-confirm in the 'confirmArchive' modal
+  cacheCategoryId: null, // category awaiting a tap-to-confirm in the 'confirmCacheCategory' modal (Settings)
   pendingArchiveRetentionDays: null, // tentative new value awaiting confirmation in 'confirmArchiveRetention'
   renewalUploadTargetId: null, // set when the 'add' modal was opened from the Renew flow to upload
                                 // a replacement — on save, that doc supersedes this one and this one archives
@@ -818,6 +821,12 @@ const state = {
                         // pinned-section card from its own-category copy of the same doc) whose
                         // card's ⋮ overflow menu is currently open, or null
   offlineDocIds: new Set(), // doc ids with a file blob cached in IndexedDB for offline viewing
+  // Doc ids currently being downloaded for a *deliberate* "keep offline" reason (the auto-download
+  // after load, the per-document toggle, or a category's bulk "cache existing documents" action) —
+  // distinct from offlineDocIds (which only means "already has a cached blob"). renderDocCard reads
+  // this to show a "caching…" indicator instead of leaving a document that's mid-download looking
+  // identical to one that simply isn't cached yet.
+  keepOfflineInFlightIds: new Set(),
   isOfflineMode: false, // true when the vault opened with no Drive/Firestore connection at all
   reminderSettings: {emailDigestEnabled: false, pushEnabled: false}, // loaded in loadUserData(), see meta/reminderSettings
   quickRefs: [], // [{id, label, value, addedAt}] — the standalone label/value list, see renderQuickRef()
@@ -825,7 +834,26 @@ const state = {
                               // session — null until the first successful load or save
   editQuickRefId: null, // null while adding a new entry, else the id being edited
   revealedQuickRefIds: new Set(), // which entries currently show their value in the clear, not masked
-  quickRefSearchQuery: ''
+  quickRefSearchQuery: '',
+
+  // ---- Quick Reference encryption (see the block near sha256Hex/app-lock below for the actual
+  // crypto primitives) ----
+  qrCrypto: {enabled: false}, // mirrors Firestore users/{uid}/meta/quickRefCrypto — when enabled,
+                              // also carries {salt, canary, iterations, kdf, updatedAt}. Loaded in
+                              // loadUserData(); missing/absent doc behaves exactly like today.
+  qrCryptoKey: null, // the derived AES-GCM CryptoKey for the CURRENT session only — NEVER written
+                      // to localStorage/IndexedDB/a backend, lives only in memory for as long as
+                      // this tab/session stays open. Reset to null at the very top of loadUserData()
+                      // (every fresh sign-in/page load starts locked) and in resetToLoggedOutState().
+  qrUnlocked: false, // convenience boolean mirroring !!state.qrCryptoKey
+  qrEditDecryptedValue: null, // transient: the decrypted plaintext for the entry currently open in
+                              // the quickRefForm modal, while its value is encrypted — the form's
+                              // render reads this instead of the raw {iv,ct} object, since opening
+                              // the form is a synchronous render but decrypting is async (see
+                              // openQuickRefForm()). Cleared in clearTopLayerState().
+  qrUnlockThen: null // {action:'edit'|'copy'|'reveal'|'disable', id, ...} — what to resume once the
+                      // 'quickRefUnlock' modal succeeds; null when there's nothing to resume (e.g.
+                      // the header lock/unlock button, or the "Locked" banner).
 };
 
 function categoryFor(id){
@@ -943,6 +971,7 @@ function clearTopLayerState(){
     state.purgeDocId = null; state.pendingArchiveRetentionDays = null;
     state.editCategoryId = null; state.viewDocId = null; state.renewDocId = null; state.archiveDocId = null;
     state.renewalUploadTargetId = null; state.editQuickRefId = null; state.pendingChangelogItems = null; state.capturedPages = [];
+    state.qrEditDecryptedValue = null; state.qrUnlockThen = null;
     pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false;
   } else if(state.showArchived){
     state.showArchived = false; state.searchQuery = '';
@@ -1046,6 +1075,14 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.13 · 09:23',
+    items: [
+      "Added: a deliberate \"keep offline\" control — mark a document, or every new document in a category by default, to be cached for offline use even before you've opened it.",
+      "Added: optional local encryption for Quick Reference — protect your saved values with a passphrase that never leaves this device.",
+      "New Settings > Storage section to see and free up space used by incidental offline copies."
+    ]
+  },
   {
     version: '2026.09.13 · 08:37',
     items: [
@@ -1529,6 +1566,105 @@ function turnOffAppLock(){
 // stays as the fallback either way, so this never needs to touch vault-lock-enabled/-pin-hash.
 function turnOffBiometricUnlock(){
   try{ localStorage.removeItem('vault-lock-webauthn-id'); } catch(e){}
+}
+
+/* ---------- Quick Reference encryption: crypto primitives ----------
+   Optional, opt-in, client-side encryption for Quick Reference entry VALUES only (never labels —
+   see quickRefMatchesSearch(), deliberately untouched, so search keeps working without unlocking
+   first). The passphrase itself never leaves the browser: only a random salt and an encrypted
+   "canary" (a fixed marker used solely to verify a passphrase guess, never anything reversible)
+   are synced to Firestore at meta/quickRefCrypto (see loadUserData() and
+   turnOnQuickRefEncryption() below) — everything else, including the derived key, stays local to
+   whichever device/session typed the passphrase in. A forgotten passphrase is therefore
+   permanently unrecoverable by design: no reset link, no backend override — only the destructive
+   "forgot your passphrase" wipe (see resetForgottenQuickRefPassphrase()). */
+const QUICKREF_CANARY_PLAINTEXT = 'vault-quickref-canary-v1';
+const QUICKREF_PBKDF2_ITERATIONS = 210000; // deliberately slow — every caller that derives a key
+                                            // must show a disabled/pending button state, never let
+                                            // this look hung (see the setup/change/unlock modals).
+const QUICKREF_KDF_LABEL = 'PBKDF2-SHA256';
+const QUICKREF_MIN_PASSPHRASE_LENGTH = 8;
+
+// Same base64 <-> ArrayBuffer idiom already used above for the WebAuthn credential id (btoa +
+// String.fromCharCode to encode, atob + charCodeAt to decode) — kept identical rather than
+// reaching for a different encoding approach for this feature.
+function bufToBase64(buf){
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+function base64ToBuf(b64){
+  return Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer;
+}
+
+// PBKDF2-SHA256 -> a non-extractable AES-GCM-256 CryptoKey. Non-extractable means the key can
+// encrypt/decrypt for the life of this session but can never itself be read back out or
+// persisted — there is no code path by which the derived key could accidentally leak into
+// localStorage/IndexedDB/a backend.
+async function deriveQuickRefKey(passphrase, saltB64, iterations){
+  const baseKey = await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name: 'PBKDF2', salt: base64ToBuf(saltB64), iterations, hash: 'SHA-256'},
+    baseKey,
+    {name: 'AES-GCM', length: 256},
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+// A fresh random IV every call, per the AES-GCM requirement that an IV never repeat under the
+// same key. {iv, ct} (both base64) is the shape every encrypted Quick Reference value and the
+// canary itself take on — plain enough to round-trip through JSON (Firestore, quickrefs.json).
+async function encryptQuickRefString(key, plaintext){
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({name: 'AES-GCM', iv}, key, new TextEncoder().encode(plaintext));
+  return {iv: bufToBase64(iv), ct: bufToBase64(ct)};
+}
+async function decryptQuickRefString(key, encrypted){
+  const plainBuf = await crypto.subtle.decrypt({name: 'AES-GCM', iv: base64ToBuf(encrypted.iv)}, key, base64ToBuf(encrypted.ct));
+  return new TextDecoder().decode(plainBuf);
+}
+function buildQuickRefCanary(key){
+  return encryptQuickRefString(key, QUICKREF_CANARY_PLAINTEXT);
+}
+// AES-GCM decryption throws an OperationError on a wrong key (or corrupt data) — caught here and
+// turned into a plain "false" so a wrong passphrase guess during unlock is an ordinary failed
+// check, never an uncaught exception that would crash the unlock flow.
+async function verifyQuickRefCanary(key, canary){
+  try{
+    return (await decryptQuickRefString(key, canary)) === QUICKREF_CANARY_PLAINTEXT;
+  } catch(e){
+    return false;
+  }
+}
+// Shape-based detection, deliberately: a plain string is plaintext (encryption off, or this one
+// entry hasn't been re-encrypted yet), an {iv,ct} object is ciphertext. Every place that reads a
+// Quick Reference entry's value must go through this instead of trusting
+// isQuickRefEncryptionEnabled() alone — an enable/disable/change-passphrase operation interrupted
+// partway through (see the write-ordering comments on turnOnQuickRefEncryption() and
+// turnOffQuickRefEncryption()) can leave some entries in one shape while the account-level flag
+// already says the other, and this per-entry check is what makes that survivable instead of
+// catastrophic.
+function isEncryptedQuickRefValue(value){
+  return !!value && typeof value === 'object' && typeof value.iv === 'string' && typeof value.ct === 'string';
+}
+
+// Whether Quick Reference encryption is currently turned on for this account — mirrors
+// isAppLockEnabled()'s shape, just backed by the Firestore-synced state.qrCrypto instead of a
+// localStorage flag (see Part B's data model: this needs to be known even before Drive access,
+// and even fully offline via the cached copy — see cacheQrCryptoOffline()/loadOfflineQrCrypto()).
+function isQuickRefEncryptionEnabled(){
+  return !!(state.qrCrypto && state.qrCrypto.enabled);
+}
+
+// Display-decryption helper: a plain string (plaintext, or encryption off) is returned as-is; the
+// {iv,ct} shape is decrypted with the CURRENT session's derived key. Callers are expected to have
+// already checked state.qrUnlocked (renderQuickRef() forces every encrypted entry to a masked
+// placeholder and redirects reveal/copy/edit to the unlock prompt while locked, so this should
+// never actually be reached with a null key in normal use) — this still throws rather than
+// silently returning garbage if it ever is, since decrypting is the one thing this file must never
+// paper over with a fallback value.
+async function quickRefDisplayValue(ref){
+  if(!isEncryptedQuickRefValue(ref.value)) return ref.value;
+  if(!state.qrCryptoKey) throw new Error('Quick Reference is locked.');
+  return decryptQuickRefString(state.qrCryptoKey, ref.value);
 }
 
 // Whether the *current* app open needs the lock screen right now — false forever if the feature
@@ -2143,9 +2279,27 @@ function openOfflineDb(){
     req.onerror = () => reject(req.error);
   });
 }
+// A storage-quota failure doesn't always surface the same way: most engines reject with the real
+// DOMException directly (e.name === 'QuotaExceededError'), but a transaction's own error is
+// sometimes a wrapper whose actual cause sits nested one level down, on the request/event that
+// caused it (e.target.error) or on the transaction (e.error) rather than on e itself. Checking only
+// e.name would misreport those wrapped cases as a generic failure instead of the storage-full
+// condition callers specifically need to react to (see cacheDocumentOffline, downloadDocumentsForKeepOffline).
+function isQuotaExceededError(e){
+  if(!e) return false;
+  if(e.name === 'QuotaExceededError') return true;
+  const nested = (e.target && e.target.error) || e.error;
+  return !!(nested && nested.name === 'QuotaExceededError');
+}
 // doc is the full document record (title, category, expiry, driveFileId, mimeType, ...) — stored
 // as-is (it never contains the file bytes themselves) so an offline cold load has enough to both
 // list and open it.
+// Returns an outcome object rather than nothing: {ok: true} on success, or {ok: false,
+// quotaExceeded} on failure — callers that specifically care about running out of storage (the
+// keep-offline downloader and its single-document toggle-on path) need to tell that apart from any
+// other failure, to stop early and show one clear message instead of retrying doomed downloads or
+// silently swallowing the real cause. viewDocument, the one caller that existed before this change,
+// already ignores the return value, so this stays a safe, backward-compatible change there.
 async function cacheDocumentOffline(doc, blob){
   try{
     const db = await openOfflineDb();
@@ -2157,7 +2311,26 @@ async function cacheDocumentOffline(doc, blob){
       tx.onerror = () => reject(tx.error);
     });
     state.offlineDocIds.add(doc.id);
-  } catch(e){ console.warn('Could not cache document for offline viewing', e); }
+    return {ok: true};
+  } catch(e){
+    console.warn('Could not cache document for offline viewing', e);
+    return {ok: false, quotaExceeded: isQuotaExceededError(e)};
+  }
+}
+// Writes just the metadata-store record for a document that's already cached — used when only a
+// metadata field changed (keepOffline, via toggleKeepOffline) and the blob itself doesn't need
+// re-fetching, unlike cacheDocumentOffline above which always writes both stores together because
+// it's the one place a fresh blob actually arrives.
+async function updateOfflineDocumentMetadata(doc){
+  try{
+    const db = await openOfflineDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(OFFLINE_META_STORE, 'readwrite');
+      tx.objectStore(OFFLINE_META_STORE).put(doc, doc.id);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch(e){ console.warn('Could not update the offline metadata record', e); }
 }
 async function getOfflineDocument(id){
   try{
@@ -2233,6 +2406,81 @@ async function cacheAllDocumentMetadataOffline(docs){
     });
   } catch(e){ console.warn('Could not update the offline document metadata cache', e); }
 }
+
+/* ---------- deliberate "keep offline" downloads ----------
+   Separate from the incidental caching above: cacheDocumentOffline only ever runs as a side effect
+   of viewing a document. keepOffline (on a document) and keepOfflineDefault (on a category) are an
+   explicit, standing request to have specific documents' bytes cached whether or not anyone's
+   actually opened them — see autoDownloadKeepOfflineDocuments (runs once after every successful
+   load), toggleKeepOffline (the per-document switch), and the Categories section of Settings (the
+   per-category default switch, and its "cache existing documents" bulk action). All three funnel
+   through the one sequential downloader below. */
+
+// Downloads each of `docs` in turn (deliberately sequential, not parallel — one quota-exceeded
+// failure should stop the whole run rather than let several more doomed downloads pile up
+// competing for the same disappearing storage). For each document: marks it in-flight and
+// re-renders (so a doc card can show a "caching…" indicator, and an optional onProgress(i, total)
+// callback can drive a plain status line, same idea as buildDocumentsZipBlob's own progress
+// callback for the ZIP export), re-checks right before writing to the cache that the document is
+// still present and not soft-deleted — it could have been deleted by another action while this
+// exact download was in flight, and writing the blob after that would resurrect it into the offline
+// cache once it was supposed to be gone — and skips it if not. Returns a small summary rather than
+// throwing: how many succeeded, how many failed, and whether a quota-exceeded failure was hit (in
+// which case the loop stops early instead of continuing to attempt more downloads doomed by the
+// same full storage).
+async function downloadDocumentsForKeepOffline(docs, onProgress){
+  let succeeded = 0, failed = 0, quotaExceeded = false;
+  for(let i=0; i<docs.length; i++){
+    const id = docs[i].id;
+    state.keepOfflineInFlightIds.add(id);
+    render();
+    if(onProgress) onProgress(i+1, docs.length);
+    const doc = state.documents.find(d => d.id === id && !d.deletedAt);
+    if(doc){
+      try{
+        const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${doc.driveFileId}?alt=media`);
+        const blob = await res.blob();
+        // Re-check again right before the actual cache write — see the function comment above.
+        const stillEligible = state.documents.find(d => d.id === id && !d.deletedAt);
+        if(stillEligible){
+          const result = await cacheDocumentOffline(stillEligible, blob);
+          if(result.ok){
+            succeeded++;
+          } else {
+            failed++;
+            if(result.quotaExceeded){
+              quotaExceeded = true;
+              state.keepOfflineInFlightIds.delete(id);
+              render();
+              break;
+            }
+          }
+        }
+      } catch(e){
+        console.warn('Could not download a document for keep-offline caching', e);
+        failed++;
+      }
+    }
+    state.keepOfflineInFlightIds.delete(id);
+    render();
+  }
+  return {succeeded, failed, quotaExceeded};
+}
+
+// Runs once, automatically, right after every successful full load (see loadUserData, right beside
+// cacheAllDocumentMetadataOffline — fire-and-forget there too, never blocks the vault's own load).
+// Archived documents ARE included: archiving isn't deleting, and someone who flagged an old policy
+// document keepOffline presumably still wants it kept offline after archiving it. Soft-deleted ones
+// are not. Silent on full success; a single toast only if a quota-exceeded condition was hit, so a
+// persistent full-storage problem is surfaced once per app load rather than never (fully silent) or
+// on every single document that failed because of it.
+async function autoDownloadKeepOfflineDocuments(){
+  const targets = state.documents.filter(d => d.keepOffline && !d.deletedAt && !state.offlineDocIds.has(d.id));
+  if(!targets.length) return;
+  const {quotaExceeded} = await downloadDocumentsForKeepOffline(targets);
+  if(quotaExceeded) toast("Ran out of storage space keeping documents offline — free up space in Settings and try again.");
+}
+
 const OFFLINE_QUICKREFS_KEY = 'vault-offline-quickrefs';
 // Quick Reference has no Drive/blob dependency at all (it's plain Firestore data), so unlike
 // documents there's nothing further to fetch once the list itself is available — a plain
@@ -2247,10 +2495,27 @@ function loadOfflineQuickRefs(){
     return raw ? JSON.parse(raw) : [];
   } catch(e){ console.warn('Could not load offline Quick Reference entries', e); return []; }
 }
+
+const OFFLINE_QRCRYPTO_KEY = 'vault-offline-qrcrypto';
+// The (non-secret) salt/canary/iterations/kdf blob from meta/quickRefCrypto, cached the same way
+// as the Quick Reference entries themselves right above — without this, a fully offline app open
+// would have no way to even ATTEMPT an unlock (nothing to derive a key or check a canary against)
+// even though none of it needs to be secret to be useful offline.
+function cacheQrCryptoOffline(qrCrypto){
+  try{ localStorage.setItem(OFFLINE_QRCRYPTO_KEY, JSON.stringify(qrCrypto)); } catch(e){ console.warn('Could not cache Quick Reference encryption settings for offline use', e); }
+}
+function loadOfflineQrCrypto(){
+  try{
+    const raw = localStorage.getItem(OFFLINE_QRCRYPTO_KEY);
+    return raw ? JSON.parse(raw) : {enabled: false};
+  } catch(e){ console.warn('Could not load offline Quick Reference encryption settings', e); return {enabled: false}; }
+}
+
 function clearOfflineCache(){
   state.offlineDocIds = new Set();
   try{ indexedDB.deleteDatabase(OFFLINE_DB_NAME); } catch(e){ console.warn('Could not clear the offline document cache', e); }
   try{ localStorage.removeItem(OFFLINE_QUICKREFS_KEY); } catch(e){ console.warn('Could not clear the offline Quick Reference cache', e); }
+  try{ localStorage.removeItem(OFFLINE_QRCRYPTO_KEY); } catch(e){ console.warn('Could not clear the offline Quick Reference encryption cache', e); }
 }
 
 const QUICKREFS_DRIVE_FILENAME = 'quickrefs.json';
@@ -2302,23 +2567,27 @@ async function migrateAndLoadQuickRefs(loadDoc){
   }
 }
 
-// The meta/documents/reminderSettings/categories reads loadUserData() needs — pulled out on its
-// own so a caller that's ALSO about to await a slow, unrelated network call (the Drive token
-// mint/consent exchange, an Apps Script Web App round trip) can fire both at once instead of one
-// after the other. All four are plain Firestore reads authenticated by the Firebase ID token, not
-// the separate Drive OAuth token, so none of them actually needs Drive access to depend on —
-// categories was previously queried on its own, after this whole batch, on the mistaken belief
-// that it needed the Drive token like Quick Reference genuinely does; it doesn't, and folding it
-// in here removes one full serial round trip from every returning sign-in. Only Quick Reference
-// (further down in loadUserData()) genuinely can't join this batch — it lives in a Drive file, so
-// it needs state.vaultFolderId (from metaSnap, below) settled first.
+// The meta/documents/reminderSettings/categories/quickRefCrypto reads loadUserData() needs —
+// pulled out on its own so a caller that's ALSO about to await a slow, unrelated network call (the
+// Drive token mint/consent exchange, an Apps Script Web App round trip) can fire both at once
+// instead of one after the other. All five are plain Firestore reads authenticated by the Firebase
+// ID token, not the separate Drive OAuth token, so none of them actually needs Drive access to
+// depend on — categories was previously queried on its own, after this whole batch, on the
+// mistaken belief that it needed the Drive token like Quick Reference genuinely does; it doesn't,
+// and folding it in here removes one full serial round trip from every returning sign-in.
+// meta/quickRefCrypto (the non-secret salt/canary/iterations blob — see the crypto-primitives
+// block near sha256Hex/app-lock above) joins this same batch for the same reason: it's just
+// another small per-user meta doc, no Drive dependency. Only Quick Reference itself (further down
+// in loadUserData()) genuinely can't join this batch — it lives in a Drive file, so it needs
+// state.vaultFolderId (from metaSnap, below) settled first.
 function prefetchUserMetaReads(uid){
   const loadDoc = () => db.collection('users').doc(uid);
   return Promise.all([
     loadDoc().collection('meta').doc('vault').get(),
     loadDoc().collection('documents').orderBy('addedAt', 'desc').get(),
     loadDoc().collection('meta').doc('reminderSettings').get(),
-    loadDoc().collection('categories').orderBy('order').get()
+    loadDoc().collection('categories').orderBy('order').get(),
+    loadDoc().collection('meta').doc('quickRefCrypto').get()
   ]);
 }
 
@@ -2341,6 +2610,12 @@ async function loadUserData(prefetchedReads){
   // offline load where the real Firestore check never gets a chance to run at all (see the write
   // side, right after alreadyProvisioned is actually determined).
   const everProvisionedFallback = () => { try{ return localStorage.getItem('vault-ever-provisioned-' + uid) === 'true'; } catch(e){ return false; } };
+  // Every fresh sign-in / page load starts locked, full stop — a derived Quick Reference
+  // encryption key is exactly the kind of in-memory secret that must never survive past the one
+  // load that created it, so this is reset unconditionally at the very top, before either of the
+  // branches below (success or the fully-offline catch) has a chance to run.
+  state.qrCryptoKey = null;
+  state.qrUnlocked = false;
   try{
     // metaSnap doesn't depend on anything below, and nothing below except Quick Reference depends
     // on it — it used to be awaited alone, before even issuing the other reads, which cost a full
@@ -2348,7 +2623,7 @@ async function loadUserData(prefetchedReads){
     // "meta, then everything else" into "everything (except Quick Reference — see below) at once."
     // Quick Reference isn't read here at all anymore: it now lives in Drive, which needs
     // state.vaultFolderId settled first, so migrateAndLoadQuickRefs() runs further down.
-    const [metaSnap, docsSnap, reminderSnap, prefetchedCatsSnap] = await (prefetchedReads || prefetchUserMetaReads(uid));
+    const [metaSnap, docsSnap, reminderSnap, prefetchedCatsSnap, qrCryptoSnap] = await (prefetchedReads || prefetchUserMetaReads(uid));
     if(!stillCurrent()) return;
     // metaSnap.data().vaultFolderId is checked, not just metaSnap.exists — an account from
     // before this cloud-storage redesign has an old-shape meta/vault doc (passphrase salt and
@@ -2381,6 +2656,9 @@ async function loadUserData(prefetchedReads){
       return ok;
     });
     state.reminderSettings = reminderSnap.exists ? reminderSnap.data() : {emailDigestEnabled: false, pushEnabled: false};
+    // Missing/absent doc means encryption has never been turned on for this account — behaves
+    // exactly like today (every Quick Reference value is read/written as a plain string).
+    state.qrCrypto = qrCryptoSnap.exists ? qrCryptoSnap.data() : {enabled: false};
     // state.vaultFolderId is settled by now (both branches above set it) — Quick Reference lives in
     // Drive, so this is the earliest point it can be read.
     const {fileId: quickRefsFileId, items: quickRefItems} = await migrateAndLoadQuickRefs(loadDoc);
@@ -2388,7 +2666,9 @@ async function loadUserData(prefetchedReads){
     state.quickRefs = quickRefItems;
     state.quickRefsDriveFileId = quickRefsFileId;
     cacheAllDocumentMetadataOffline(state.documents); // fire-and-forget — keeps the offline list complete
+    autoDownloadKeepOfflineDocuments(); // fire-and-forget — downloads anything flagged keepOffline that isn't cached yet
     cacheQuickRefsOffline(state.quickRefs); // fire-and-forget — keeps Quick Reference usable offline
+    cacheQrCryptoOffline(state.qrCrypto); // fire-and-forget — keeps the (non-secret) salt/canary usable fully offline, so an unlock attempt can still be made with zero connectivity
     syncPushSubscriptionIfNeeded(); // fire-and-forget — never delays the vault's own load
   } catch(e){
     console.error('Could not load vault data from the cloud', e);
@@ -2398,6 +2678,12 @@ async function loadUserData(prefetchedReads){
     // showing the welcome guide on every single offline open regardless of how long this account
     // has actually used Vault.
     if(stillCurrent()) state.vaultWasAlreadyProvisioned = everProvisionedFallback();
+    // Same idea as vaultWasAlreadyProvisioned just above, for the same reason: a fully offline
+    // load never got a real Firestore answer for whether encryption is on, so fall back to the
+    // last-known (non-secret) copy cached in loadUserData's own success path above — without this,
+    // a fully offline first open on an account with encryption already turned on could never even
+    // present the unlock prompt.
+    if(stillCurrent()) state.qrCrypto = loadOfflineQrCrypto();
     if(stillCurrent()) toast('Could not load your vault — check your connection and try again.');
   }
   if(stillCurrent()) await loadOfflineDocIds();
@@ -2966,6 +3252,8 @@ async function completeReconnect(){
 
 function renderSettings(app){
   const vaultBytes = state.documents.reduce((sum,d) => sum + (d.size||0), 0);
+  const keepOfflineDocs = state.documents.filter(d => d.keepOffline && !d.deletedAt);
+  const keepOfflinePendingCount = keepOfflineDocs.filter(d => !state.offlineDocIds.has(d.id)).length;
   app.innerHTML = `
     <div class="settings-header">
       <button class="icon-only-btn" id="backToVaultBtn" aria-label="Back">${icon('back',22)}</button>
@@ -2986,6 +3274,14 @@ function renderSettings(app){
       <div class="settings-section">
         <h4>Storage</h4>
         <div id="storageInfo" class="search-hint">${driveStorageQuotaCache !== null ? storageInfoHtml(driveStorageQuotaCache, vaultBytes) : 'Loading…'}</div>
+        <div class="settings-row">
+          <span>${keepOfflineDocs.length} document${keepOfflineDocs.length===1?'':'s'} kept offline${keepOfflinePendingCount ? ` · ${keepOfflinePendingCount} still downloading for the first time` : ''}</span>
+        </div>
+        <div class="settings-row">
+          <span>Free up space used by incidental offline copies — leaves anything kept offline untouched</span>
+          <button class="icon-btn" id="reclaimOfflineSpaceBtn">Free up space</button>
+        </div>
+        <div class="search-hint" id="reclaimOfflineStatus"></div>
       </div>
 
       <div class="settings-section">
@@ -3009,6 +3305,19 @@ function renderSettings(app){
             <span>Biometric unlock</span>
             ${switchHtml('bioUnlockSwitch', hasBiometricUnlockConfigured(), false, 'Biometric unlock')}
           </div>
+        ` : ''}
+      </div>
+
+      <div class="settings-section">
+        <h4>Encrypt Quick Reference values</h4>
+        <div class="settings-row">
+          <span>Encrypt Quick Reference values with a passphrase only you know — a forgotten passphrase can never be recovered, only reset (which wipes existing entries)</span>
+          ${switchHtml('qrEncryptSwitch', isQuickRefEncryptionEnabled(), false, 'Encrypt Quick Reference values')}
+        </div>
+        ${isQuickRefEncryptionEnabled() ? `
+          <div class="settings-row"><span>Passphrase</span><button class="icon-btn" id="changeQrPassphraseBtn">Change passphrase</button></div>
+          ${state.qrUnlocked ? `<div class="settings-row"><span>Currently unlocked on this device</span><button class="icon-btn" id="lockQrNowBtn">Lock now</button></div>` : ''}
+          <div class="settings-row"><span>Forgotten your passphrase?</span><button class="icon-btn danger" id="forgotQrPassphraseBtn">Reset</button></div>
         ` : ''}
       </div>
 
@@ -3038,7 +3347,13 @@ function renderSettings(app){
 
       <div class="settings-section">
         <h4>Categories</h4>
-        ${state.categories.map((c,i) => `
+        ${state.categories.map((c,i) => {
+          // Not-yet-cached, non-deleted documents currently in this category — the "cache existing
+          // documents" button below only ever shows up when there's actually something for it to do,
+          // and stays visible for the whole run (categoryCacheRunningIds) even as this count shrinks
+          // toward 0 mid-download.
+          const catPendingCount = state.documents.filter(d => d.category === c.id && !d.deletedAt && !state.offlineDocIds.has(d.id)).length;
+          return `
           <div class="cat-manage-row">
             <span class="cm-icon">${categoryIconHtml(c, 17)}</span>
             <span class="cm-label">${escapeHtml(c.label)}</span>
@@ -3049,7 +3364,18 @@ function renderSettings(app){
             <button class="icon-btn" data-rename-cat="${c.id}">Rename</button>
             <button class="icon-btn danger" data-delete-cat="${c.id}">Delete</button>
           </div>
-        `).join('')}
+          <div class="settings-row">
+            <span>Keep new "${escapeHtml(c.label)}" documents offline automatically</span>
+            ${catKeepOfflineSwitchHtml(c)}
+          </div>
+          ${(catPendingCount > 0 || categoryCacheRunningIds.has(c.id)) ? `
+            <div class="settings-row">
+              <span>${catPendingCount} existing document${catPendingCount===1?'':'s'} not yet cached for offline use</span>
+              <button class="icon-btn" data-cache-cat="${c.id}" ${categoryCacheRunningIds.has(c.id) ? 'disabled' : ''}>Cache ${catPendingCount} existing document${catPendingCount===1?'':'s'}</button>
+            </div>
+            <div class="search-hint" id="cacheCatStatus-${c.id}"></div>
+          ` : ''}
+        `; }).join('')}
         <button class="ghost" id="addCategoryBtn">+ Add category</button>
       </div>
 
@@ -3140,6 +3466,28 @@ function renderSettings(app){
     // A full render() only flashed the whole Settings screen to reflect one already-visible switch.
   };
 
+  const qrEncryptSwitch = document.getElementById('qrEncryptSwitch');
+  if(qrEncryptSwitch) qrEncryptSwitch.onchange = (e) => {
+    if(e.target.checked){
+      // Turning on needs a passphrase, which needs its own modal — same pattern as appLockSwitch
+      // above: render() from that modal's own flow (on save or on cancel) settles the switch to
+      // whatever actually happened.
+      openQuickRefCryptoSetupModal();
+    } else {
+      // Don't let the switch visually flip until turning off actually finishes (it may need to
+      // route through the unlock prompt first, and must decrypt+re-save every entry to Drive
+      // before the Firestore crypto doc is ever deleted — see turnOffQuickRefEncryption()).
+      e.target.checked = true;
+      requestTurnOffQuickRefEncryption();
+    }
+  };
+  const changeQrPassphraseBtn = document.getElementById('changeQrPassphraseBtn');
+  if(changeQrPassphraseBtn) changeQrPassphraseBtn.onclick = openQuickRefCryptoSetupModal;
+  const lockQrNowBtn = document.getElementById('lockQrNowBtn');
+  if(lockQrNowBtn) lockQrNowBtn.onclick = lockQuickRefSession;
+  const forgotQrPassphraseBtn = document.getElementById('forgotQrPassphraseBtn');
+  if(forgotQrPassphraseBtn) forgotQrPassphraseBtn.onclick = () => { state.modal = 'quickRefForgotPassphrase'; pushAppHistoryState(); render(); };
+
   const emailDigestSwitch = document.getElementById('emailDigestSwitch');
   if(emailDigestSwitch) emailDigestSwitch.onchange = toggleEmailDigest;
   const pushSwitch = document.getElementById('pushSwitch');
@@ -3157,6 +3505,22 @@ function renderSettings(app){
   document.querySelectorAll('[data-delete-cat]').forEach(btn => {
     btn.onclick = () => deleteCategory(btn.getAttribute('data-delete-cat'));
   });
+  document.querySelectorAll('[data-cat-keep-offline-default]').forEach(el => {
+    el.onchange = (e) => toggleCategoryKeepOfflineDefault(el.getAttribute('data-cat-keep-offline-default'), e.target.checked);
+  });
+  document.querySelectorAll('[data-cache-cat]').forEach(btn => {
+    btn.onclick = () => requestCacheCategoryDocuments(btn.getAttribute('data-cache-cat'));
+  });
+
+  const reclaimBtn = document.getElementById('reclaimOfflineSpaceBtn');
+  if(reclaimBtn) reclaimBtn.onclick = async () => {
+    reclaimBtn.disabled = true;
+    const statusEl = document.getElementById('reclaimOfflineStatus');
+    if(statusEl) statusEl.textContent = 'Freeing up space…';
+    const {count, bytes} = await reclaimIncidentalOfflineSpace();
+    render();
+    toast(count ? `Freed ${formatBytes(bytes)} from ${count} document${count===1?'':'s'}` : 'Nothing to free up — every cached copy is kept offline on purpose');
+  };
 
   document.getElementById('openDriveBtn').onclick = () => window.open(`https://drive.google.com/drive/folders/${state.vaultFolderId}`, '_blank');
   document.getElementById('syncDriveBtn').onclick = runSyncFromDrive;
@@ -3201,18 +3565,39 @@ function matchesSearch(doc){
 // could tap past without reading.
 function quickRefMatchesSearch(ref){
   if(!state.quickRefSearchQuery) return true;
+  // Only ref.label is ever matched here — Quick Reference VALUES are what gets encrypted, never
+  // labels (see Part 25 of the encryption design), specifically so search keeps working without
+  // needing to unlock first. Deliberately untouched by the encryption work below.
   return ref.label.toLowerCase().includes(state.quickRefSearchQuery.toLowerCase());
 }
 
+// Decrypted plaintext for entries currently revealed on screen, keyed by id — a display-only
+// cache (never persisted anywhere, unlike state.revealedQuickRefIds which just tracks which ids
+// are toggled open). Needed because decrypting is async but render() is synchronous: the reveal
+// button's click handler decrypts once and stashes the result here, and the next render() just
+// reads it back out. Cleared whenever the session locks (lockQuickRefSession()) and on sign-out.
+let quickRefRevealedPlain = new Map();
+
 function renderQuickRef(app){
   const filtered = state.quickRefs.filter(quickRefMatchesSearch);
+  const qrEncrypted = isQuickRefEncryptionEnabled();
   app.innerHTML = `
     <div class="settings-header">
       <button class="icon-only-btn" id="backToVaultBtn" aria-label="Back">${icon('back',22)}</button>
       <div class="brand-name">Quick Reference</div>
+      ${qrEncrypted ? `
+        <button class="icon-only-btn" id="qrLockToggleBtn" style="margin-left:auto;" aria-label="${state.qrUnlocked ? 'Lock Quick Reference' : 'Unlock Quick Reference'}" title="${state.qrUnlocked ? 'Lock now' : 'Unlock'}">${icon('key',20)}</button>
+      ` : ''}
     </div>
     <div class="settings">
-      <p class="quickref-caution">Stored the same way as your documents — not end-to-end encrypted like a dedicated password manager. Fine for convenience; for your most sensitive credentials, use a password manager instead.</p>
+      ${qrEncrypted ? `
+        <p class="quickref-caution">Values are encrypted on this device with your Quick Reference passphrase before they're saved — labels stay plain so search keeps working without unlocking.</p>
+        ${!state.qrUnlocked ? `
+          <button type="button" class="quickref-caution" id="qrLockedBanner" style="display:flex;align-items:center;gap:8px;width:100%;border:none;font:inherit;text-align:left;cursor:pointer;">${icon('key',15)} Locked — tap to unlock</button>
+        ` : ''}
+      ` : `
+        <p class="quickref-caution">Stored the same way as your documents — not end-to-end encrypted like a dedicated password manager. Fine for convenience; for your most sensitive credentials, use a password manager instead.</p>
+      `}
       <div class="search-bar">
         <span class="sicon">${icon('search',18)}</span>
         <input type="text" id="quickRefSearchInput" placeholder="Search by label" value="${escapeHtml(state.quickRefSearchQuery)}" />
@@ -3223,15 +3608,21 @@ function renderQuickRef(app){
       ` : filtered.length === 0 ? `
         <div class="empty-state">No entries match "${escapeHtml(state.quickRefSearchQuery)}".</div>
       ` : filtered.map((ref,i) => {
-        const revealed = state.revealedQuickRefIds.has(ref.id);
+        // Shape-based, per entry — never trust the account-level qrEncrypted flag alone here (an
+        // interrupted enable/disable/change-passphrase can leave some entries plaintext and some
+        // ciphertext at the same time; see isEncryptedQuickRefValue()'s own comment).
+        const entryEncrypted = isEncryptedQuickRefValue(ref.value);
+        const lockedEntry = entryEncrypted && !state.qrUnlocked;
+        const revealed = !lockedEntry && state.revealedQuickRefIds.has(ref.id);
+        const displayText = !revealed ? '••••••••' : escapeHtml(entryEncrypted ? (quickRefRevealedPlain.get(ref.id) || '') : ref.value);
         return `
         <div class="quickref-row" style="--i:${i}">
           <div class="qr-main">
             <p class="quickref-label">${escapeHtml(ref.label)}</p>
-            <p class="quickref-value">${revealed ? escapeHtml(ref.value) : '••••••••'}</p>
+            <p class="quickref-value">${displayText}</p>
           </div>
           <div class="quickref-actions">
-            <button class="icon-only-btn small" data-reveal-qr="${ref.id}" aria-label="${revealed ? 'Hide value' : 'Show value'}">${icon(revealed ? 'eyeOff' : 'eye', 18)}</button>
+            <button class="icon-only-btn small" data-reveal-qr="${ref.id}" aria-label="${lockedEntry ? 'Unlock to show value' : (revealed ? 'Hide value' : 'Show value')}">${icon(lockedEntry ? 'key' : (revealed ? 'eyeOff' : 'eye'), 18)}</button>
             <button class="icon-only-btn small" data-copy-qr="${ref.id}" aria-label="Copy value">${icon('copy', 17)}</button>
             <button class="icon-only-btn small" data-edit-qr="${ref.id}" aria-label="Edit">${icon('edit', 17)}</button>
             <button class="icon-only-btn small" data-delete-qr="${ref.id}" aria-label="Delete">${icon('trash', 17)}</button>
@@ -3245,6 +3636,13 @@ function renderQuickRef(app){
   `;
   document.getElementById('backToVaultBtn').onclick = () => goBackOneLayer();
   document.getElementById('addQuickRefBtn').onclick = () => openQuickRefForm(null);
+  const lockToggleBtn = document.getElementById('qrLockToggleBtn');
+  if(lockToggleBtn) lockToggleBtn.onclick = () => {
+    if(state.qrUnlocked) lockQuickRefSession();
+    else openQuickRefUnlock(null);
+  };
+  const lockedBanner = document.getElementById('qrLockedBanner');
+  if(lockedBanner) lockedBanner.onclick = () => openQuickRefUnlock(null);
   const searchInput = document.getElementById('quickRefSearchInput');
   searchInput.oninput = (e) => {
     state.quickRefSearchQuery = e.target.value;
@@ -3257,10 +3655,23 @@ function renderQuickRef(app){
   const clearBtn = document.getElementById('quickRefSearchClearBtn');
   if(clearBtn) clearBtn.onclick = () => { state.quickRefSearchQuery = ''; render(); };
   document.querySelectorAll('[data-reveal-qr]').forEach(btn => {
-    btn.onclick = () => {
+    btn.onclick = async () => {
       const id = btn.getAttribute('data-reveal-qr');
-      if(state.revealedQuickRefIds.has(id)) state.revealedQuickRefIds.delete(id);
-      else state.revealedQuickRefIds.add(id);
+      const ref = state.quickRefs.find(r => r.id === id);
+      if(!ref) return;
+      // Redirects to the unlock prompt instead of the normal reveal toggle — see Part C.11.
+      if(isEncryptedQuickRefValue(ref.value) && !state.qrUnlocked){ openQuickRefUnlock({action:'reveal', id}); return; }
+      if(state.revealedQuickRefIds.has(id)){
+        state.revealedQuickRefIds.delete(id);
+        quickRefRevealedPlain.delete(id);
+        render();
+        return;
+      }
+      if(isEncryptedQuickRefValue(ref.value)){
+        try{ quickRefRevealedPlain.set(id, await quickRefDisplayValue(ref)); }
+        catch(e){ console.error('Could not decrypt entry for display', e); toast("Couldn't decrypt this entry."); return; }
+      }
+      state.revealedQuickRefIds.add(id);
       render();
     };
   });
@@ -3276,11 +3687,15 @@ function renderQuickRef(app){
   renderModal();
 }
 
+// Shape- and lock-aware, per Part C.13: plaintext copies exactly as before; encrypted-and-unlocked
+// decrypts first; encrypted-and-locked opens the unlock prompt instead of copying (and resumes
+// straight into the copy once unlocked — see handleQuickRefUnlockSubmit()).
 async function copyQuickRefValue(id){
   const ref = state.quickRefs.find(r => r.id === id);
   if(!ref) return;
+  if(isEncryptedQuickRefValue(ref.value) && !state.qrUnlocked){ openQuickRefUnlock({action:'copy', id}); return; }
   try{
-    await navigator.clipboard.writeText(ref.value);
+    await navigator.clipboard.writeText(await quickRefDisplayValue(ref));
     toast(`Copied "${ref.label}"`);
   } catch(e){
     console.error('Clipboard write failed', e);
@@ -3288,7 +3703,27 @@ async function copyQuickRefValue(id){
   }
 }
 
-function openQuickRefForm(id){ state.modal = 'quickRefForm'; state.editQuickRefId = id; pushAppHistoryState(); render(); }
+// Gated on encryption + lock state for BOTH a brand-new entry and an existing one (Part C.14): an
+// existing entry whose value is already ciphertext is never opened for editing without decrypting
+// it first, and — since saveQuickRef() below always needs a live key to encrypt whatever gets
+// typed — a brand-new entry isn't opened either while the session is locked. Either way, this
+// guarantees the quickRefForm modal can never actually be open while encryption is on and the
+// session is locked, which is what keeps saveQuickRef()'s own lock check (below) a pure defensive
+// backstop rather than something normal use ever has to route through.
+async function openQuickRefForm(id){
+  if(isQuickRefEncryptionEnabled() && !state.qrUnlocked){ openQuickRefUnlock({action:'edit', id}); return; }
+  const existing = id ? state.quickRefs.find(r => r.id === id) : null;
+  if(existing && isEncryptedQuickRefValue(existing.value)){
+    // Decrypted into transient state for the form's render code to read (opening the form is a
+    // synchronous render, but decrypting is async) — cleared in clearTopLayerState() like every
+    // other transient per-modal field.
+    try{ state.qrEditDecryptedValue = await quickRefDisplayValue(existing); }
+    catch(e){ console.error('Could not decrypt entry for editing', e); toast("Couldn't decrypt this entry to edit it."); return; }
+  } else {
+    state.qrEditDecryptedValue = null;
+  }
+  state.modal = 'quickRefForm'; state.editQuickRefId = id; pushAppHistoryState(); render();
+}
 
 async function saveQuickRef(){
   const label = document.getElementById('qrLabelInput').value.trim();
@@ -3297,13 +3732,31 @@ async function saveQuickRef(){
   const saveBtn = document.getElementById('saveQrBtn');
   if(!label){ errEl.textContent = 'Enter a label.'; errEl.style.display = 'block'; return; }
   if(!value){ errEl.textContent = 'Enter a value.'; errEl.style.display = 'block'; return; }
-  errEl.style.display = 'none';
-  saveBtn.disabled = true;
-  saveBtn.textContent = 'Saving…';
-  const existing = state.editQuickRefId ? state.quickRefs.find(r => r.id === state.editQuickRefId) : null;
+  // Defense in depth, not a normal path: openQuickRefForm() above already refuses to open this
+  // very form while encryption is on and the session is locked, so this should be unreachable in
+  // ordinary use — but this must never write a plaintext value for an account that's supposed to
+  // be encrypted just because some future path opened the form without that gate.
+  if(isQuickRefEncryptionEnabled() && !state.qrUnlocked){
+    errEl.textContent = 'Quick Reference is locked — close this and unlock it first.';
+    errEl.style.display = 'block';
+    return;
+  }
+  await performSaveQuickRef(state.editQuickRefId, label, value, errEl, saveBtn);
+}
+
+// Split out of saveQuickRef() so it can be called standalone too — not currently needed since
+// openQuickRefForm()'s gate keeps the form from ever being open while locked, but kept as the one
+// place that actually writes a Quick Reference entry, so encryption-on-save (Part C.15) has
+// exactly one implementation regardless of caller.
+async function performSaveQuickRef(id, label, value, errEl, saveBtn){
+  if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
+  const existing = id ? state.quickRefs.find(r => r.id === id) : null;
+  // Encrypt the typed value instead of writing the plain string, whenever encryption is on — the
+  // caller (saveQuickRef()) already guaranteed state.qrCryptoKey is set before this runs.
+  const storedValue = isQuickRefEncryptionEnabled() ? await encryptQuickRefString(state.qrCryptoKey, value) : value;
   const ref = existing
-    ? {...existing, label, value}
-    : {id: 'qr_' + Date.now(), label, value, addedAt: new Date().toISOString()};
+    ? {...existing, label, value: storedValue}
+    : {id: 'qr_' + Date.now(), label, value: storedValue, addedAt: new Date().toISOString()};
   // Whole-file write: state.quickRefs is already fully loaded in memory (see loadUserData()), so
   // building the complete next-items array here and overwriting quickrefs.json with it in one go
   // is the "read-modify-write" a single shared JSON file (rather than one Firestore doc per entry)
@@ -3314,14 +3767,14 @@ async function saveQuickRef(){
     if(existing) Object.assign(existing, ref);
     else state.quickRefs.unshift(ref);
     cacheQuickRefsOffline(state.quickRefs);
+    quickRefRevealedPlain.set(ref.id, value); // the just-typed plaintext, so re-revealing it needs no redundant decrypt
     closeModal();
     toast(existing ? 'Updated' : 'Saved');
   } catch(e){
     console.error('Failed to save quick reference', e);
-    errEl.textContent = friendlyCloudError(e);
-    errEl.style.display = 'block';
-    saveBtn.disabled = false;
-    saveBtn.textContent = 'Save';
+    if(errEl){ errEl.textContent = friendlyCloudError(e); errEl.style.display = 'block'; }
+    else toast(friendlyCloudError(e));
+    if(saveBtn){ saveBtn.disabled = false; saveBtn.textContent = 'Save'; }
   }
 }
 
@@ -3332,6 +3785,7 @@ async function confirmDeleteQuickRef(){
   const beforeFileId = state.quickRefsDriveFileId;
   state.quickRefs = state.quickRefs.filter(r => r.id !== id);
   state.revealedQuickRefIds.delete(id);
+  quickRefRevealedPlain.delete(id);
   closeModal();
   toast('Deleted');
   try{
@@ -3346,6 +3800,271 @@ async function confirmDeleteQuickRef(){
     render();
     toast(friendlyCloudError(e));
   }
+}
+
+/* ---------- Quick Reference encryption: unlock / lock / enable / disable ---------- */
+
+function lockQuickRefSession(){
+  state.qrCryptoKey = null;
+  state.qrUnlocked = false;
+  state.revealedQuickRefIds.clear();
+  quickRefRevealedPlain.clear();
+  toast('Quick Reference locked');
+  render();
+}
+
+// Opens the unlock prompt. `intent` (optional) is what to resume once the passphrase checks out —
+// {action:'edit'|'copy'|'reveal', id} to finish the action that triggered the lock in the first
+// place, {action:'disable'} to proceed straight into turning encryption off, or null/undefined
+// for a plain unlock with nothing to resume (the header lock/unlock button, the "Locked" banner).
+function openQuickRefUnlock(intent){
+  state.qrUnlockThen = intent || null;
+  state.modal = 'quickRefUnlock';
+  pushAppHistoryState();
+  render();
+}
+
+// Opens the combined enable/change-passphrase modal (state.modal === 'quickRefCryptoSetup') — see
+// renderModal() for the form itself, which reads isQuickRefEncryptionEnabled() to decide whether
+// it's a fresh turn-on or a change (and asks for the current passphrase first only in the latter
+// case).
+function openQuickRefCryptoSetupModal(){ state.modal = 'quickRefCryptoSetup'; pushAppHistoryState(); render(); }
+
+// Core check: derives a key from the typed passphrase against the stored/cached salt+iterations
+// and verifies it against the stored/cached canary. Works fully offline (falls back to the
+// localStorage-cached copy — see cacheQrCryptoOffline()/loadOfflineQrCrypto() — whenever
+// state.qrCrypto itself hasn't got salt/canary yet, e.g. a fully offline first load; see Part B.8).
+// Returns false on a wrong passphrase rather than throwing — AES-GCM's OperationError is already
+// swallowed inside verifyQuickRefCanary().
+async function attemptQuickRefUnlock(passphrase){
+  const cached = (state.qrCrypto && state.qrCrypto.salt) ? state.qrCrypto : loadOfflineQrCrypto();
+  if(!cached || !cached.salt || !cached.canary) throw new Error('No encryption settings found to unlock against.');
+  const key = await deriveQuickRefKey(passphrase, cached.salt, cached.iterations || QUICKREF_PBKDF2_ITERATIONS);
+  const ok = await verifyQuickRefCanary(key, cached.canary);
+  if(!ok) return false;
+  state.qrCryptoKey = key;
+  state.qrUnlocked = true;
+  return true;
+}
+
+// The 'quickRefUnlock' modal's submit handler — see renderModal(). Shows a disabled/pending button
+// state while deriving (PBKDF2 at 210,000 iterations is deliberately slow — see
+// deriveQuickRefKey()), an inline "Incorrect passphrase" message on a wrong guess (never a thrown
+// exception), and on success resumes whatever state.qrUnlockThen asked for.
+async function handleQuickRefUnlockSubmit(){
+  const input = document.getElementById('qrUnlockPassphrase');
+  const errEl = document.getElementById('qrUnlockErr');
+  const btn = document.getElementById('qrUnlockBtn');
+  const passphrase = input.value;
+  if(!passphrase){ errEl.textContent = 'Enter your passphrase.'; errEl.style.display = 'block'; return; }
+  errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Unlocking…';
+  let ok;
+  try{
+    ok = await attemptQuickRefUnlock(passphrase);
+  } catch(e){
+    console.error('Quick Reference unlock failed', e);
+    errEl.textContent = friendlyCloudError(e);
+    errEl.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Unlock';
+    return;
+  }
+  if(!ok){
+    errEl.textContent = 'Incorrect passphrase.';
+    errEl.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Unlock';
+    return;
+  }
+  const resumeIntent = state.qrUnlockThen;
+  state.qrUnlockThen = null;
+  toast('Quick Reference unlocked');
+  // The 'edit' resume deliberately does NOT go through closeModal() — see
+  // resumeQuickRefEditAfterUnlock()'s own comment for why swapping straight to the form (reusing
+  // this same history layer) instead of popping-then-pushing-again is what keeps this safe.
+  // Every other resume path (or no resume at all) has no follow-up modal to open, so closing this
+  // one the normal way is fine.
+  if(resumeIntent && resumeIntent.action === 'edit'){
+    await resumeQuickRefEditAfterUnlock(resumeIntent.id);
+    return;
+  }
+  // No further render() of our own below in the plain/copy/reveal cases — closeModal() (an async
+  // history.back()) already ends in exactly one render() once its popstate fires, and that's after
+  // state.qrCryptoKey/qrUnlocked (and, for 'reveal', revealedQuickRefIds) are already updated, so
+  // it paints the correct final state on its own. Calling render() again ourselves in between would
+  // just rebuild the very unlock modal that's already in the middle of closing, for no benefit.
+  closeModal();
+  if(resumeIntent && resumeIntent.action === 'copy') copyQuickRefValue(resumeIntent.id);
+  else if(resumeIntent && resumeIntent.action === 'disable') performTurnOffQuickRefEncryption();
+  else if(resumeIntent && resumeIntent.action === 'reveal'){
+    const ref = state.quickRefs.find(r => r.id === resumeIntent.id);
+    if(ref){
+      try{ quickRefRevealedPlain.set(ref.id, await quickRefDisplayValue(ref)); state.revealedQuickRefIds.add(ref.id); }
+      catch(e){ console.error('Could not decrypt entry for display', e); }
+    }
+  }
+}
+
+// Resumes straight into the edit form after a successful unlock, WITHOUT popping the history
+// layer the unlock prompt pushed and then pushing a fresh one for the form (i.e. NOT
+// closeModal() followed by a new openQuickRefForm() call). That close-then-reopen shape would
+// race our own history.pushState() (inside the form's push, fired once the decrypt below
+// resolves) against the browser's still-in-flight history.back() from the close — a real hazard
+// this file's own extensive back-button bookkeeping (see pushAppHistoryState()/goBackOneLayer())
+// is careful to avoid elsewhere. Reusing the single already-pushed layer instead means one Back
+// press from the resumed form correctly returns straight to the Quick Reference list, same as it
+// would have if the form had opened unlocked in the first place.
+async function resumeQuickRefEditAfterUnlock(id){
+  const existing = id ? state.quickRefs.find(r => r.id === id) : null;
+  if(existing && isEncryptedQuickRefValue(existing.value)){
+    try{ state.qrEditDecryptedValue = await quickRefDisplayValue(existing); }
+    catch(e){ console.error('Could not decrypt entry for editing', e); toast("Couldn't decrypt this entry to edit it."); closeModal(); return; }
+  } else {
+    state.qrEditDecryptedValue = null;
+  }
+  state.modal = 'quickRefForm';
+  state.editQuickRefId = id;
+  render();
+}
+
+// Re-encrypts every Quick Reference entry with `key` (decrypting first with `decryptKey` if an
+// entry is already the {iv,ct} shape) and saves the whole list to Drive in one write. Shared by
+// turnOnQuickRefEncryption() (decryptKey unused — entries are plain strings) and
+// changeQuickRefPassphrase() (decryptKey is the OLD key, key is the new one). The caller is
+// responsible for the write-ordering rule: the new Firestore crypto doc must already be committed
+// before this is ever called.
+async function reencryptAllQuickRefsAndSave(key, decryptKey){
+  if(!state.quickRefs.length) return state.quickRefs;
+  const items = [];
+  for(const ref of state.quickRefs){
+    const plain = isEncryptedQuickRefValue(ref.value) ? await decryptQuickRefString(decryptKey || key, ref.value) : ref.value;
+    items.push({...ref, value: await encryptQuickRefString(key, plain)});
+  }
+  state.quickRefsDriveFileId = await saveQuickRefsToDrive(items, state.quickRefsDriveFileId);
+  state.quickRefs = items;
+  cacheQuickRefsOffline(state.quickRefs);
+  return items;
+}
+// Mirror of the above for turning encryption off: decrypts every entry back to a plain string.
+async function decryptAllQuickRefsAndSavePlain(key){
+  if(!state.quickRefs.length) return state.quickRefs;
+  const items = [];
+  for(const ref of state.quickRefs){
+    items.push({...ref, value: isEncryptedQuickRefValue(ref.value) ? await decryptQuickRefString(key, ref.value) : ref.value});
+  }
+  state.quickRefsDriveFileId = await saveQuickRefsToDrive(items, state.quickRefsDriveFileId);
+  state.quickRefs = items;
+  cacheQuickRefsOffline(state.quickRefs);
+  return items;
+}
+
+// Turns encryption ON for a freshly chosen passphrase (Part D.16 — the write-ordering rule that
+// matters most). The new Firestore crypto doc is written FIRST; only once that succeeds does this
+// re-encrypt existing entries and save them to Drive. If the Drive write fails or is interrupted
+// after only the Firestore doc succeeded, every entry is still a plain string (see
+// isEncryptedQuickRefValue()) and therefore still correctly readable — just not yet actually
+// encrypted, safely retryable later with this exact same passphrase. Reversing this order —
+// ciphertext committed to Drive with no salt/canary recorded anywhere yet — would be permanently
+// unreadable, including by the correct passphrase. Zero entries skips straight to just saving the
+// crypto doc, per Part D's own edge case.
+async function turnOnQuickRefEncryption(passphrase){
+  const salt = bufToBase64(crypto.getRandomValues(new Uint8Array(16)));
+  const iterations = QUICKREF_PBKDF2_ITERATIONS;
+  const key = await deriveQuickRefKey(passphrase, salt, iterations);
+  const canary = await buildQuickRefCanary(key);
+  const doc = {enabled: true, salt, canary, iterations, kdf: QUICKREF_KDF_LABEL, updatedAt: new Date().toISOString()};
+  await userDoc().collection('meta').doc('quickRefCrypto').set(doc);
+  state.qrCrypto = doc;
+  cacheQrCryptoOffline(doc);
+  state.qrCryptoKey = key;
+  state.qrUnlocked = true;
+  await reencryptAllQuickRefsAndSave(key, key);
+}
+
+// Turns encryption OFF (Part D.17 — the exact mirror-image ordering of turning it on, for the
+// same reason). Every entry is decrypted and the plaintext list written to Drive FIRST; only once
+// that succeeds is the Firestore crypto doc deleted. Deleting the salt/canary first and then
+// failing the plaintext write would strand any not-yet-converted entry with no key material left
+// to ever decrypt it again. Requires the session to already be unlocked — callers gate this (see
+// requestTurnOffQuickRefEncryption()).
+async function turnOffQuickRefEncryption(){
+  await decryptAllQuickRefsAndSavePlain(state.qrCryptoKey);
+  await userDoc().collection('meta').doc('quickRefCrypto').delete();
+  state.qrCrypto = {enabled: false};
+  cacheQrCryptoOffline(state.qrCrypto);
+  state.qrCryptoKey = null;
+  state.qrUnlocked = false;
+}
+
+function requestTurnOffQuickRefEncryption(){
+  if(!state.qrUnlocked){ openQuickRefUnlock({action:'disable'}); return; }
+  performTurnOffQuickRefEncryption();
+}
+async function performTurnOffQuickRefEncryption(){
+  try{
+    await turnOffQuickRefEncryption();
+    toast('Quick Reference encryption turned off');
+  } catch(e){
+    console.error('Failed to turn off Quick Reference encryption', e);
+    toast(friendlyCloudError(e));
+  }
+  render();
+}
+
+// Changes the passphrase (Part D.18): requires unlocking with the OLD one first (verified against
+// the existing canary, same check attemptQuickRefUnlock() does). Deliberately NOT the same
+// write-ordering as turnOnQuickRefEncryption() — that function is safe to write its Firestore doc
+// first only because its "before" state is plain text, which stays correctly readable regardless
+// of what Firestore says (see isEncryptedQuickRefValue()). Here, the "before" state is ALREADY
+// ciphertext that only the OLD salt/canary correctly describes, so the old Firestore doc must stay
+// in place until the data has actually finished migrating: re-encrypt everything under the new key
+// and save it to Drive FIRST (a failure here leaves the old Firestore doc and the old ciphertext
+// both untouched and mutually consistent — safely retryable with the same old passphrase), and only
+// once that succeeds does this commit the new salt/canary to Firestore. Reversing this order would
+// risk the account becoming unlockable-with-the-new-passphrase but undecryptable, if the Drive
+// re-encrypt fails or is interrupted after the new Firestore doc already committed. Returns false
+// (never throws) when the current passphrase is wrong, so the modal can show an inline error same
+// as the unlock modal does.
+async function changeQuickRefPassphrase(oldPassphrase, newPassphrase){
+  const cached = (state.qrCrypto && state.qrCrypto.salt) ? state.qrCrypto : loadOfflineQrCrypto();
+  const oldKey = await deriveQuickRefKey(oldPassphrase, cached.salt, cached.iterations || QUICKREF_PBKDF2_ITERATIONS);
+  if(!(await verifyQuickRefCanary(oldKey, cached.canary))) return false;
+  const salt = bufToBase64(crypto.getRandomValues(new Uint8Array(16)));
+  const iterations = QUICKREF_PBKDF2_ITERATIONS;
+  const newKey = await deriveQuickRefKey(newPassphrase, salt, iterations);
+  const canary = await buildQuickRefCanary(newKey);
+  await reencryptAllQuickRefsAndSave(newKey, oldKey);
+  const doc = {enabled: true, salt, canary, iterations, kdf: QUICKREF_KDF_LABEL, updatedAt: new Date().toISOString()};
+  await userDoc().collection('meta').doc('quickRefCrypto').set(doc);
+  state.qrCrypto = doc;
+  cacheQrCryptoOffline(doc);
+  state.qrCryptoKey = newKey;
+  state.qrUnlocked = true;
+  return true;
+}
+
+// The destructive "forgot your passphrase" reset (Part D.19): there is no way to recover a
+// forgotten passphrase, so the only way forward is deleting the existing (permanently unreadable)
+// Quick Reference file and the Firestore crypto doc entirely, leaving Quick Reference empty and
+// unencrypted going forward. The modal that calls this (state.modal === 'quickRefForgotPassphrase')
+// mirrors the exact typed-confirmation shape the 'deleteAccount' modal already uses.
+async function resetForgottenQuickRefPassphrase(){
+  if(state.quickRefsDriveFileId){
+    try{ await driveDelete(state.quickRefsDriveFileId); }
+    catch(e){ console.error('Could not delete the old (unrecoverable) Quick Reference file', e); }
+  }
+  await userDoc().collection('meta').doc('quickRefCrypto').delete();
+  state.qrCrypto = {enabled: false};
+  cacheQrCryptoOffline(state.qrCrypto);
+  state.qrCryptoKey = null;
+  state.qrUnlocked = false;
+  state.quickRefs = [];
+  state.quickRefsDriveFileId = null;
+  state.revealedQuickRefIds.clear();
+  quickRefRevealedPlain.clear();
+  cacheQuickRefsOffline(state.quickRefs);
 }
 
 /* ---------- document sort ----------
@@ -3673,6 +4392,7 @@ function renderVault(app){
       const doc = state.documents.find(x => x.id === docId);
       state.openActionMenu = null;
       if(action === 'pin') togglePin(docId);
+      else if(action === 'keepOffline') toggleKeepOffline(docId);
       else if(action === 'edit') openEditModal(docId);
       else if(action === 'extractText') extractTextForDocument(docId);
       else if(action === 'archive') toggleArchive(docId);
@@ -3790,11 +4510,27 @@ function renderDocCard(d, opts){
   // see the offline-cache comment above. Distinguish the two rather than letting every card look
   // equally open-able when only some actually are.
   const offlineUnavailable = state.isOfflineMode && !state.offlineDocIds.has(d.id);
+  // Four states now instead of two: a document deliberately kept offline (and actually cached) gets
+  // its own label so it reads as protected, not just incidentally available; one currently being
+  // downloaded for that same deliberate reason shows an in-flight indicator instead of looking
+  // identical to "not cached at all" mid-download. The plain incidentally-cached and
+  // offline-and-uncached cases are unchanged from before.
+  const isKeepOfflineDownloading = state.keepOfflineInFlightIds.has(d.id);
+  let offlineBadgeHtml = '';
+  if(isKeepOfflineDownloading){
+    offlineBadgeHtml = `<span class="offline-badge downloading with-label" title="Caching for offline use…" aria-label="Caching for offline use">${icon('download',12)} Caching…</span>`;
+  } else if(d.keepOffline && state.offlineDocIds.has(d.id)){
+    offlineBadgeHtml = `<span class="offline-badge with-label" title="Kept offline" aria-label="Kept offline">${icon('download',12)} Kept offline</span>`;
+  } else if(state.offlineDocIds.has(d.id)){
+    offlineBadgeHtml = `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>`;
+  } else if(offlineUnavailable){
+    offlineBadgeHtml = `<span class="offline-badge unavailable">Not available offline</span>`;
+  }
   return `
     <div class="doc-card ${d.archived ? 'is-archived' : ''} ${offlineUnavailable ? 'is-offline-unavailable' : ''}" style="--i:${opts.i||0}">
       <div class="doc-icon ${d.ocrText ? 'ocr-badge' : ''}" data-open-doc="${d.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(d.title)}">${categoryIconHtml(meta,21)}</div>
       <div class="doc-body">
-        <p class="doc-title" data-open-doc="${d.id}" role="button" tabindex="0">${escapeHtml(d.title)}${state.offlineDocIds.has(d.id) ? `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>` : offlineUnavailable ? `<span class="offline-badge unavailable">Not available offline</span>` : ''}</p>
+        <p class="doc-title" data-open-doc="${d.id}" role="button" tabindex="0">${escapeHtml(d.title)}${offlineBadgeHtml}</p>
         <p class="doc-meta">${opts.showCategory ? `${escapeHtml(meta.label)} · ` : ''}Added ${formatDate(d.addedAt)}${d.archived ? ' · archived' : ''}</p>
         ${renderTagChipsHtml(d.tags || [])}
         ${d.snippet ? `<p class="doc-snippet">${d.snippet}</p>` : ''}
@@ -3809,6 +4545,7 @@ function renderDocCard(d, opts){
             ${menuOpen ? `
               <div class="action-menu" id="actionMenu-${instanceKey}">
                 <button data-menu-action="pin" data-doc="${d.id}">${icon('star',15)} ${d.pinned ? 'Unpin' : 'Pin to top'}</button>
+                <button data-menu-action="keepOffline" data-doc="${d.id}">${icon('download',15)} ${d.keepOffline ? 'Stop keeping offline' : 'Keep offline'}</button>
                 <button data-menu-action="edit" data-doc="${d.id}">${icon('edit',15)} Edit</button>
                 ${!d.ocrText ? `<button data-menu-action="extractText" data-doc="${d.id}">${icon('search',15)} Extract text</button>` : ''}
                 <button data-menu-action="archive" data-doc="${d.id}">${icon(d.archived?'restore':'archive',15)} ${d.archived ? 'Restore' : 'Archive'}</button>
@@ -3984,6 +4721,12 @@ function categoryOptionsHtml(selected){
 
 function switchHtml(id, checked, disabled, ariaLabel){
   return `<label class="switch"><input type="checkbox" id="${id}" ${checked?'checked':''} ${disabled?'disabled':''} aria-label="${escapeHtml(ariaLabel || '')}"><span class="switch-track"><span class="switch-thumb"></span></span></label>`;
+}
+// Same markup as switchHtml above, but keyed by a data attribute instead of a fixed id — one of
+// these renders per category, so a plain id (switchHtml's usual approach, fine for every other
+// single-instance switch on this screen) would collide across categories.
+function catKeepOfflineSwitchHtml(cat){
+  return `<label class="switch"><input type="checkbox" data-cat-keep-offline-default="${cat.id}" ${cat.keepOfflineDefault ? 'checked' : ''} aria-label="${escapeHtml('Keep new ' + cat.label + ' documents offline automatically')}"><span class="switch-track"><span class="switch-thumb"></span></span></label>`;
 }
 
 function renderModal(){
@@ -4198,6 +4941,26 @@ function renderModal(){
     document.getElementById('confirmArchiveRetentionBtn').onclick = () => { closeModal(); setArchiveRetention(days); };
   }
 
+  if(state.modal === 'confirmCacheCategory'){
+    const cat = state.categories.find(c => c.id === state.cacheCategoryId);
+    if(!cat){ goBackOneLayer(); return; }
+    const targets = state.documents.filter(d => d.category === cat.id && !d.deletedAt && !state.offlineDocIds.has(d.id));
+    const approxBytes = targets.reduce((sum,d) => sum + (d.size||0), 0);
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Cache ${targets.length} document${targets.length===1?'':'s'} for offline use?</h3>
+        <p class="sub">Downloads every not-yet-cached document in "${escapeHtml(cat.label)}" — about ${formatBytes(approxBytes)} total.</p>
+        <button class="primary" id="confirmCacheCatBtn">Cache ${targets.length} document${targets.length===1?'':'s'}</button>
+        <button class="ghost" id="cancelCacheCatBtn">Cancel</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('cancelCacheCatBtn').onclick = closeModal;
+    document.getElementById('confirmCacheCatBtn').onclick = () => { const id = cat.id; closeModal(); cacheCategoryDocuments(id); };
+  }
+
   if(state.modal === 'changelog'){
     const items = state.pendingChangelogItems || [];
     overlay.innerHTML = `
@@ -4295,6 +5058,10 @@ function renderModal(){
 
   if(state.modal === 'quickRefForm'){
     const existing = state.editQuickRefId ? state.quickRefs.find(r => r.id === state.editQuickRefId) : null;
+    // For an encrypted existing entry, openQuickRefForm() already decrypted it into
+    // state.qrEditDecryptedValue before ever opening this modal — existing.value itself may still
+    // be the raw {iv,ct} object, which must never be fed to escapeHtml()/the input's value here.
+    const existingDisplayValue = existing ? (isEncryptedQuickRefValue(existing.value) ? (state.qrEditDecryptedValue || '') : existing.value) : '';
     overlay.innerHTML = `
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
@@ -4302,7 +5069,8 @@ function renderModal(){
         <label class="field-label">Label</label>
         <input type="text" id="qrLabelInput" placeholder="e.g. Electricity bill account number" value="${existing ? escapeHtml(existing.label) : ''}" />
         <label class="field-label">Value</label>
-        <input type="text" id="qrValueInput" placeholder="e.g. 1234567890" value="${existing ? escapeHtml(existing.value) : ''}" />
+        <input type="text" id="qrValueInput" placeholder="e.g. 1234567890" value="${escapeHtml(existingDisplayValue)}" />
+        ${isQuickRefEncryptionEnabled() ? `<p class="field-hint">Encrypted with your Quick Reference passphrase before it's saved.</p>` : ''}
         <div class="error-text" id="qrFormErr" style="display:none;"></div>
         <button class="primary" id="saveQrBtn">Save</button>
       </div>
@@ -4328,6 +5096,129 @@ function renderModal(){
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('cancelDelQrBtn').onclick = closeModal;
     document.getElementById('confirmDelQrBtn').onclick = confirmDeleteQuickRef;
+  }
+
+  if(state.modal === 'quickRefUnlock'){
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Unlock Quick Reference</h3>
+        <p class="sub">Enter your passphrase to decrypt your saved values on this device.</p>
+        <label class="field-label">Passphrase</label>
+        <input type="password" id="qrUnlockPassphrase" autocomplete="off" />
+        <div class="error-text" id="qrUnlockErr" style="display:none;"></div>
+        <button class="primary" id="qrUnlockBtn">Unlock</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = () => { state.qrUnlockThen = null; closeModal(); };
+    document.getElementById('qrUnlockBtn').onclick = handleQuickRefUnlockSubmit;
+    document.getElementById('qrUnlockPassphrase').addEventListener('keydown', (e) => { if(e.key === 'Enter') handleQuickRefUnlockSubmit(); });
+  }
+
+  if(state.modal === 'quickRefCryptoSetup'){
+    const alreadyEnabled = isQuickRefEncryptionEnabled();
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>${alreadyEnabled ? 'Change passphrase' : 'Encrypt Quick Reference'}</h3>
+        <p class="sub">${alreadyEnabled
+          ? 'Re-encrypts every saved value with a new passphrase. Stored only on this device — if you forget it, it cannot be recovered, only reset (which wipes existing entries).'
+          : 'A passphrase only you know, used to encrypt every Quick Reference value. It never leaves this device and is never sent anywhere — not even to Vault\'s own servers. If you forget it, it cannot be recovered: there\'s no reset link, only a destructive wipe-and-start-over.'}</p>
+        ${alreadyEnabled ? `
+          <label class="field-label">Current passphrase</label>
+          <input type="password" id="qrCurrentPassphrase" autocomplete="off" />
+        ` : ''}
+        <label class="field-label">${alreadyEnabled ? 'New passphrase' : 'Passphrase'} (min. ${QUICKREF_MIN_PASSPHRASE_LENGTH} characters)</label>
+        <input type="password" id="qrNewPassphrase" autocomplete="off" />
+        <label class="field-label">Confirm ${alreadyEnabled ? 'new ' : ''}passphrase</label>
+        <input type="password" id="qrConfirmPassphrase" autocomplete="off" />
+        <div class="error-text" id="qrCryptoSetupErr" style="display:none;"></div>
+        <button class="primary" id="qrCryptoSetupSaveBtn">${alreadyEnabled ? 'Update passphrase' : 'Turn on encryption'}</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    const errEl = document.getElementById('qrCryptoSetupErr');
+    const saveBtn = document.getElementById('qrCryptoSetupSaveBtn');
+    saveBtn.onclick = async () => {
+      const current = alreadyEnabled ? document.getElementById('qrCurrentPassphrase').value : null;
+      const next = document.getElementById('qrNewPassphrase').value;
+      const confirmVal = document.getElementById('qrConfirmPassphrase').value;
+      if(next.length < QUICKREF_MIN_PASSPHRASE_LENGTH){
+        errEl.textContent = `Passphrase must be at least ${QUICKREF_MIN_PASSPHRASE_LENGTH} characters.`;
+        errEl.style.display = 'block';
+        return;
+      }
+      if(next !== confirmVal){ errEl.textContent = "Passphrases don't match."; errEl.style.display = 'block'; return; }
+      errEl.style.display = 'none';
+      saveBtn.disabled = true;
+      // PBKDF2 at 210,000 iterations (see deriveQuickRefKey) is deliberately slow — this button
+      // must visibly show "working", never silently sit there looking hung.
+      saveBtn.textContent = alreadyEnabled ? 'Updating…' : 'Turning on…';
+      try{
+        if(alreadyEnabled){
+          const ok = await changeQuickRefPassphrase(current, next);
+          if(!ok){
+            errEl.textContent = 'Current passphrase is incorrect.';
+            errEl.style.display = 'block';
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Update passphrase';
+            return;
+          }
+          toast('Passphrase updated');
+        } else {
+          await turnOnQuickRefEncryption(next);
+          toast('Quick Reference encryption turned on');
+        }
+        closeModal();
+        render();
+      } catch(e){
+        console.error('Quick Reference encryption setup failed', e);
+        errEl.textContent = friendlyCloudError(e);
+        errEl.style.display = 'block';
+        saveBtn.disabled = false;
+        saveBtn.textContent = alreadyEnabled ? 'Update passphrase' : 'Turn on encryption';
+      }
+    };
+  }
+
+  if(state.modal === 'quickRefForgotPassphrase'){
+    overlay.innerHTML = `
+      <div class="modal-sheet">
+        <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
+        <h3>Forgot your passphrase?</h3>
+        <p class="sub">There is no way to recover a forgotten Quick Reference passphrase — it never leaves this device, so nothing can decrypt your existing entries without it. Resetting permanently deletes every existing Quick Reference entry and turns encryption back off. This cannot be undone.</p>
+        <label class="field-label">Type RESET to confirm</label>
+        <input type="text" id="qrForgotConfirmPhrase" placeholder="RESET" />
+        <div class="error-text" id="qrForgotErr" style="display:none;"></div>
+        <button class="danger-solid" id="confirmQrForgotBtn" disabled>Delete entries &amp; turn off encryption</button>
+        <button class="ghost" id="cancelQrForgotBtn">Cancel</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('cancelQrForgotBtn').onclick = closeModal;
+    const phraseInput = document.getElementById('qrForgotConfirmPhrase');
+    const confirmBtn = document.getElementById('confirmQrForgotBtn');
+    phraseInput.oninput = () => { confirmBtn.disabled = phraseInput.value.trim() !== 'RESET'; };
+    confirmBtn.onclick = async () => {
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = 'Resetting…';
+      try{
+        await resetForgottenQuickRefPassphrase();
+        toast('Quick Reference entries deleted — encryption turned off');
+        closeModal();
+        render();
+      } catch(e){
+        console.error('Failed to reset Quick Reference encryption', e);
+        const errEl = document.getElementById('qrForgotErr');
+        errEl.textContent = friendlyCloudError(e);
+        errEl.style.display = 'block';
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = 'Delete entries & turn off encryption';
+      }
+    };
   }
 
   if(state.modal === 'renewExpired'){
@@ -4832,7 +5723,10 @@ async function finalizeAndStoreDocument({title, category, expiry, reminderDays, 
     driveFileId, mimeType, size: blob.size || 0,
     ocrText: ocrText || '',
     addedAt: new Date().toISOString(),
-    archived: false
+    archived: false,
+    // Governs only THIS document, fixed at creation time — a category's keepOfflineDefault
+    // changing later never reaches back to retroactively touch documents already created under it.
+    keepOffline: !!cat.keepOfflineDefault
   };
   try{
     await persistDocument(doc);
@@ -5810,6 +6704,35 @@ async function togglePin(id){
   catch(e){ console.error('Failed to update pin state', e); }
 }
 
+// Same optimistic-update-then-persist shape as togglePin above, but turning the flag ON additionally
+// needs the document's blob actually cached, not just listed — which the plain flip-and-persist
+// pattern alone doesn't cover. Turning it OFF is deliberately inert beyond the flag itself: never
+// deletes the cached blob and never makes a network call (only the manual "free up space" action in
+// Settings, or an explicit delete/purge, ever evicts a cached blob) — it just also refreshes the
+// cached metadata record when one already exists, in both directions, since that record is what the
+// "free up space" reclaim action reads to decide whether a document's blob is protected.
+async function toggleKeepOffline(id){
+  const doc = state.documents.find(d => d.id === id);
+  if(!doc) return;
+  doc.keepOffline = !doc.keepOffline;
+  render();
+  try{ await userDoc().collection('documents').doc(id).update({keepOffline: doc.keepOffline}); }
+  catch(e){ console.error('Failed to update keep-offline state', e); }
+
+  if(state.offlineDocIds.has(id)) await updateOfflineDocumentMetadata(doc);
+  if(!doc.keepOffline) return; // OFF: flag flipped (and metadata un-protected, above) — nothing else to do
+
+  if(state.offlineDocIds.has(id)){
+    toast('Kept offline');
+    return;
+  }
+  toast('Downloading for offline use…');
+  const {succeeded, quotaExceeded} = await downloadDocumentsForKeepOffline([doc]);
+  if(succeeded) toast('Available offline');
+  else if(quotaExceeded) toast('Ran out of storage space — free up space in Settings and try again.');
+  else toast("Couldn't download this document for offline use — check your connection and try again.");
+}
+
 // Backfills OCR text for a document that doesn't have any yet (a PDF uploaded before this app ran
 // OCR on PDFs at all, an image or PDF saved before its own on-device OCR had a chance to finish —
 // see saveDocument()/saveCameraDocument()'s own background-OCR use of this below, `silent: true` —
@@ -6088,6 +7011,89 @@ async function moveCategoryOrder(id, direction){
   }
 }
 
+// Optimistic like the other settings switches (e.g. bioUnlockSwitch above): flips local state and
+// persists, rolling back with a toast only if the write fails. Governs ONLY documents added to this
+// category from this moment on (see finalizeAndStoreDocument / runSyncFromDrive, the only two
+// places that read it) — flipping it, in either direction, never touches documents already in the
+// category.
+async function toggleCategoryKeepOfflineDefault(catId, checked){
+  const cat = state.categories.find(c => c.id === catId);
+  if(!cat) return;
+  const previous = !!cat.keepOfflineDefault;
+  cat.keepOfflineDefault = checked;
+  try{
+    await userDoc().collection('categories').doc(catId).update({keepOfflineDefault: checked});
+  } catch(e){
+    console.error('Failed to update category keep-offline default', e);
+    cat.keepOfflineDefault = previous;
+    render();
+    toast(friendlyCloudError(e));
+  }
+  // No render() on success — same reasoning as bioUnlockSwitch above: the checkbox already shows
+  // its own new state natively, and nothing else on screen reads keepOfflineDefault right now.
+}
+
+// CatIds with an in-progress "cache existing documents" bulk download (see cacheCategoryDocuments
+// below) — deliberately a plain module-level set, not part of `state`, same click-guard bookkeeping
+// idea as categoryReorderInFlight above. Keeps that category's row/button/status visible for the
+// whole run even as its own live pending-count shrinks toward 0 partway through.
+let categoryCacheRunningIds = new Set();
+
+function requestCacheCategoryDocuments(catId){ state.modal = 'confirmCacheCategory'; state.cacheCategoryId = catId; pushAppHistoryState(); render(); }
+
+// Runs the shared keep-offline downloader (see the "deliberate keep-offline downloads" section,
+// above loadUserData) over one category's not-yet-cached, non-deleted documents — a one-time bulk
+// action, independent of that category's keepOfflineDefault switch (which only ever affects
+// documents created after it's turned on). The progress line mirrors buildDocumentsZipBlob's own
+// onProgress callback for the ZIP export/backup feature.
+async function cacheCategoryDocuments(catId){
+  const targets = state.documents.filter(d => d.category === catId && !d.deletedAt && !state.offlineDocIds.has(d.id));
+  if(!targets.length) return;
+  categoryCacheRunningIds.add(catId);
+  render();
+  const {succeeded, failed, quotaExceeded} = await downloadDocumentsForKeepOffline(targets, (i, total) => {
+    const statusEl = document.getElementById('cacheCatStatus-' + catId);
+    if(statusEl) statusEl.textContent = `Caching ${i} of ${total}…`;
+  });
+  categoryCacheRunningIds.delete(catId);
+  render();
+  if(quotaExceeded) toast(`Ran out of storage space — cached ${succeeded} of ${targets.length} before storage filled up.`);
+  else if(failed) toast(`Cached ${succeeded} of ${targets.length} — ${failed} couldn't be downloaded`);
+  else toast(`Cached ${succeeded} document${succeeded===1?'':'s'} for offline use`);
+}
+
+// Reclaims space from the offline cache without forgetting anything: deletes only the cached BYTES
+// (the OFFLINE_STORE entry) for every document whose own cached metadata record says keepOffline
+// isn't true — the OFFLINE_META_STORE record is left completely alone, so the document stays listed
+// as known-offline-by-name, just without content, exactly the "incidental copy" this button is
+// scoped to. Uses each metadata record's own `size` field for the reported total rather than
+// re-reading every blob just to measure it — approximate, per the button's own "up to" framing.
+async function reclaimIncidentalOfflineSpace(){
+  try{
+    const db = await openOfflineDb();
+    const metaRecords = await new Promise((resolve, reject) => {
+      const req = db.transaction(OFFLINE_META_STORE, 'readonly').objectStore(OFFLINE_META_STORE).getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    const reclaimable = metaRecords.filter(m => !m.keepOffline && state.offlineDocIds.has(m.id));
+    if(!reclaimable.length) return {count: 0, bytes: 0};
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(OFFLINE_STORE, 'readwrite');
+      const store = tx.objectStore(OFFLINE_STORE);
+      reclaimable.forEach(m => store.delete(m.id));
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    reclaimable.forEach(m => state.offlineDocIds.delete(m.id));
+    const bytes = reclaimable.reduce((sum,m) => sum + (m.size||0), 0);
+    return {count: reclaimable.length, bytes};
+  } catch(e){
+    console.warn('Could not free up incidental offline storage', e);
+    return {count: 0, bytes: 0};
+  }
+}
+
 /* ---------- sync from Drive ----------
    Picks up files added straight into a category's Drive subfolder outside the app: the
    subfolder a file was found in becomes its category, its filename (minus extension) becomes
@@ -6133,7 +7139,8 @@ async function runSyncFromDrive(){
           title, category: cat.id, expiry: null,
           tags: [], // nothing in a raw synced file to derive tags from
           driveFileId: f.id, mimeType: f.mimeType || 'application/octet-stream', size: +(f.size || 0),
-          ocrText, addedAt: new Date().toISOString(), archived: false
+          ocrText, addedAt: new Date().toISOString(), archived: false,
+          keepOffline: !!cat.keepOfflineDefault // see finalizeAndStoreDocument's own comment on this field
         };
         await persistDocument(doc);
         state.documents.unshift(doc);
@@ -6261,8 +7268,13 @@ function resetToLoggedOutState(){
   Object.assign(state, {
     screen: 'login', user: null, driveAccessToken: null, driveTokenExpiresAt: null,
     vaultFolderId: null, deletedFolderId: null, categories: [], documents: [], modal: null, quickRefsDriveFileId: null,
-    searchQuery: '', showArchived: false, showDeleted: false, collapsedCats: {}, openActionMenu: null, isOfflineMode: false
+    searchQuery: '', showArchived: false, showDeleted: false, collapsedCats: {}, openActionMenu: null, isOfflineMode: false,
+    keepOfflineInFlightIds: new Set(), // no stale "downloading" markers should survive into the next signed-in session
+    // A derived Quick Reference encryption key is exactly the kind of in-memory secret that must
+    // never survive a sign-out — reset alongside everything else session-scoped here.
+    qrCrypto: {enabled: false}, qrCryptoKey: null, qrUnlocked: false, qrUnlockThen: null, qrEditDecryptedValue: null
   });
+  quickRefRevealedPlain.clear();
   // Deliberately not touching history/guard bookkeeping here: an earlier version force-reset a
   // depth counter to 0, which lied whenever the guard was actually still armed (an idle sign-out
   // leaves a real, still-there guard entry on top of the stack) — that lie was the root cause
@@ -6310,6 +7322,7 @@ async function deleteEverything(){
     }
     await userDoc().collection('meta').doc('vault').delete();
     await userDoc().collection('meta').doc('reminderSettings').delete();
+    await userDoc().collection('meta').doc('quickRefCrypto').delete();
     await db.collection('emailDigestSubscribers').doc(state.user.uid).delete();
     await db.collection('pushSubscribers').doc(state.user.uid).delete();
     await db.collection('archiveRetentionSubscribers').doc(state.user.uid).delete();
