@@ -455,6 +455,12 @@
   .welcome-feature-icon{width:38px;height:38px;border-radius:50%;background:var(--primary-container);color:var(--on-primary-container);display:flex;align-items:center;justify-content:center;flex:none;}
   .welcome-feature-title{font-weight:500;font-size:14px;margin:0 0 2px;}
   .welcome-feature-desc{font-size:12.5px;color:var(--ink-soft);margin:0;line-height:1.4;}
+  /* One-step-at-a-time walkthrough (renderModal's 'welcome' block) — small progress dots between
+     the feature block and the Next/Back buttons, the current step visually distinct via size+color
+     rather than an icon swap, so it reads at a glance without competing with the feature icon above. */
+  .welcome-steps{display:flex;justify-content:center;gap:6px;margin:4px 0 20px;}
+  .welcome-step-dot{width:6px;height:6px;border-radius:50%;background:var(--line);flex:none;transition:background 0.15s ease,transform 0.15s ease;}
+  .welcome-step-dot.active{background:var(--brass);transform:scale(1.4);}
 
   /* Dark mode: system preference by default, data-theme attribute forces either way.
      Values follow Material 3's dark color roles — surfaces stay near-black rather than
@@ -489,6 +495,19 @@
   .settings{padding:12px 20px 60px;}
   .settings-section{margin-bottom:28px;}
   .settings-section h4{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);margin:0 0 10px;font-weight:500;}
+  /* Clickable h4 for one of Settings' collapsible groups — same base look as the plain section
+     h4 above (uppercase, small, muted), plus the layout needed for a chevron on the right and a
+     tap target across the whole row. The chevron itself reuses .cat-chevron (see the vault's own
+     category-collapse headers) rather than defining a second copy of the same rotate transition. */
+  .settings-group-header{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;user-select:none;}
+  /* A light sub-label distinguishing two merged topics inside one collapsible group (e.g. "App
+     lock" vs "Quick Reference encryption" inside Security & Privacy) — deliberately smaller/lighter
+     than the group's own h4 so it never reads as a peer heading, just a divider between two halves. */
+  .settings-subheading{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);font-weight:500;margin:16px 0 8px;}
+  .settings-subheading:first-of-type{margin-top:0;}
+  /* Spacing before the folded-in Danger zone heading at the bottom of the About group — About's
+     own content (Privacy Policy link + version tag) has no trailing margin to push against. */
+  .version-tag + h4{margin-top:24px;}
   .acct-card{display:flex;align-items:center;gap:12px;background:var(--paper-2);border-radius:var(--radius);padding:14px;box-shadow:var(--elevation-1);}
   .acct-avatar{width:44px;height:44px;border-radius:50%;background:var(--brass);flex:none;object-fit:cover;}
   .acct-name{font-weight:500;font-size:14.5px;}
@@ -703,7 +722,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.13 · 15:15';
+const APP_VERSION = '2026.09.13 · 15:41';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -739,7 +758,8 @@ const ICONS = {
   folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>',
   star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" fill="currentColor" stroke="none"></polygon>',
   heart: '<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" fill="currentColor" stroke="none"></path>',
-  home: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline>'
+  home: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline>',
+  tag: '<path d="M20.59 13.41L13.42 20.59a2 2 0 0 1-2.83 0l-8.18-8.18A2 2 0 0 1 2 11V4a2 2 0 0 1 2-2h7a2 2 0 0 1 1.41.59l8.18 8.18a2 2 0 0 1 0 2.83z"></path><circle cx="7.5" cy="7.5" r="1.3" fill="currentColor" stroke="none"></circle>'
 };
 const CATEGORY_ICON_KEYS = ['id','receipt','tool','car','umbrella','shield','doc','folder','star','heart','home','calendar','key','clipboard','camera','share'];
 
@@ -795,6 +815,16 @@ function wireIconPicker(inputId){
 // why this guard against the two racing is needed.
 let authFlowInProgress = false;
 
+// Fresh defaults for the Settings screen's collapsible groups (see renderSettings()) — every
+// collapsible group starts collapsed, both on first load and again after each sign-out, so a
+// newly signed-in session never inherits whatever was left expanded from a previous one. "Account"
+// and "Appearance" aren't part of this map at all — those two stay always-expanded, uncollapsible.
+// Returns a fresh object each call (rather than a shared constant) so resetToLoggedOutState()
+// assigning this in can't ever end up sharing one mutable object with the original state.
+function defaultCollapsedSettingsGroups(){
+  return {reminders: true, categories: true, security: true, storage: true, about: true};
+}
+
 const state = {
   screen: 'checking', // 'checking' | 'login' | 'reconnect' | 'vault' | 'settings' | 'quickref' | 'upcoming'
   user: null,           // {name, email, uid, photoURL}
@@ -820,9 +850,12 @@ const state = {
                                 // a replacement — on save, that doc supersedes this one and this one archives
   pendingChangelogItems: null, // set by maybeShowChangelog() right before showing the 'changelog' modal
   vaultWasAlreadyProvisioned: false, // set in loadUserData(); read by maybeShowChangelog()
+  welcomeStep: 0, // current step index into WELCOME_FEATURES while the 'welcome' modal is open — always
+                  // reset to 0 wherever this modal is opened or closed (see openWelcomeTour(), clearTopLayerState())
   viewObjectUrl: null, // tracks the current in-app viewer's blob URL so it can be revoked on close
   searchQuery: '',
   collapsedCats: {},
+  collapsedSettingsGroups: defaultCollapsedSettingsGroups(), // see that function's own comment
   showArchived: false,
   showDeleted: false, // "Recently deleted" trash view — mutually exclusive with showArchived
   cameraStream: null,
@@ -1004,6 +1037,7 @@ function clearTopLayerState(){
     state.purgeDocId = null; state.pendingArchiveRetentionDays = null;
     state.editCategoryId = null; state.viewDocId = null; state.renewDocId = null; state.archiveDocId = null;
     state.renewalUploadTargetId = null; state.editQuickRefId = null; state.pendingChangelogItems = null; state.capturedPages = [];
+    state.welcomeStep = 0; // don't let a skipped/early-closed tour resume mid-way next time it opens
     state.qrEditDecryptedValue = null; state.qrUnlockThen = null;
     pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false;
     // Closing the 'confirmImportBackup' modal any way other than actually confirming (X, Cancel,
@@ -1104,23 +1138,39 @@ window.addEventListener('popstate', () => {
   armExitGuardIfIdle();
 });
 
-// Shown once, right after a brand-new account's very first successful load — maybeShowChangelog()
-// below is what decides "brand new" vs. "returning" (a fresh vault has nothing to catch up on via
-// the changelog, so that's exactly the moment to introduce the app itself instead). Icon key +
-// title + one-line description, in the order a new user would actually want to discover them.
+// Shown automatically once, right after a brand-new account's very first successful load —
+// maybeShowChangelog() below is what decides "brand new" vs. "returning" (a fresh vault has
+// nothing to catch up on via the changelog, so that's exactly the moment to introduce the app
+// itself instead) — and also reachable anytime after that via Settings > About > "Take a tour"
+// (see openWelcomeTour()). Rendered one step at a time (state.welcomeStep) rather than all at
+// once — see the state.modal === 'welcome' block in renderModal(). Icon key + title + one-line
+// description per step, in the order a new user would actually want to discover them.
 const WELCOME_FEATURES = [
-  {icon: 'camera', title: 'Add documents your way', desc: "Upload a file, or scan one with your camera — multiple pages become a single PDF automatically."},
-  {icon: 'search', title: 'Search inside your documents', desc: "OCR reads scanned text on-device, so you can search for what's written inside a document, not just its title."},
+  {icon: 'camera', title: 'Add documents your way', desc: "Upload a file or scan with your camera — multiple pages become one PDF, and on-device OCR reads the text automatically."},
+  {icon: 'search', title: 'Search everything', desc: "Find documents by title, the scanned text inside them, or any tag you've added."},
+  {icon: 'folder', title: 'Organize with categories', desc: "Group documents into categories, and reorder or rename them anytime from Settings."},
+  {icon: 'tag', title: 'Tag things your way', desc: "Add your own freeform tags to any document, then tap a tag to filter down to just those."},
+  {icon: 'star', title: 'Pin and sort', desc: "Pin your most-used documents to the top, and sort any category by date, expiry, or name."},
   {icon: 'calendar', title: "Never miss a renewal", desc: "Set an expiry date and get reminded by email or push notification before — and after — it lapses."},
-  {icon: 'clipboard', title: 'Quick Reference', desc: "A separate spot for account numbers, codes, or passwords you'll want to copy in one tap — independent of any document."},
-  {icon: 'share', title: 'Share your way', desc: "Send the actual file through any app on your device — Messages, Email, WhatsApp, whatever you pick from the share sheet."},
-  {icon: 'download', title: 'Works offline', desc: "Once you've opened a document, it stays viewable with no connection — the rest of your vault still lists everything you have."}
+  {icon: 'eye', title: "See what's coming up", desc: "The Upcoming view lists everything expiring soon across every category, in one place."},
+  {icon: 'select', title: 'Act on several at once', desc: "Select multiple documents to archive, delete, or move them together in one go."},
+  {icon: 'download', title: 'Keep documents offline on purpose', desc: "Mark a document — or a whole category by default — to always be available with no connection."},
+  {icon: 'clipboard', title: 'Quick Reference', desc: "A separate spot for codes and numbers you want to copy in one tap, optionally protected with your own passphrase."},
+  {icon: 'restore', title: 'Back up and restore', desc: "Download everything as a ZIP, then bring it all back later with expiry dates, tags, and categories intact."},
+  {icon: 'settings', title: 'Everything in Settings', desc: "App lock, categories, storage, and backups — everything is reachable from Settings anytime."}
 ];
 // User-facing "what's new" — shown once, the first time someone who's used Vault before opens it
 // after a push that actually changed something visible. Append a new entry (newest first) whenever
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.13 · 15:41',
+    items: [
+      "Settings is much simpler now — grouped into a few clean sections you open only when you need them, instead of one long crowded list.",
+      "Added a step-by-step tour of everything Vault can do — shown the first time you sign up, and reachable anytime from Settings → About → \"Take a tour\"."
+    ]
+  },
   {
     version: '2026.09.13 · 15:15',
     items: [
@@ -1477,6 +1527,7 @@ function maybeShowChangelog(){
     // just returning.
     if(!state.vaultWasAlreadyProvisioned){
       localStorage.setItem('vault-last-seen-version', APP_VERSION);
+      state.welcomeStep = 0;
       state.modal = 'welcome';
       pushAppHistoryState();
       renderModal();
@@ -1496,6 +1547,16 @@ function maybeShowChangelog(){
     pushAppHistoryState();
     renderModal();
   } catch(e){ console.error('Changelog check failed', e); }
+}
+
+// Re-opens the exact same 'welcome' modal maybeShowChangelog() shows automatically to a brand-new
+// account — wired to Settings > About > "Take a tour" so anyone can replay the full walkthrough
+// later, always starting from step 1 regardless of where a previous viewing left off.
+function openWelcomeTour(){
+  state.welcomeStep = 0;
+  state.modal = 'welcome';
+  pushAppHistoryState();
+  render();
 }
 
 // Defensive hedge: reported symptom was Back closing the app with no warning at all on a
@@ -3333,10 +3394,32 @@ async function completeReconnect(){
   }
 }
 
+// A clickable, chevron-decorated h4 for one of Settings' five collapsible groups (see
+// renderSettings() below) — reuses the same base h4 look every other Settings heading already has
+// (.settings-section h4) plus the vault's own category-collapse chevron (.cat-chevron and the
+// chevronDown icon — see the '.cat-toggle' handler in renderVault for the vault-side equivalent),
+// just wired to state.collapsedSettingsGroups instead of state.collapsedCats.
+function settingsGroupHeaderHtml(groupKey, label){
+  const collapsed = !!state.collapsedSettingsGroups[groupKey];
+  return `
+    <h4 class="settings-group-header" data-settings-group="${groupKey}" role="button" tabindex="0" aria-expanded="${!collapsed}">
+      <span>${label}</span>
+      <span class="cat-chevron ${collapsed ? 'collapsed' : ''}">${icon('chevronDown',15)}</span>
+    </h4>
+  `;
+}
+
 function renderSettings(app){
   const vaultBytes = state.documents.reduce((sum,d) => sum + (d.size||0), 0);
   const keepOfflineDocs = state.documents.filter(d => d.keepOffline && !d.deletedAt);
   const keepOfflinePendingCount = keepOfflineDocs.filter(d => !state.offlineDocIds.has(d.id)).length;
+  // One flag per collapsible group — Account and Appearance aren't in this map at all (see
+  // defaultCollapsedSettingsGroups()) since those two stay always-expanded below.
+  const remindersCollapsed = !!state.collapsedSettingsGroups.reminders;
+  const categoriesCollapsed = !!state.collapsedSettingsGroups.categories;
+  const securityCollapsed = !!state.collapsedSettingsGroups.security;
+  const storageCollapsed = !!state.collapsedSettingsGroups.storage;
+  const aboutCollapsed = !!state.collapsedSettingsGroups.about;
   app.innerHTML = `
     <div class="settings-header">
       <button class="icon-only-btn" id="backToVaultBtn" aria-label="Back">${icon('back',22)}</button>
@@ -3352,19 +3435,7 @@ function renderSettings(app){
             <div class="acct-email">${escapeHtml(state.user.email)}</div>
           </div>
         </div>
-      </div>
-
-      <div class="settings-section">
-        <h4>Storage</h4>
-        <div id="storageInfo" class="search-hint">${driveStorageQuotaCache !== null ? storageInfoHtml(driveStorageQuotaCache, vaultBytes) : 'Loading…'}</div>
-        <div class="settings-row">
-          <span>${keepOfflineDocs.length} document${keepOfflineDocs.length===1?'':'s'} kept offline${keepOfflinePendingCount ? ` · ${keepOfflinePendingCount} still downloading for the first time` : ''}</span>
-        </div>
-        <div class="settings-row">
-          <span>Free up space used by incidental offline copies — leaves anything kept offline untouched</span>
-          <button class="icon-btn" id="reclaimOfflineSpaceBtn">Free up space</button>
-        </div>
-        <div class="search-hint" id="reclaimOfflineStatus"></div>
+        <button class="ghost" id="signOutBtn">Sign out</button>
       </div>
 
       <div class="settings-section">
@@ -3377,130 +3448,159 @@ function renderSettings(app){
       </div>
 
       <div class="settings-section">
-        <h4>Security</h4>
-        <div class="settings-row">
-          <span>App lock — require a PIN or biometric to open Vault, even while signed in</span>
-          ${switchHtml('appLockSwitch', isAppLockEnabled(), false, 'App lock')}
-        </div>
-        ${isAppLockEnabled() ? `
-          <div class="settings-row"><span>PIN</span><button class="icon-btn" id="changeLockPinBtn">Change</button></div>
-          <div class="settings-row" id="bioSettingsRow" style="display:none;">
-            <span>Biometric unlock</span>
-            ${switchHtml('bioUnlockSwitch', hasBiometricUnlockConfigured(), false, 'Biometric unlock')}
-          </div>
-        ` : ''}
-      </div>
-
-      <div class="settings-section">
-        <h4>Encrypt Quick Reference values</h4>
-        <div class="settings-row">
-          <span>Encrypt Quick Reference values with a passphrase only you know — a forgotten passphrase can never be recovered, only reset (which wipes existing entries)</span>
-          ${switchHtml('qrEncryptSwitch', isQuickRefEncryptionEnabled(), false, 'Encrypt Quick Reference values')}
-        </div>
-        ${isQuickRefEncryptionEnabled() ? `
-          <div class="settings-row"><span>Passphrase</span><button class="icon-btn" id="changeQrPassphraseBtn">Change passphrase</button></div>
-          ${state.qrUnlocked ? `<div class="settings-row"><span>Currently unlocked on this device</span><button class="icon-btn" id="lockQrNowBtn">Lock now</button></div>` : ''}
-          <div class="settings-row"><span>Forgotten your passphrase?</span><button class="icon-btn danger" id="forgotQrPassphraseBtn">Reset</button></div>
-        ` : ''}
-      </div>
-
-      <div class="settings-section">
-        <h4>Reminders</h4>
-        <div class="settings-row">
-          <span>See every document expiring soon, across all categories</span>
-          <button class="icon-btn" id="viewUpcomingBtn">View</button>
-        </div>
-        <div class="settings-row">
-          <span>Daily email digest of documents expiring soon</span>
-          ${switchHtml('emailDigestSwitch', isEmailDigestEnabled(), false, 'Daily email digest')}
-        </div>
-        <div class="settings-row">
-          <span>Push notifications for documents expiring soon${isPushDenied() ? ' — blocked in your browser\'s site settings' : ''}</span>
-          ${!isPushSupported() ? `
-            <span class="field-hint" style="margin:0;">Not supported</span>
-          ` : switchHtml('pushSwitch', isPushEnabled(), isPushDenied(), 'Push notifications')}
-        </div>
-        <div class="settings-row">
-          <span>Auto-delete archived documents</span>
-          <select id="archiveRetentionSelect" style="width:auto;margin-bottom:0;padding:8px 10px;" aria-label="Auto-delete archived documents after">
-            <option value="" ${!state.reminderSettings.archiveRetentionDays ? 'selected' : ''}>Never</option>
-            <option value="30" ${state.reminderSettings.archiveRetentionDays===30 ? 'selected' : ''}>After 30 days</option>
-            <option value="90" ${state.reminderSettings.archiveRetentionDays===90 ? 'selected' : ''}>After 90 days</option>
-            <option value="365" ${state.reminderSettings.archiveRetentionDays===365 ? 'selected' : ''}>After 1 year</option>
-          </select>
-        </div>
-        ${state.reminderSettings.archiveRetentionDays ? `<p class="field-hint">Moves an archived document to "Recently deleted" this long after you archived it — applies to documents already archived, not just future ones. It's then permanently removed ${TRASH_RETENTION_DAYS} more days after that unless you restore it.</p>` : ''}
-      </div>
-
-      <div class="settings-section">
-        <h4>Categories</h4>
-        ${state.categories.map((c,i) => {
-          // Not-yet-cached, non-deleted documents currently in this category — the "cache existing
-          // documents" button below only ever shows up when there's actually something for it to do,
-          // and stays visible for the whole run (categoryCacheRunningIds) even as this count shrinks
-          // toward 0 mid-download.
-          const catPendingCount = state.documents.filter(d => d.category === c.id && !d.deletedAt && !state.offlineDocIds.has(d.id)).length;
-          return `
-          <div class="cat-manage-row">
-            <span class="cm-icon">${categoryIconHtml(c, 17)}</span>
-            <span class="cm-label">${escapeHtml(c.label)}</span>
-            ${state.categories.length > 1 ? `
-              <button class="icon-btn" data-cat-move="${c.id}" data-cat-dir="up" aria-label="Move ${escapeHtml(c.label)} up" ${(i===0 || categoryReorderInFlight) ? 'disabled' : ''}>↑</button>
-              <button class="icon-btn" data-cat-move="${c.id}" data-cat-dir="down" aria-label="Move ${escapeHtml(c.label)} down" ${(i===state.categories.length-1 || categoryReorderInFlight) ? 'disabled' : ''}>↓</button>
-            ` : ''}
-            <button class="icon-btn" data-rename-cat="${c.id}">Rename</button>
-            <button class="icon-btn danger" data-delete-cat="${c.id}">Delete</button>
+        ${settingsGroupHeaderHtml('reminders', 'Reminders &amp; Notifications')}
+        ${!remindersCollapsed ? `
+          <div class="settings-row">
+            <span>See every document expiring soon, across all categories</span>
+            <button class="icon-btn" id="viewUpcomingBtn">View</button>
           </div>
           <div class="settings-row">
-            <span>Keep new "${escapeHtml(c.label)}" documents offline automatically</span>
-            ${catKeepOfflineSwitchHtml(c)}
+            <span>Daily email digest of documents expiring soon</span>
+            ${switchHtml('emailDigestSwitch', isEmailDigestEnabled(), false, 'Daily email digest')}
           </div>
-          ${(catPendingCount > 0 || categoryCacheRunningIds.has(c.id)) ? `
-            <div class="settings-row">
-              <span>${catPendingCount} existing document${catPendingCount===1?'':'s'} not yet cached for offline use</span>
-              <button class="icon-btn" data-cache-cat="${c.id}" ${categoryCacheRunningIds.has(c.id) ? 'disabled' : ''}>Cache ${catPendingCount} existing document${catPendingCount===1?'':'s'}</button>
+          <div class="settings-row">
+            <span>Push notifications for documents expiring soon${isPushDenied() ? ' — blocked in your browser\'s site settings' : ''}</span>
+            ${!isPushSupported() ? `
+              <span class="field-hint" style="margin:0;">Not supported</span>
+            ` : switchHtml('pushSwitch', isPushEnabled(), isPushDenied(), 'Push notifications')}
+          </div>
+          <div class="settings-row">
+            <span>Auto-delete archived documents</span>
+            <select id="archiveRetentionSelect" style="width:auto;margin-bottom:0;padding:8px 10px;" aria-label="Auto-delete archived documents after">
+              <option value="" ${!state.reminderSettings.archiveRetentionDays ? 'selected' : ''}>Never</option>
+              <option value="30" ${state.reminderSettings.archiveRetentionDays===30 ? 'selected' : ''}>After 30 days</option>
+              <option value="90" ${state.reminderSettings.archiveRetentionDays===90 ? 'selected' : ''}>After 90 days</option>
+              <option value="365" ${state.reminderSettings.archiveRetentionDays===365 ? 'selected' : ''}>After 1 year</option>
+            </select>
+          </div>
+          ${state.reminderSettings.archiveRetentionDays ? `<p class="field-hint">Moves an archived document to "Recently deleted" this long after you archived it — applies to documents already archived, not just future ones. It's then permanently removed ${TRASH_RETENTION_DAYS} more days after that unless you restore it.</p>` : ''}
+        ` : ''}
+      </div>
+
+      <div class="settings-section">
+        ${settingsGroupHeaderHtml('categories', 'Categories')}
+        ${!categoriesCollapsed ? `
+          ${state.categories.map((c,i) => {
+            // Not-yet-cached, non-deleted documents currently in this category — the "cache existing
+            // documents" button below only ever shows up when there's actually something for it to do,
+            // and stays visible for the whole run (categoryCacheRunningIds) even as this count shrinks
+            // toward 0 mid-download.
+            const catPendingCount = state.documents.filter(d => d.category === c.id && !d.deletedAt && !state.offlineDocIds.has(d.id)).length;
+            return `
+            <div class="cat-manage-row">
+              <span class="cm-icon">${categoryIconHtml(c, 17)}</span>
+              <span class="cm-label">${escapeHtml(c.label)}</span>
+              ${state.categories.length > 1 ? `
+                <button class="icon-btn" data-cat-move="${c.id}" data-cat-dir="up" aria-label="Move ${escapeHtml(c.label)} up" ${(i===0 || categoryReorderInFlight) ? 'disabled' : ''}>↑</button>
+                <button class="icon-btn" data-cat-move="${c.id}" data-cat-dir="down" aria-label="Move ${escapeHtml(c.label)} down" ${(i===state.categories.length-1 || categoryReorderInFlight) ? 'disabled' : ''}>↓</button>
+              ` : ''}
+              <button class="icon-btn" data-rename-cat="${c.id}">Rename</button>
+              <button class="icon-btn danger" data-delete-cat="${c.id}">Delete</button>
             </div>
-            <div class="search-hint" id="cacheCatStatus-${c.id}"></div>
+            <div class="settings-row">
+              <span>Keep new "${escapeHtml(c.label)}" documents offline automatically</span>
+              ${catKeepOfflineSwitchHtml(c)}
+            </div>
+            ${(catPendingCount > 0 || categoryCacheRunningIds.has(c.id)) ? `
+              <div class="settings-row">
+                <span>${catPendingCount} existing document${catPendingCount===1?'':'s'} not yet cached for offline use</span>
+                <button class="icon-btn" data-cache-cat="${c.id}" ${categoryCacheRunningIds.has(c.id) ? 'disabled' : ''}>Cache ${catPendingCount} existing document${catPendingCount===1?'':'s'}</button>
+              </div>
+              <div class="search-hint" id="cacheCatStatus-${c.id}"></div>
+            ` : ''}
+          `; }).join('')}
+          <button class="ghost" id="addCategoryBtn">+ Add category</button>
+        ` : ''}
+      </div>
+
+      <div class="settings-section">
+        ${settingsGroupHeaderHtml('security', 'Security &amp; Privacy')}
+        ${!securityCollapsed ? `
+          <p class="settings-subheading">App lock</p>
+          <div class="settings-row">
+            <span>App lock — require a PIN or biometric to open Vault, even while signed in</span>
+            ${switchHtml('appLockSwitch', isAppLockEnabled(), false, 'App lock')}
+          </div>
+          ${isAppLockEnabled() ? `
+            <div class="settings-row"><span>PIN</span><button class="icon-btn" id="changeLockPinBtn">Change</button></div>
+            <div class="settings-row" id="bioSettingsRow" style="display:none;">
+              <span>Biometric unlock</span>
+              ${switchHtml('bioUnlockSwitch', hasBiometricUnlockConfigured(), false, 'Biometric unlock')}
+            </div>
           ` : ''}
-        `; }).join('')}
-        <button class="ghost" id="addCategoryBtn">+ Add category</button>
+          <p class="settings-subheading">Quick Reference encryption</p>
+          <div class="settings-row">
+            <span>Encrypt Quick Reference values with a passphrase only you know — a forgotten passphrase can never be recovered, only reset (which wipes existing entries)</span>
+            ${switchHtml('qrEncryptSwitch', isQuickRefEncryptionEnabled(), false, 'Encrypt Quick Reference values')}
+          </div>
+          ${isQuickRefEncryptionEnabled() ? `
+            <div class="settings-row"><span>Passphrase</span><button class="icon-btn" id="changeQrPassphraseBtn">Change passphrase</button></div>
+            ${state.qrUnlocked ? `<div class="settings-row"><span>Currently unlocked on this device</span><button class="icon-btn" id="lockQrNowBtn">Lock now</button></div>` : ''}
+            <div class="settings-row"><span>Forgotten your passphrase?</span><button class="icon-btn danger" id="forgotQrPassphraseBtn">Reset</button></div>
+          ` : ''}
+        ` : ''}
       </div>
 
       <div class="settings-section">
-        <h4>Drive</h4>
-        <div class="settings-row"><span>Open Vault folder in Drive</span><button class="icon-btn" id="openDriveBtn">Open</button></div>
-        <div class="settings-row"><span>Sync files added directly in Drive</span><button class="icon-btn" id="syncDriveBtn">Sync now</button></div>
-        <div class="settings-row"><span>Export document list (CSV)</span><button class="icon-btn" id="exportCsvBtn">Export</button></div>
-        <div class="settings-row"><span>Download every document as a backup (ZIP)</span><button class="icon-btn" id="exportAllBtn">Download</button></div>
-        <div class="search-hint" id="exportAllStatus"></div>
-        <div class="settings-row"><span>Restore documents from a backup (ZIP)</span><button class="icon-btn" id="importBackupBtn" ${importBackupRunning ? 'disabled' : ''}>Choose file</button></div>
-        <input type="file" id="importBackupInput" accept=".zip" style="display:none;" />
-        <div class="search-hint" id="importBackupStatus"></div>
-        <p class="field-hint">Restores documents made with "Download every document as a backup" above — title, category, expiry, reminders, tags, pin, and keep-offline state, plus the files themselves. It doesn't restore Quick Reference entries or share links; those are separate features with their own data.</p>
+        ${settingsGroupHeaderHtml('storage', 'Storage &amp; Backup')}
+        ${!storageCollapsed ? `
+          <p class="settings-subheading">Storage usage</p>
+          <div id="storageInfo" class="search-hint">${driveStorageQuotaCache !== null ? storageInfoHtml(driveStorageQuotaCache, vaultBytes) : 'Loading…'}</div>
+          <div class="settings-row">
+            <span>${keepOfflineDocs.length} document${keepOfflineDocs.length===1?'':'s'} kept offline${keepOfflinePendingCount ? ` · ${keepOfflinePendingCount} still downloading for the first time` : ''}</span>
+          </div>
+          <div class="settings-row">
+            <span>Free up space used by incidental offline copies — leaves anything kept offline untouched</span>
+            <button class="icon-btn" id="reclaimOfflineSpaceBtn">Free up space</button>
+          </div>
+          <div class="search-hint" id="reclaimOfflineStatus"></div>
+          <p class="settings-subheading">Backup &amp; sync</p>
+          <div class="settings-row"><span>Open Vault folder in Drive</span><button class="icon-btn" id="openDriveBtn">Open</button></div>
+          <div class="settings-row"><span>Sync files added directly in Drive</span><button class="icon-btn" id="syncDriveBtn">Sync now</button></div>
+          <div class="settings-row"><span>Export document list (CSV)</span><button class="icon-btn" id="exportCsvBtn">Export</button></div>
+          <div class="settings-row"><span>Download every document as a backup (ZIP)</span><button class="icon-btn" id="exportAllBtn">Download</button></div>
+          <div class="search-hint" id="exportAllStatus"></div>
+          <div class="settings-row"><span>Restore documents from a backup (ZIP)</span><button class="icon-btn" id="importBackupBtn" ${importBackupRunning ? 'disabled' : ''}>Choose file</button></div>
+          <input type="file" id="importBackupInput" accept=".zip" style="display:none;" />
+          <div class="search-hint" id="importBackupStatus"></div>
+          <p class="field-hint">Restores documents made with "Download every document as a backup" above — title, category, expiry, reminders, tags, pin, and keep-offline state, plus the files themselves. It doesn't restore Quick Reference entries or share links; those are separate features with their own data.</p>
+        ` : ''}
       </div>
 
       <div class="settings-section">
-        <button class="ghost" id="signOutBtn">Sign out</button>
-      </div>
-
-      <div class="settings-section">
-        <h4>Danger zone</h4>
-        <div class="danger-zone">
-          <p>Permanently deletes every document, the Vault folder in your Drive, and this sign-in account. This cannot be undone.</p>
-          <button class="danger-solid" id="deleteAccountBtn">Delete account &amp; vault</button>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <h4>About</h4>
-        <button type="button" class="privacy-link" id="privacyLinkBtn">Privacy Policy</button>
-        <div class="version-tag">Version ${APP_VERSION}</div>
+        ${settingsGroupHeaderHtml('about', 'About')}
+        ${!aboutCollapsed ? `
+          <div class="settings-row"><span>See a step-by-step tour of what Vault can do</span><button class="icon-btn" id="takeTourBtn">Take a tour</button></div>
+          <button type="button" class="privacy-link" id="privacyLinkBtn">Privacy Policy</button>
+          <div class="version-tag">Version ${APP_VERSION}</div>
+          <h4>Danger zone</h4>
+          <div class="danger-zone">
+            <p>Permanently deletes every document, the Vault folder in your Drive, and this sign-in account. This cannot be undone.</p>
+            <button class="danger-solid" id="deleteAccountBtn">Delete account &amp; vault</button>
+          </div>
+        ` : ''}
       </div>
     </div>
   `;
 
   document.getElementById('backToVaultBtn').onclick = () => goBackOneLayer();
-  document.getElementById('privacyLinkBtn').onclick = () => { state.modal = 'privacy'; pushAppHistoryState(); render(); };
+  const takeTourBtn = document.getElementById('takeTourBtn');
+  if(takeTourBtn) takeTourBtn.onclick = openWelcomeTour;
+  const privacyLinkBtn = document.getElementById('privacyLinkBtn');
+  if(privacyLinkBtn) privacyLinkBtn.onclick = () => { state.modal = 'privacy'; pushAppHistoryState(); render(); };
+  document.getElementById('signOutBtn').onclick = () => signOutUser();
+
+  // Every collapsible group's header (Reminders & Notifications, Categories, Security & Privacy,
+  // Storage & Backup, About) toggles the same simple way the vault's own category headers do:
+  // flip the flag, re-render. Settings isn't a hot render path, so a plain full render() here
+  // (rather than the vault's own animated grid-collapse) is perfectly fine.
+  document.querySelectorAll('[data-settings-group]').forEach(el => {
+    el.onclick = () => {
+      const key = el.getAttribute('data-settings-group');
+      state.collapsedSettingsGroups[key] = !state.collapsedSettingsGroups[key];
+      render();
+    };
+  });
 
   document.querySelectorAll('[data-theme-choice]').forEach(btn => {
     btn.onclick = () => { applyTheme(btn.getAttribute('data-theme-choice')); render(); };
@@ -3579,7 +3679,8 @@ function renderSettings(app){
   const forgotQrPassphraseBtn = document.getElementById('forgotQrPassphraseBtn');
   if(forgotQrPassphraseBtn) forgotQrPassphraseBtn.onclick = () => { state.modal = 'quickRefForgotPassphrase'; pushAppHistoryState(); render(); };
 
-  document.getElementById('viewUpcomingBtn').onclick = () => { state.screen = 'upcoming'; pushAppHistoryState(); render(); };
+  const viewUpcomingBtn = document.getElementById('viewUpcomingBtn');
+  if(viewUpcomingBtn) viewUpcomingBtn.onclick = () => { state.screen = 'upcoming'; pushAppHistoryState(); render(); };
   const emailDigestSwitch = document.getElementById('emailDigestSwitch');
   if(emailDigestSwitch) emailDigestSwitch.onchange = toggleEmailDigest;
   const pushSwitch = document.getElementById('pushSwitch');
@@ -3587,7 +3688,8 @@ function renderSettings(app){
   const archiveRetentionSelect = document.getElementById('archiveRetentionSelect');
   if(archiveRetentionSelect) archiveRetentionSelect.onchange = () => requestArchiveRetentionChange(+archiveRetentionSelect.value || null);
 
-  document.getElementById('addCategoryBtn').onclick = openAddCategoryModal;
+  const addCategoryBtn = document.getElementById('addCategoryBtn');
+  if(addCategoryBtn) addCategoryBtn.onclick = openAddCategoryModal;
   document.querySelectorAll('[data-cat-move]').forEach(btn => {
     btn.onclick = () => moveCategoryOrder(btn.getAttribute('data-cat-move'), btn.getAttribute('data-cat-dir') === 'up' ? -1 : 1);
   });
@@ -3614,14 +3716,20 @@ function renderSettings(app){
     toast(count ? `Freed ${formatBytes(bytes)} from ${count} document${count===1?'':'s'}` : 'Nothing to free up — every cached copy is kept offline on purpose');
   };
 
-  document.getElementById('openDriveBtn').onclick = () => window.open(`https://drive.google.com/drive/folders/${state.vaultFolderId}`, '_blank');
-  document.getElementById('syncDriveBtn').onclick = runSyncFromDrive;
-  document.getElementById('exportCsvBtn').onclick = exportDocumentListCsv;
-  document.getElementById('exportAllBtn').onclick = exportAllDocuments;
-  document.getElementById('importBackupBtn').onclick = () => document.getElementById('importBackupInput').click();
-  document.getElementById('importBackupInput').onchange = handleImportBackupFileChosen;
-  document.getElementById('signOutBtn').onclick = () => signOutUser();
-  document.getElementById('deleteAccountBtn').onclick = openDeleteAccountModal;
+  const openDriveBtn = document.getElementById('openDriveBtn');
+  if(openDriveBtn) openDriveBtn.onclick = () => window.open(`https://drive.google.com/drive/folders/${state.vaultFolderId}`, '_blank');
+  const syncDriveBtn = document.getElementById('syncDriveBtn');
+  if(syncDriveBtn) syncDriveBtn.onclick = runSyncFromDrive;
+  const exportCsvBtn = document.getElementById('exportCsvBtn');
+  if(exportCsvBtn) exportCsvBtn.onclick = exportDocumentListCsv;
+  const exportAllBtn = document.getElementById('exportAllBtn');
+  if(exportAllBtn) exportAllBtn.onclick = exportAllDocuments;
+  const importBackupBtn = document.getElementById('importBackupBtn');
+  if(importBackupBtn) importBackupBtn.onclick = () => document.getElementById('importBackupInput').click();
+  const importBackupInput = document.getElementById('importBackupInput');
+  if(importBackupInput) importBackupInput.onchange = handleImportBackupFileChosen;
+  const deleteAccountBtn = document.getElementById('deleteAccountBtn');
+  if(deleteAccountBtn) deleteAccountBtn.onclick = openDeleteAccountModal;
 
   renderModal();
 }
@@ -5460,26 +5568,40 @@ function renderModal(){
   }
 
   if(state.modal === 'welcome'){
+    // Clamped rather than trusted outright — defensive only (e.g. WELCOME_FEATURES shrinking in a
+    // future edit while a stale index somehow survived) so this can never render a blank step.
+    const stepIdx = Math.min(Math.max(state.welcomeStep, 0), WELCOME_FEATURES.length - 1);
+    const f = WELCOME_FEATURES[stepIdx];
+    const isFirst = stepIdx === 0;
+    const isLast = stepIdx === WELCOME_FEATURES.length - 1;
     overlay.innerHTML = `
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>Welcome to Vault</h3>
-        <p class="sub">Everything you need to keep your important documents organized, safe, and one tap away.</p>
-        ${WELCOME_FEATURES.map(f => `
-          <div class="welcome-feature">
-            <div class="welcome-feature-icon">${icon(f.icon,20)}</div>
-            <div>
-              <p class="welcome-feature-title">${escapeHtml(f.title)}</p>
-              <p class="welcome-feature-desc">${escapeHtml(f.desc)}</p>
-            </div>
+        ${isFirst ? `<p class="sub">Everything you need to keep your important documents organized, safe, and one tap away.</p>` : ''}
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">${icon(f.icon,20)}</div>
+          <div>
+            <p class="welcome-feature-title">${escapeHtml(f.title)}</p>
+            <p class="welcome-feature-desc">${escapeHtml(f.desc)}</p>
           </div>
-        `).join('')}
-        <button class="primary" id="dismissWelcomeBtn">Let's go</button>
+        </div>
+        <div class="welcome-steps" role="status" aria-label="Step ${stepIdx+1} of ${WELCOME_FEATURES.length}">
+          ${WELCOME_FEATURES.map((_,i) => `<span class="welcome-step-dot${i===stepIdx ? ' active' : ''}"></span>`).join('')}
+        </div>
+        <button class="primary" id="welcomeNextBtn">${isLast ? "Let's go" : 'Next'}</button>
+        ${!isFirst ? `<button class="ghost" id="welcomeBackBtn">Back</button>` : ''}
       </div>
     `;
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
-    document.getElementById('dismissWelcomeBtn').onclick = closeModal;
+    document.getElementById('welcomeNextBtn').onclick = () => {
+      if(isLast){ closeModal(); return; }
+      state.welcomeStep = stepIdx + 1;
+      renderModal();
+    };
+    const backBtn = document.getElementById('welcomeBackBtn');
+    if(backBtn) backBtn.onclick = () => { state.welcomeStep = stepIdx - 1; renderModal(); };
   }
 
   if(state.modal === 'privacy'){
@@ -8092,12 +8214,15 @@ function resetToLoggedOutState(){
   Object.assign(state, {
     screen: 'login', user: null, driveAccessToken: null, driveTokenExpiresAt: null,
     vaultFolderId: null, deletedFolderId: null, categories: [], documents: [], modal: null, quickRefsDriveFileId: null,
-    searchQuery: '', showArchived: false, showDeleted: false, collapsedCats: {}, openActionMenu: null, isOfflineMode: false,
+    searchQuery: '', showArchived: false, showDeleted: false, collapsedCats: {},
+    collapsedSettingsGroups: defaultCollapsedSettingsGroups(), // fresh collapsed defaults for the next sign-in — see that function's own comment
+    openActionMenu: null, isOfflineMode: false,
     selectMode: false, selectedDocIds: new Set(), // no stale bulk-select state should survive into the next signed-in session
     keepOfflineInFlightIds: new Set(), // no stale "downloading" markers should survive into the next signed-in session
     // A derived Quick Reference encryption key is exactly the kind of in-memory secret that must
     // never survive a sign-out — reset alongside everything else session-scoped here.
-    qrCrypto: {enabled: false}, qrCryptoKey: null, qrUnlocked: false, qrUnlockThen: null, qrEditDecryptedValue: null
+    qrCrypto: {enabled: false}, qrCryptoKey: null, qrUnlocked: false, qrUnlockThen: null, qrEditDecryptedValue: null,
+    welcomeStep: 0
   });
   quickRefRevealedPlain.clear();
   // Deliberately not touching history/guard bookkeeping here: an earlier version force-reset a
