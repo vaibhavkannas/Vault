@@ -407,12 +407,23 @@
   .pdf-pages{display:flex;flex-direction:column;align-items:center;gap:10px;}
   .pdf-page-canvas{max-width:100%;border-radius:8px;box-shadow:var(--elevation-1);}
   /* The one place inside the app that's allowed to zoom, now that the page itself can't (see the
-     viewport meta tag) — #viewFileContent is the scrollable viewport; .view-zoom-inner is what
-     actually gets scaled (see wireViewFileZoom()). A scaled-up element still expands its parent's
-     scrollable region in every modern browser, so panning a zoomed document is just this
-     container's own native scroll/touch-drag — no custom pan-dragging code needed for it. */
-  #viewFileContent{overflow:auto;max-height:65vh;max-height:65dvh;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;overscroll-behavior:contain;}
-  .view-zoom-inner{transform-origin:0 0;touch-action:pan-x pan-y;}
+     viewport meta tag) — #viewFileContent is the viewport; .view-zoom-inner is what actually gets
+     scaled AND panned (a translate+scale transform, driven entirely by wireViewFileZoom()'s own
+     Pointer Events code — see its own comment for why panning isn't just native scroll here).
+     touch-action:none, on the content, the reset-zoom button's wrapper, and the whole sheet (see
+     #viewFileSheet below) alike, hands the browser NOTHING to interpret natively anywhere in this
+     modal — every part of the gesture is this file's own JS or it doesn't happen. inline-block on
+     .view-zoom-inner is deliberate, not decorative: it makes the element's own box shrink-wrap to
+     its actual visible content (the image, or the stack of PDF-page canvases) instead of the full
+     width of #viewFileContent, which is what lets wireViewFileZoom()'s pan-clamping math use its
+     offsetWidth/Height as the real, accurate bounds of what's on screen. */
+  #viewFileSheet{touch-action:none;}
+  #viewFileContent{overflow:hidden;max-height:65vh;max-height:65dvh;touch-action:none;overscroll-behavior:contain;text-align:center;}
+  .view-zoom-inner{display:inline-block;transform-origin:0 0;touch-action:none;}
+  .view-file-content-wrap{position:relative;}
+  .view-zoom-reset-btn{position:absolute;right:10px;bottom:10px;width:40px;height:40px;border-radius:50%;border:none;background:rgba(0,0,0,0.55);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;touch-action:none;}
+  .view-file-actions{display:flex;gap:10px;}
+  .view-file-actions button{flex:1;}
   label.field-label{font-size:12px;font-weight:500;color:var(--ink-soft);display:block;margin-bottom:6px;}
   /* Floats in the corner instead of its own full-width row above the title — the previous stacked
      layout (close-button row, THEN separately the drag handle's own row above THAT) added up to a
@@ -731,6 +742,33 @@ if('serviceWorker' in navigator){
   }).catch(e => console.error('Service worker registration failed', e));
 }
 
+// Warms OpenCV.js (script fetch + WASM compile) as early as physically possible in the app's own
+// lifecycle — not gated on sign-in at all, since it's a static library with no user data involved.
+// It's the library the crop screen's perspective-correction needs, and its one-time WASM compile is
+// genuine, synchronous, main-thread work: if it's still mid-compile exactly when a user's first
+// touch on a crop handle lands, that touch's own event handler queues behind it, felt as a one-time
+// input delay. openCameraModal() already tried to get ahead of this by warming here the moment the
+// camera opens, but that only gives it the few seconds between opening the camera and tapping the
+// shutter — not always enough, especially on a slower device, which is why this bug kept coming
+// back after that fix. Starting here instead — as soon as the app itself finishes loading, whether
+// or not the user ever opens the camera at all this session — gives it the entire time the user
+// spends signing in and browsing their vault before ever reaching for "add a document," which is
+// enough head start in practice for the compile to be long finished by the time it matters.
+// waitForOpenCvReady/loadOpenCvScript are declared later in this file but hoisted, so calling them
+// here is safe; loadOpenCvScript caches its own promise, so this and every later warm call (camera
+// open, wireCropOverlay itself) just await the same one in-flight/settled attempt, never a second
+// fetch. requestIdleCallback (falling back to a short setTimeout on Safari, which lacks it) defers
+// this off the app's own critical initial paint instead of competing with it for main-thread time.
+// The 3s timeout option forces it to run even if the main thread never reports a true idle period
+// before then — without it, requestIdleCallback carries no upper bound at all, which could in
+// principle delay this past the moment the user actually opens the camera, quietly losing the head
+// start this exists to provide (openCameraModal()'s own warm call, below, is the fallback for
+// exactly that case, not just for whoever skips this file's idle-scheduling path entirely).
+(function warmOpenCvEarly(){
+  const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 1500));
+  idle(() => { waitForOpenCvReady().catch(() => {}); }, {timeout: 3000});
+})();
+
 // Firebase Auth (above) only handles identity — who's signed in. Drive *access* is a fully
 // separate concern, deliberately decoupled from Firebase's own signInWithPopup credential (that
 // path depends on a storage-relay iframe between this origin and the authDomain, which needs
@@ -781,6 +819,27 @@ async function callDriveAuth(payload){
 
 async function mintDriveAccessToken(){
   return callDriveAuth({mode: 'mint'});
+}
+
+// A cold app open often races the phone's own network stack (radio/DNS not actually ready a moment
+// after unlocking the screen or switching apps) — mintDriveAccessToken() is a single plain fetch
+// with no retry of its own, so a purely transient hiccup at exactly that moment used to be
+// indistinguishable from a real outage and dropped straight into offline mode, sometimes for as long
+// as the next 5-minute background refresh (see the setInterval below), even though a full app
+// reopen moments later — just a fresh attempt — would succeed. One short, bounded retry closes that
+// gap for the case it's actually worth closing: e.details is only ever attached AFTER Apps
+// Script successfully parsed and answered (see describeDriveAuthError's own reasoning), so its
+// absence reliably means the fetch itself never completed — retrying makes sense there. A real
+// backend-reported error (.details present, e.g. NO_GRANT) won't be fixed by trying again, so this
+// only ever retries the "never actually reached it" case, exactly once, after a short pause.
+async function mintDriveAccessTokenWithRetry(){
+  try{
+    return await mintDriveAccessToken();
+  } catch(e){
+    if(e && e.details) throw e; // a real answer from the backend — retrying won't change it
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    return await mintDriveAccessToken();
+  }
 }
 
 // Turns a caught callDriveAuth() failure into a message that actually explains WHY offline mode
@@ -866,7 +925,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.14 · 16:10';
+const APP_VERSION = '2026.09.14 · 21:38';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -887,6 +946,7 @@ const ICONS = {
   key: '<circle cx="7.5" cy="15.5" r="5.5"></circle><path d="M21 2l-9.6 9.6"></path><path d="M15.5 7.5l3 3L22 7l-3-3"></path>',
   clipboard: '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect><line x1="9" y1="12" x2="15" y2="12"></line><line x1="9" y1="16" x2="13" y2="16"></line>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line>',
+  zoomOut: '<circle cx="11" cy="11" r="6.5"></circle><line x1="16" y1="16" x2="21" y2="21"></line><line x1="8" y1="11" x2="14" y2="11"></line>',
   edit: '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>',
   share: '<circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>',
   archive: '<polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line>',
@@ -1055,6 +1115,9 @@ const state = {
   isOfflineMode: false, // true when the vault opened with no Drive/Firestore connection at all
   offlineReason: null, // human-readable reason isOfflineMode became true (see describeDriveAuthError) —
                         // shown in the offline banner so this is self-diagnosable instead of just "offline"
+  reconnectReason: null, // 'NO_GRANT' | 'GRANT_REVOKED' | null — set right before screen='reconnect',
+                          // read by renderReconnect() to tell a first-time signup from a returning
+                          // user reconnecting on a device that's never completed a load before
   reminderSettings: {emailDigestEnabled: false, pushEnabled: false}, // loaded in loadUserData(), see meta/reminderSettings
   quickRefs: [], // [{id, label, value, addedAt}] — the standalone label/value list, see renderQuickRef()
   quickRefsDriveFileId: null, // Drive file id of Vault/quickrefs.json once discovered/created this
@@ -1345,6 +1408,18 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.14 · 21:38',
+    items: [
+      "Fixed the crop screen's first-touch delay for real this time — the perspective-correction library now starts loading the moment the app opens, not just when the camera does, so it's almost always ready before you touch a handle.",
+      "Rebuilt zooming in the document viewer: pinching or double-tapping now zooms only the document, never the surrounding screen, and you can scroll around a zoomed-in (or simply tall) document the same way you would in any PDF or image viewer. Added a small reset-zoom button.",
+      "Added a Share button next to Download when viewing a document — works offline too, for anything already available offline.",
+      "Fixed the app sometimes opening in offline mode even with a working connection — a single slow network blip right at startup no longer gets treated as \"no internet.\"",
+      "Vault now opens instantly from what was last synced, instead of waiting on the network before showing anything — the full sync still happens in the background.",
+      "Fixed first-time sign-up sometimes getting stuck on a blocked-popup error — connecting Google Drive is now always its own clear step instead of a second popup chained right after signing in.",
+      "Fixed a privacy issue where signing out on a shared device could leave the previous account's document list briefly visible to the next person who signs in.",
+    ]
+  },
   {
     version: '2026.09.14 · 16:10',
     items: [
@@ -2434,7 +2509,12 @@ let silentDriveRetryInFlight = false;
 let lastSilentDriveRetryAt = 0;
 const SILENT_DRIVE_RETRY_COOLDOWN_MS = 60 * 1000;
 async function attemptSilentDriveRefresh(){
-  if(!state.user || state.isOfflineMode || driveTokenValid() || silentDriveRetryInFlight) return;
+  // authFlowInProgress also covers the specific race paintFromLocalCacheIfAny() introduced: it
+  // renders the vault screen (from cache) before the cold-start sign-in flow's own token mint has
+  // resolved, and renderVault() calls this function whenever the token isn't valid yet — which, at
+  // that exact moment, it never is. Without this check, every cache-primed cold start fired this as
+  // a second, redundant mint request racing the one already in flight from that same sign-in flow.
+  if(!state.user || state.isOfflineMode || driveTokenValid() || silentDriveRetryInFlight || authFlowInProgress) return;
   if(Date.now() - lastSilentDriveRetryAt < SILENT_DRIVE_RETRY_COOLDOWN_MS) return;
   silentDriveRetryInFlight = true;
   lastSilentDriveRetryAt = Date.now();
@@ -2494,7 +2574,13 @@ window.addEventListener('unhandledrejection', (e) => reportUnexpectedError(e.rea
 // do. All three explicitly exclude the document viewer's own content area, which is the one place
 // zoom is still deliberately allowed (see wireViewFileZoom()).
 function isInsideZoomableViewer(target){
-  return !!(target && target.closest && target.closest('#viewFileContent'));
+  // #viewFileSheet (the whole modal, not just #viewFileContent) — a second pinch finger very often
+  // lands on the sheet's title/handle/buttons around a small preview image, and this needs to
+  // exempt that too, not just the image itself, or that finger falls into neither this backstop's
+  // protection nor wireViewFileZoom()'s own gesture handling (which is scoped to this same, wider
+  // boundary — see its own comment). See also #viewFileSheet's CSS: touch-action:none there does
+  // most of this work already; this stays as a documented belt-and-suspenders backstop.
+  return !!(target && target.closest && target.closest('#viewFileSheet'));
 }
 // 'gesturestart' isn't actually mobile-only — macOS Safari fires the exact same event for a
 // trackpad two-finger pinch, and with no touch/pointer-type hint on the event to tell the two
@@ -3010,6 +3096,20 @@ function loadOfflineQuickRefs(){
   } catch(e){ console.warn('Could not load offline Quick Reference entries', e); return []; }
 }
 
+const OFFLINE_CATEGORIES_KEY = 'vault-offline-categories';
+// Categories have no Drive/blob dependency either (same reasoning as Quick Reference just above) —
+// this is what lets a cold app open paint a real, labeled vault screen from local cache alone (see
+// paintFromLocalCacheIfAny()) instead of a blank "checking" splash while it waits on the network.
+function cacheCategoriesOffline(categories){
+  try{ localStorage.setItem(OFFLINE_CATEGORIES_KEY, JSON.stringify(categories)); } catch(e){ console.warn('Could not cache categories for offline use', e); }
+}
+function loadOfflineCategories(){
+  try{
+    const raw = localStorage.getItem(OFFLINE_CATEGORIES_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch(e){ console.warn('Could not load offline categories', e); return []; }
+}
+
 const OFFLINE_QRCRYPTO_KEY = 'vault-offline-qrcrypto';
 // The (non-secret) salt/canary/iterations/kdf blob from meta/quickRefCrypto, cached the same way
 // as the Quick Reference entries themselves right above — without this, a fully offline app open
@@ -3030,6 +3130,7 @@ function clearOfflineCache(){
   try{ indexedDB.deleteDatabase(OFFLINE_DB_NAME); } catch(e){ console.warn('Could not clear the offline document cache', e); }
   try{ localStorage.removeItem(OFFLINE_QUICKREFS_KEY); } catch(e){ console.warn('Could not clear the offline Quick Reference cache', e); }
   try{ localStorage.removeItem(OFFLINE_QRCRYPTO_KEY); } catch(e){ console.warn('Could not clear the offline Quick Reference encryption cache', e); }
+  try{ localStorage.removeItem(OFFLINE_CATEGORIES_KEY); } catch(e){ console.warn('Could not clear the offline categories cache', e); }
 }
 
 const QUICKREFS_DRIVE_FILENAME = 'quickrefs.json';
@@ -3181,6 +3282,7 @@ async function loadUserData(prefetchedReads){
     state.quickRefsDriveFileId = quickRefsFileId;
     cacheAllDocumentMetadataOffline(state.documents); // fire-and-forget — keeps the offline list complete
     autoDownloadKeepOfflineDocuments(); // fire-and-forget — downloads anything flagged keepOffline that isn't cached yet
+    cacheCategoriesOffline(state.categories); // fire-and-forget — lets a cold open paint real category labels from cache (see paintFromLocalCacheIfAny)
     cacheQuickRefsOffline(state.quickRefs); // fire-and-forget — keeps Quick Reference usable offline
     cacheQrCryptoOffline(state.qrCrypto); // fire-and-forget — keeps the (non-secret) salt/canary usable fully offline, so an unlock attempt can still be made with zero connectivity
     syncPushSubscriptionIfNeeded(); // fire-and-forget — never delays the vault's own load
@@ -3667,12 +3769,35 @@ function renderLogin(app){
     try{
       const result = await auth.signInWithPopup(provider);
       state.user = {name: result.user.displayName, email: result.user.email, uid: result.user.uid, photoURL: result.user.photoURL};
-      // Fired alongside acquireDriveAccess() below rather than after it — see prefetchUserMetaReads.
+      // Fired alongside the Drive check below rather than after it — see prefetchUserMetaReads.
       // This is the path a person actually watches and judges "how fast is sign-in" by, so it's the
       // highest-value place for the two independent network legs to run concurrently instead of
       // back to back.
       const metaReadsPromise = prefetchUserMetaReads(state.user.uid);
-      const tokenResp = await acquireDriveAccess();
+      // Deliberately mintDriveAccessToken() alone here, not acquireDriveAccess() — a brand-new
+      // account (or one whose grant was revoked) always needs grantDriveAccessOneTime()'s consent
+      // popup, and calling that automatically right here, this many awaits past the original click,
+      // is exactly what used to get silently blocked by the browser's popup heuristics (it no longer
+      // reliably counts as "triggered by a user gesture" by this point). Routing to the 'reconnect'
+      // screen instead means that popup only ever opens from ITS OWN button's own fresh click.
+      let tokenResp;
+      try{
+        tokenResp = await mintDriveAccessToken();
+      } catch(driveErr){
+        const reason = driveErr && driveErr.details && driveErr.details.reason;
+        if(reason === 'NO_GRANT' || reason === 'GRANT_REVOKED'){
+          // GRANT_REVOKED (as opposed to NO_GRANT) means this account genuinely had a grant before
+          // — a real signal renderReconnect() can use instead of relying only on this DEVICE's own
+          // localStorage history, which is blank the very first time a returning user signs in on a
+          // new device/browser (see that screen's own comment).
+          state.reconnectReason = reason;
+          state.screen = 'reconnect';
+          render();
+          armExitGuardIfIdle();
+          return;
+        }
+        throw driveErr;
+      }
       applyDriveTokenResponse(tokenResp);
       // "Setting up" wrongly implied first-time provisioning on every single sign-in, including a
       // perfectly normal returning user re-authenticating after a sign-out. We don't know yet
@@ -3690,16 +3815,13 @@ function renderLogin(app){
       maybeShowChangelog();
     } catch(e){
       console.error('Sign-in failed', e);
-      // A brand-new account has no Drive grant yet, so acquireDriveAccess() above always falls
-      // through to the one-time consent popup — a SECOND popup chained right after the sign-in
-      // one, and therefore a second, independent chance for something to go wrong (a stricter
-      // browser's popup-blocking heuristics, the account-picker/consent screen being dismissed, a
-      // slow backend exchange). If state.user is already set here, that first popup already
-      // succeeded — only this second step failed. Retrying used to mean repeating BOTH popups from
-      // scratch every time (throwing away a perfectly good sign-in and doubling the failure surface
-      // on every attempt) — exactly what read as "having to sign in over and over." Routing to the
-      // existing reconnect screen instead means a retry only ever has to survive the one remaining
-      // popup (completeReconnect() below calls just grantDriveAccessOneTime(), not signInWithPopup).
+      // The NO_GRANT/GRANT_REVOKED Drive case is handled above and never reaches here — but a
+      // DIFFERENT Drive-mint failure (rethrown as `driveErr` above, e.g. the transient network-hiccup
+      // case mintDriveAccessTokenWithRetry() exists for elsewhere, deliberately not used on this
+      // interactive path) still lands here, alongside the Firestore reads or loadUserData() itself
+      // hitting a network error. Either way, with state.user already set, routing to the reconnect
+      // screen still makes sense as a safety net: state.user is real, so a retry only needs to redo
+      // whatever's left, not repeat signInWithPopup from scratch.
       if(state.user){
         state.screen = 'reconnect';
         render();
@@ -3728,16 +3850,33 @@ function renderLogin(app){
 }
 
 // Shown when Firebase still has the identity (so we know who's signed in) but there's no usable
-// Drive grant on file — either this account has never granted Drive access before, or the grant
-// was revoked (e.g. from myaccount.google.com/permissions). This is now the *only* remaining
-// "please reconnect" screen in the app: everyday reopens mint a fresh access token from the
-// stored refresh token silently, with no screen like this involved at all.
+// Drive grant on file — either this account has never granted Drive access before (every brand-new
+// sign-up lands here now — see the login screen's own handler for why that consent popup is never
+// auto-chained after signInWithPopup), or a previously-granted one was revoked (e.g. from
+// myaccount.google.com/permissions). This is the *only* remaining "please reconnect" screen in the
+// app: everyday reopens mint a fresh access token from the stored refresh token silently, with no
+// screen like this involved at all.
 function renderReconnect(app){
+  // Same "has this device seen this account provisioned before" check the login screen uses for its
+  // own button text — a brand-new sign-up reads oddly as "Welcome back," so this screen greets and
+  // explains itself differently depending on which case it actually is. That localStorage flag is
+  // per-DEVICE, though, and only ever gets set after a full successful load on THIS device — a
+  // returning user who's fully provisioned elsewhere but signing in on a new device/browser (or one
+  // that just cleared site data) would fail that check despite genuinely being a returning user.
+  // state.reconnectReason closes that gap: GRANT_REVOKED (as opposed to NO_GRANT) can only happen to
+  // an account that had a grant to revoke in the first place, which is itself proof of a real,
+  // previously-provisioned account — a signal that doesn't depend on this device's own history.
+  let knownProvisioned = state.reconnectReason === 'GRANT_REVOKED';
+  if(!knownProvisioned){ try{ knownProvisioned = localStorage.getItem('vault-ever-provisioned-' + state.user.uid) === 'true'; } catch(e){} }
+  const heading = knownProvisioned ? 'Welcome back' : 'One more step';
+  const body = knownProvisioned
+    ? `Signed in as <strong>${escapeHtml(state.user.email)}</strong>. Grant Drive access to pick up where you left off — same Google account, just a one-time permissions confirmation.`
+    : `Signed in as <strong>${escapeHtml(state.user.email)}</strong>. Vault keeps your documents as regular files in your own Google Drive, so it needs your permission once to create and use a private "Vault" folder there.`;
   app.innerHTML = `
     <div class="login-screen">
       <div class="seal">${brandMarkSvg(50)}</div>
-      <h1>Welcome back</h1>
-      <p>Signed in as <strong>${escapeHtml(state.user.email)}</strong>. Grant Drive access to pick up where you left off — same Google account, just a one-time permissions confirmation.</p>
+      <h1>${heading}</h1>
+      <p>${body}</p>
       <button class="primary" id="reconnectContinueBtn">Continue</button>
       <div class="error-text" id="reconnectErr" style="display:none;"></div>
       <button class="ghost" id="reconnectSignOutBtn">Not you? Sign out</button>
@@ -3773,7 +3912,14 @@ async function completeReconnect(){
     console.error('Reconnect failed', e);
     btn.disabled = false;
     btn.textContent = 'Continue';
-    errEl.textContent = 'Could not reconnect to Google Drive — please try again.';
+    // Google Identity Services reports a blocked popup as error type 'popup_failed_to_open' (see
+    // grantDriveAccessOneTime()'s error_callback) — distinct wording from the generic case for the
+    // same reason the login screen's own popup-blocked message exists: this is an actionable, fixable
+    // problem (allow popups for this site) rather than "something went wrong, try again" looping the
+    // user into the exact same failure.
+    errEl.textContent = (e && e.message === 'popup_failed_to_open')
+      ? "Your browser blocked the Drive permissions popup — allow popups for this site, then try again."
+      : 'Could not reconnect to Google Drive — please try again.';
     errEl.style.display = 'block';
   }
 }
@@ -6293,16 +6439,23 @@ function renderModal(){
     const doc = state.documents.find(d => d.id === state.viewDocId);
     if(!doc){ goBackOneLayer(); return; }
     overlay.innerHTML = `
-      <div class="modal-sheet">
+      <div class="modal-sheet" id="viewFileSheet">
         <div class="sheet-handle" id="viewFileHandle" aria-hidden="true"></div>
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>${escapeHtml(doc.title)}</h3>
-        <div id="viewFileContent" class="search-hint">Loading…</div>
-        <button class="ghost" id="downloadFromViewBtn">Download</button>
+        <div class="view-file-content-wrap">
+          <div id="viewFileContent" class="search-hint">Loading…</div>
+          <button type="button" class="view-zoom-reset-btn" id="viewZoomResetBtn" aria-label="Reset zoom" title="Reset zoom" hidden>${icon('zoomOut',18)}</button>
+        </div>
+        <div class="view-file-actions">
+          <button class="ghost ghost-icon" id="shareFromViewBtn">${icon('share',18)} Share</button>
+          <button class="ghost" id="downloadFromViewBtn">Download</button>
+        </div>
       </div>
     `;
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
+    document.getElementById('shareFromViewBtn').onclick = () => shareDocumentFile(doc.id, 'shareFromViewBtn', null);
     document.getElementById('downloadFromViewBtn').onclick = () => downloadDocument(doc.id);
     enableSwipeToDismiss(overlay.querySelector('.modal-sheet'), document.getElementById('viewFileHandle'));
   }
@@ -6890,14 +7043,13 @@ function stopCamera(){
 // The camera flow OCRs each captured page (runOcr) and, on Save, builds the pages into a PDF via
 // jsPDF (saveCameraDocument) — both very likely needed the moment this modal is used, so kick off
 // both loaders here non-blockingly (swallowing any rejection) so they're very likely already loaded
-// by then. OpenCV is warmed here too now, not just in wireCropOverlay() — its ~8MB script needs to
-// download AND compile, and if that compile is still running main-thread work by the time the crop
-// screen opens, the user's first touch on a handle sits queued behind it, felt as a one-time input
-// delay right when they first try to drag. Starting it here instead gives it the several seconds a
-// user spends framing/capturing the shot as a head start, so it has almost always already finished
-// well before they reach a handle. wireCropOverlay()'s own call stays as a fallback for any path that
-// reaches the crop screen without going through here (loadOpenCvScript caches its promise, so calling
-// it again here is free, not a second fetch).
+// by then. The waitForOpenCvReady() call here is now a SECONDARY safety net, not the primary
+// defense — see warmOpenCvEarly() near the top of this file, which starts warming OpenCV as soon as
+// the app itself loads, whether or not the camera is ever opened, for a much bigger head start than
+// "the few seconds between opening the camera and tapping the shutter" this call alone can offer.
+// This stays here (and in wireCropOverlay() too) purely as a fallback for the rare case the
+// page-load-time warm hasn't actually fired yet by the time either of these run (loadOpenCvScript
+// caches its own promise, so calling it again here is free, never a second fetch).
 function openCameraModal(){
   state.modal = 'camera'; state.capturedPages = []; state.capturedPagesRaw = []; state.capturedPageEnhance = [];
   state.cropIndex = null; state.cropSourceDataUrl = null; state.cropQuad = null; state.cropEnhanceOn = true;
@@ -7817,101 +7969,223 @@ async function renderViewedBlob(blob, doc, id){
   }
 }
 
-// Pinch-to-zoom + double-tap-to-zoom for the document viewer specifically — the one place inside
-// the app allowed to zoom now that the page itself can't (see the viewport meta tag). Only scale
-// is tracked here; panning a zoomed document is just #viewFileContent's own native scroll (see its
-// CSS) — a scaled-up element still expands its parent's scrollable region in every modern browser,
-// so there's no custom pan-dragging to write.
+// Pinch-to-zoom, drag-to-pan (once zoomed), double-tap-to-zoom, and a reset-zoom button for the
+// document viewer — the one place inside the app allowed to zoom now that the page itself can't
+// (see the viewport meta tag). Gesture RECOGNITION is deliberately scoped to the whole sheet
+// (#viewFileSheet), not just this content area: a second pinch finger very often lands on the
+// sheet's title/handle/buttons around a small preview image, and a handler scoped to just the
+// image would silently miss that finger, falling through to the browser's own native page-zoom
+// instead (see isInsideZoomableViewer, which exempts this same wider boundary). The actual zoom/pan
+// TRANSFORM is still only ever applied to `inner`, so visually only the document itself scales,
+// never the sheet chrome around it. Panning is a manual translate()+scale() transform driven
+// entirely by this code, not native scroll — see #viewFileContent's own CSS comment for why: native
+// scroll interacting with a simultaneous pinch is exactly the combination some Android/Chrome
+// versions handle unreliably, which is what let the whole page zoom instead of just this element.
 const VIEW_ZOOM_MIN = 1, VIEW_ZOOM_MAX = 4;
 function wireViewFileZoom(contentEl){
   const inner = contentEl.querySelector('.view-zoom-inner');
   if(!inner) return;
-  let zoom = 1;
-  const applyZoom = () => { inner.style.transform = zoom === 1 ? '' : `scale(${zoom})`; };
+  const sheetEl = contentEl.closest('#viewFileSheet') || contentEl;
+  const resetBtn = document.getElementById('viewZoomResetBtn');
 
-  const pointers = new Map(); // pointerId -> {x,y}; only ever holds the 2 fingers of an active pinch
-  let pinchStartDist = 0, pinchStartZoom = 1;
-  const distance = () => {
-    const pts = [...pointers.values()];
-    return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+  let zoom = 1, panX = 0, panY = 0;
+  const apply = () => {
+    inner.style.transform = (zoom === 1 && panX === 0 && panY === 0) ? '' : `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    if(resetBtn) resetBtn.hidden = zoom <= 1;
   };
 
-  // touch-action:pan-x pan-y (see #viewFileContent's CSS) is supposed to stop the browser's own
-  // native pinch-zoom everywhere, including here, leaving pinch free for this Pointer-Events-based
-  // handler to interpret on its own — but on a scrollable overflow:auto element specifically (which
-  // this is), some Android/Chrome versions still let native pinch-zoom activate anyway, zooming the
-  // whole page instead of just this element. touch-action alone isn't enough there, so this also
-  // calls preventDefault() itself, directly on the two-finger gesture, the moment it's recognized —
-  // the standard, more forceful way to suppress default touch handling regardless of what
-  // touch-action says. Scoped to exactly the 2-pointer case so ordinary single-finger scrolling
-  // (which relies on the browser's own native scroll, not custom JS) is completely unaffected.
-  contentEl.addEventListener('pointerdown', (e) => {
+  // .view-zoom-inner is display:inline-block specifically so its own box shrink-wraps to the real
+  // content (image or stacked PDF-page canvases) instead of the full content-area width (see its
+  // CSS comment) — #viewFileContent's text-align:center then centers that box whenever it's
+  // narrower than the content area. That centering is a LAYOUT position, untouched by the scale()
+  // transform below (transform is paint-only), so `inner`'s untransformed left edge sits this many
+  // px right of #viewFileContent's own left edge. Every pan/zoom calculation below works in
+  // #viewFileContent-relative coordinates (what toLocal() returns, what clientWidth/Height measure)
+  // and has to account for this offset to stay correct for anything narrower than the viewer.
+  const centeringOffsetX = () => (contentEl.clientWidth - inner.offsetWidth) / 2;
+
+  // Whether there's actually anything to pan — at rest (zoom 1) a tall multi-page PDF or a tall
+  // single image can already exceed the fixed 65vh content height with nothing zoomed at all, and
+  // this still needs to be draggable/scrollable exactly like it would be in any PDF/image viewer,
+  // not just once the user has zoomed in.
+  function canPan(){
+    return inner.offsetWidth * zoom > contentEl.clientWidth + 0.5 || inner.offsetHeight * zoom > contentEl.clientHeight + 0.5;
+  }
+  // Keeps the content from drifting past its own real edges — measured against the CONTENT area's
+  // own visible box, not the wider sheet used for gesture detection above.
+  function clampPan(){
+    const viewW = contentEl.clientWidth, viewH = contentEl.clientHeight;
+    const offsetX = centeringOffsetX();
+    const scaledW = inner.offsetWidth * zoom, scaledH = inner.offsetHeight * zoom;
+    // Horizontal: when the content still fits, leave it exactly at its natural centered position
+    // (panX 0) rather than letting it drift — CSS centering is already doing the right thing there.
+    // Once it overflows, panX is free to move between showing the true left edge and the true right
+    // edge, offset by the same centering amount that's always present underneath any pan.
+    panX = scaledW <= viewW ? 0 : Math.max(viewW - scaledW - offsetX, Math.min(-offsetX, panX));
+    // Vertical: .view-zoom-inner has no equivalent vertical centering (block flow, not text-align),
+    // so its untransformed top edge is always exactly #viewFileContent's own top edge — no offset.
+    const minY = Math.min(0, viewH - scaledH);
+    panY = Math.max(minY, Math.min(0, panY));
+  }
+  function resetZoom(){ zoom = 1; panX = 0; panY = 0; apply(); }
+  // Re-anchors on the given point (in #viewFileContent-relative coordinates, i.e. what toLocal()
+  // returns) so that exact spot stays visually still as zoom changes — pinching or double-tapping
+  // near an edge zooms toward what your fingers are actually on, instead of the content appearing
+  // to slide toward the top-left corner every time. anchorX has to be converted into `inner`'s own
+  // untransformed coordinate space first (subtracting the centering offset above) before the same
+  // translate math applies to panX, which operates in that space, not #viewFileContent's.
+  function zoomTo(newZoom, anchorX, anchorY){
+    newZoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, newZoom));
+    const scaleRatio = newZoom / zoom;
+    const localAnchorX = anchorX - centeringOffsetX();
+    panX = localAnchorX - (localAnchorX - panX) * scaleRatio;
+    panY = anchorY - (anchorY - panY) * scaleRatio;
+    zoom = newZoom;
+    clampPan();
+    apply();
+  }
+  const toLocal = (clientX, clientY) => {
+    const rect = contentEl.getBoundingClientRect();
+    return {x: clientX - rect.left, y: clientY - rect.top};
+  };
+
+  const pointers = new Map(); // pointerId -> {x,y} in viewport coordinates
+  let mode = null; // null | 'pan' | 'pinch'
+  let gestureStart = null; // a snapshot taken at the start of whichever mode is currently active
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+  // Tracked separately from `mode`/`gestureStart` above: a single pointer that hasn't moved far
+  // enough to count as a drag is a tap candidate regardless of zoom level (even at zoom 1, where
+  // `mode` never becomes 'pan' since there's nothing to pan yet) — this is what double-tap below
+  // actually checks.
+  let tapStart = null;
+  let lastTapTime = 0, lastTapX = 0, lastTapY = 0;
+
+  sheetEl.addEventListener('pointerdown', (e) => {
+    // An actual control — close/share/download, a caching-status link, the drag-to-dismiss handle
+    // — keeps behaving like a normal tap/click. This only ever engages for a gesture starting
+    // somewhere else in the sheet (the image itself, or empty space around it).
+    if(e.target.closest('button, a, input, select, textarea, .sheet-handle')) return;
     pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
-    if(pointers.size === 2){ pinchStartDist = distance(); pinchStartZoom = zoom; e.preventDefault(); }
+    // Guarded: a capture request can be rejected (e.g. the pointer already went away between this
+    // event being queued and handled) — losing capture just means a finger that drifts outside the
+    // sheet mid-gesture stops being tracked a little sooner than ideal, not a reason to abort the
+    // whole gesture over.
+    try{ sheetEl.setPointerCapture(e.pointerId); } catch(err){}
+    if(pointers.size === 1){
+      tapStart = {x: e.clientX, y: e.clientY};
+      if(canPan()){ mode = 'pan'; gestureStart = {x: e.clientX, y: e.clientY, panX, panY}; }
+    } else if(pointers.size === 2){
+      tapStart = null; // a second finger joining means this was never going to be a tap
+      const [a, b] = [...pointers.values()];
+      const anchor = toLocal((a.x + b.x) / 2, (a.y + b.y) / 2);
+      const d = dist(a, b);
+      if(d > 0){ mode = 'pinch'; gestureStart = {dist: d, zoom, panX, panY, anchor}; }
+      e.preventDefault();
+    }
+    // 3+ pointers: an accidental extra finger is still tracked (so releasing it back down to 2 is
+    // handled correctly below) but doesn't change whatever gesture is already active — see the
+    // pointers.size===2 branch in releasePointer, which is what actually resyncs the pinch once
+    // back down to exactly two real fingers, rather than anything done here.
   });
-  contentEl.addEventListener('pointermove', (e) => {
+
+  sheetEl.addEventListener('pointermove', (e) => {
     if(!pointers.has(e.pointerId)) return;
     pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
-    if(pointers.size === 2 && pinchStartDist > 0){
+    if(tapStart && dist(tapStart, {x: e.clientX, y: e.clientY}) > 10) tapStart = null; // moved too far to be a tap
+    if(mode === 'pan' && pointers.size === 1){
       e.preventDefault();
-      zoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, pinchStartZoom * (distance() / pinchStartDist)));
-      applyZoom();
+      panX = gestureStart.panX + (e.clientX - gestureStart.x);
+      panY = gestureStart.panY + (e.clientY - gestureStart.y);
+      clampPan();
+      apply();
+    } else if(mode === 'pinch' && pointers.size === 2){
+      e.preventDefault();
+      const [a, b] = [...pointers.values()];
+      // Reset to the gesture's own starting snapshot before each zoomTo() call, rather than
+      // compounding off wherever the previous pointermove left things — keeps the math anchored to
+      // the pinch's true origin instead of drifting across many rapid-fire move events.
+      zoom = gestureStart.zoom; panX = gestureStart.panX; panY = gestureStart.panY;
+      zoomTo(gestureStart.zoom * (dist(a, b) / gestureStart.dist), gestureStart.anchor.x, gestureStart.anchor.y);
     }
   });
-  const clearPointer = (e) => {
+
+  const releasePointer = (e) => {
+    if(!pointers.has(e.pointerId)) return;
     pointers.delete(e.pointerId);
-    if(pointers.size < 2) pinchStartDist = 0;
+    if(pointers.size === 0){
+      mode = null;
+      // pointercancel (the browser/OS aborting the touch — an edge-swipe system gesture claiming it,
+      // a focus/visibility change mid-touch) isn't a deliberate release, and its coordinates aren't
+      // guaranteed to reflect where the finger actually was — only a genuine pointerup counts toward
+      // double-tap detection.
+      if(tapStart && e.type === 'pointerup'){
+        const isDoubleTap = e.timeStamp - lastTapTime < 320 && Math.hypot(e.clientX - lastTapX, e.clientY - lastTapY) < 24;
+        lastTapTime = e.timeStamp; lastTapX = e.clientX; lastTapY = e.clientY;
+        if(isDoubleTap){
+          lastTapTime = 0; // consumed — a third quick tap starts a fresh pair, not another toggle
+          if(zoom > 1) resetZoom();
+          else{ const p = toLocal(e.clientX, e.clientY); zoomTo(2, p.x, p.y); }
+        }
+      }
+      tapStart = null;
+    } else if(pointers.size === 2){
+      // Covers both "an accidental 3rd finger just lifted back off" and "one of an active pinch's
+      // original two fingers lifted while a 3rd was also down" — either way, whichever two pointers
+      // are ACTUALLY still held right now become a fresh pinch baseline from their current distance,
+      // rather than reusing whatever gestureStart was snapshotted from a possibly different pointer
+      // pair earlier. Without this, a stale gestureStart.dist from a no-longer-held finger pair could
+      // get divided against the distance between a completely different pair, producing a sudden,
+      // unrelated zoom jump.
+      const [a, b] = [...pointers.values()];
+      const anchor = toLocal((a.x + b.x) / 2, (a.y + b.y) / 2);
+      const d = dist(a, b);
+      if(d > 0){ mode = 'pinch'; gestureStart = {dist: d, zoom, panX, panY, anchor}; }
+      tapStart = null;
+    } else if(pointers.size === 1){
+      // Dropped from 2 (or more) fingers to 1 — hand off to a fresh pan instead of just stopping, so
+      // lifting a finger after a pinch doesn't feel like the gesture died.
+      const [p] = [...pointers.values()];
+      mode = canPan() ? 'pan' : null;
+      gestureStart = {x: p.x, y: p.y, panX, panY};
+      tapStart = null;
+    }
   };
-  contentEl.addEventListener('pointerup', clearPointer);
-  contentEl.addEventListener('pointercancel', clearPointer);
+  sheetEl.addEventListener('pointerup', releasePointer);
+  sheetEl.addEventListener('pointercancel', releasePointer);
 
-  // A trackpad pinch (Mac, no touchscreen involved at all) never satisfies the 2-pointer path
-  // above — it's reported as its own distinct gesture, not two simultaneous touch contacts — so
-  // without this it fell through to the browser's own native whole-page zoom instead of this
-  // element's. Chrome/Firefox synthesize a trackpad pinch as a ctrl-key'd wheel event (a real
+  // Desktop-only paths. A ctrl-key'd wheel event zooms, both zooming toward the content area's own
+  // center rather than the cursor — simpler, and this is a secondary path (the reported bug is
+  // touch-only). A real trackpad pinch (Mac, no touchscreen involved at all) never satisfies the
+  // 2-pointer path above — it's reported as its own distinct gesture, not two simultaneous touch
+  // contacts. Chrome/Firefox synthesize a trackpad pinch as a ctrl-key'd wheel event (a real
   // ctrl+wheel scroll is rare enough that treating every ctrlKey wheel as a pinch is the standard,
-  // accepted tradeoff); Safari instead fires its own non-standard gesturestart/gesturechange
-  // events with a cumulative e.scale relative to whatever zoom was active when the gesture began.
-  // Browsers that don't support one path simply never fire it, so both can stay registered
-  // unconditionally.
-  contentEl.addEventListener('wheel', (e) => {
-    if(!e.ctrlKey) return; // a plain wheel scroll — leave it to the browser's native scrolling
-    e.preventDefault();
-    zoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, zoom * (1 - e.deltaY * 0.01)));
-    applyZoom();
-  }, {passive: false});
-  let gestureStartZoom = 1;
-  contentEl.addEventListener('gesturestart', (e) => { e.preventDefault(); gestureStartZoom = zoom; });
-  contentEl.addEventListener('gesturechange', (e) => {
-    e.preventDefault();
-    zoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, gestureStartZoom * e.scale));
-    applyZoom();
-  });
-
-  // A quick double-tap/double-click toggles 1x <-> 2x, roughly centered on the tapped point — a
-  // faster shortcut than pinching for the common case of "just let me read that".
-  let lastTapTime = 0, lastTapX = 0, lastTapY = 0;
-  contentEl.addEventListener('pointerup', (e) => {
-    const isDoubleTap = e.timeStamp - lastTapTime < 320 && Math.hypot(e.clientX - lastTapX, e.clientY - lastTapY) < 24;
-    lastTapTime = e.timeStamp; lastTapX = e.clientX; lastTapY = e.clientY;
-    if(!isDoubleTap) return;
-    lastTapTime = 0; // consumed — a third quick tap starts a fresh pair, not another toggle
-    if(zoom > 1){
-      zoom = 1;
-      applyZoom();
+  // accepted tradeoff); Safari instead fires its own non-standard gesturestart/gesturechange events
+  // with a cumulative e.scale relative to whatever zoom was active when the gesture began.
+  //
+  // A plain (non-ctrl) wheel/trackpad scroll pans instead, when there's overflow to pan through —
+  // the mouse/trackpad equivalent of dragging on touch, restoring what #viewFileContent's native
+  // scroll used to do for free before this became a fully custom transform.
+  sheetEl.addEventListener('wheel', (e) => {
+    if(e.ctrlKey){
+      e.preventDefault();
+      zoomTo(zoom * (1 - e.deltaY * 0.01), contentEl.clientWidth / 2, contentEl.clientHeight / 2);
       return;
     }
-    const rect = contentEl.getBoundingClientRect();
-    const tapX = e.clientX - rect.left + contentEl.scrollLeft, tapY = e.clientY - rect.top + contentEl.scrollTop;
-    zoom = 2;
-    applyZoom();
-    // Waits a frame for the larger scrollable range from the new scale to actually exist before
-    // trying to scroll into it.
-    requestAnimationFrame(() => {
-      contentEl.scrollLeft = tapX * 2 - rect.width / 2;
-      contentEl.scrollTop = tapY * 2 - rect.height / 2;
-    });
+    if(!canPan()) return;
+    e.preventDefault();
+    panX -= e.deltaX; panY -= e.deltaY;
+    clampPan();
+    apply();
+  }, {passive: false});
+  let gestureBaseZoom = 1;
+  sheetEl.addEventListener('gesturestart', (e) => { e.preventDefault(); gestureBaseZoom = zoom; });
+  sheetEl.addEventListener('gesturechange', (e) => {
+    e.preventDefault();
+    zoomTo(gestureBaseZoom * e.scale, contentEl.clientWidth / 2, contentEl.clientHeight / 2);
   });
+
+  if(resetBtn) resetBtn.onclick = resetZoom;
 }
 
 async function renderPdfInto(contentEl, blob, id){
@@ -8453,11 +8727,21 @@ function openShareModal(docId){ state.modal='share'; state.shareDocId=docId; pus
 // Hands the actual file to the OS share sheet (Messages, Email, WhatsApp, whatever the user has).
 // The fake vault.app/shared/... link feature that used to sit alongside this was removed entirely
 // — there was never a backend that could actually resolve it for an unauthenticated recipient.
-async function shareDocumentFile(docId){
+// getDocumentBlob() below already resolves from the offline cache when there's no connection (the
+// same source the document viewer itself reads from to display it at all — see renderViewedBlob),
+// so this works offline for exactly the same documents the user can already open offline, with no
+// extra logic needed here for that.
+//
+// btnId/errElId are parameterized (not hardcoded) so more than one place in the UI can trigger this
+// with its own loading/error feedback — the dedicated Share modal (shareFileBtn/shareFileErr) and
+// the document viewer's own Share button (which has no separate error slot, so it falls back to a
+// toast) both call this same function rather than duplicating the share logic.
+async function shareDocumentFile(docId, btnId = 'shareFileBtn', errElId = 'shareFileErr'){
   const doc = state.documents.find(d => d.id === docId);
   if(!doc) return;
-  const btn = document.getElementById('shareFileBtn');
-  const errEl = document.getElementById('shareFileErr');
+  const btn = btnId ? document.getElementById(btnId) : null;
+  const errEl = errElId ? document.getElementById(errElId) : null;
+  const originalBtnHtml = btn ? btn.innerHTML : null; // restored as-is in finally, whatever it said
   if(errEl) errEl.style.display = 'none';
   if(btn){ btn.disabled = true; btn.textContent = 'Preparing…'; }
   try{
@@ -8476,9 +8760,10 @@ async function shareDocumentFile(docId){
   } catch(e){
     if(e && e.name === 'AbortError') return; // user dismissed the native share sheet — not an error
     console.error('Share file failed', e);
-    if(errEl){ errEl.textContent = e && e.code === 'OFFLINE_NOT_CACHED' ? e.message : friendlyCloudError(e); errEl.style.display = 'block'; }
+    const message = e && e.code === 'OFFLINE_NOT_CACHED' ? e.message : friendlyCloudError(e);
+    if(errEl){ errEl.textContent = message; errEl.style.display = 'block'; } else { toast(message); }
   } finally {
-    if(btn){ btn.disabled = false; btn.innerHTML = `${icon('share',18)} Share file`; }
+    if(btn){ btn.disabled = false; btn.innerHTML = originalBtnHtml; }
   }
 }
 
@@ -8529,6 +8814,7 @@ async function saveNewCategory(){
     // starts with — off is still one tap away in Settings for anyone who wants it that way.
     await userDoc().collection('categories').doc(id).set({label, icon: iconKey, driveFolderId, order, keepOfflineDefault: true});
     state.categories.push({id, label, icon: iconKey, driveFolderId, order, keepOfflineDefault: true});
+    cacheCategoriesOffline(state.categories); // fire-and-forget — keeps the offline snapshot (see paintFromLocalCacheIfAny) from going stale
     closeModal();
     toast('Category created');
   } catch(e){
@@ -8562,6 +8848,7 @@ async function saveRenamedCategory(){
     }
     await userDoc().collection('categories').doc(cat.id).update({label, icon: iconKey});
     cat.label = label; cat.icon = iconKey;
+    cacheCategoriesOffline(state.categories); // fire-and-forget — keeps the offline snapshot (see paintFromLocalCacheIfAny) from going stale
     closeModal();
     toast('Category updated');
   } catch(e){
@@ -8582,6 +8869,7 @@ async function deleteCategory(id){
     await userDoc().collection('categories').doc(id).delete();
     try{ await driveDelete(cat.driveFolderId); } catch(e){ console.error('Could not delete the now-empty Drive folder', e); }
     state.categories = state.categories.filter(c => c.id !== id);
+    cacheCategoriesOffline(state.categories); // fire-and-forget — keeps the offline snapshot (see paintFromLocalCacheIfAny) from going stale
     render();
     toast('Category deleted');
   } catch(e){
@@ -8624,6 +8912,7 @@ async function moveCategoryOrder(id, direction){
     await batch.commit();
     reordered.forEach((c,i) => { c.order = i; });
     state.categories = reordered;
+    cacheCategoriesOffline(state.categories); // fire-and-forget — keeps the offline snapshot (see paintFromLocalCacheIfAny) from going stale
   } catch(e){
     console.error('Failed to reorder categories', e);
     toast(friendlyCloudError(e));
@@ -8647,6 +8936,7 @@ async function toggleCategoryKeepOfflineDefault(catId, checked){
   cat.keepOfflineDefault = checked;
   try{
     await userDoc().collection('categories').doc(catId).update({keepOfflineDefault: checked});
+    cacheCategoriesOffline(state.categories); // fire-and-forget — keeps the offline snapshot (see paintFromLocalCacheIfAny) from going stale
   } catch(e){
     console.error('Failed to update category keep-offline default', e);
     cat.keepOfflineDefault = previous;
@@ -9067,7 +9357,7 @@ function resetToLoggedOutState(){
     vaultFolderId: null, deletedFolderId: null, categories: [], documents: [], modal: null, quickRefsDriveFileId: null,
     searchQuery: '', showArchived: false, showDeleted: false, collapsedCats: {},
     collapsedSettingsGroups: defaultCollapsedSettingsGroups(), // fresh collapsed defaults for the next sign-in — see that function's own comment
-    openActionMenu: null, openCategoryMenu: null, upcomingReturnScreen: null, isOfflineMode: false, offlineReason: null,
+    openActionMenu: null, openCategoryMenu: null, upcomingReturnScreen: null, isOfflineMode: false, offlineReason: null, reconnectReason: null,
     selectMode: false, selectedDocIds: new Set(), // no stale bulk-select state should survive into the next signed-in session
     keepOfflineInFlightIds: new Set(), // no stale "downloading" markers should survive into the next signed-in session
     // A derived Quick Reference encryption key is exactly the kind of in-memory secret that must
@@ -9086,6 +9376,14 @@ function resetToLoggedOutState(){
 function signOutUser(){
   auth.signOut().catch(e => console.error('Sign out error', e));
   resetToLoggedOutState();
+  // The offline cache (documents, categories, Quick Reference — see paintFromLocalCacheIfAny) is
+  // plain localStorage/IndexedDB with no per-account namespacing, shared by whoever signs in next on
+  // this same browser. Without this, signing out on a shared/borrowed device and someone else
+  // signing in with a different Google account would briefly paint the PREVIOUS person's cached
+  // document titles and categories on screen during that next cold start, before the real load
+  // replaces it — a real privacy leak, not just stale data. clearOfflineCache() was previously only
+  // ever called for full account deletion; sign-out needs the same cleanup for the same reason.
+  clearOfflineCache();
   render();
   armExitGuardIfIdle();
   toast('Signed out');
@@ -9198,6 +9496,39 @@ async function enterOfflineVault(){
   maybeShowChangelog();
 }
 
+// Cold-open only: paints the vault screen immediately from whatever's cached locally (documents,
+// categories, Quick Reference — see their own offline-cache functions above), while the real Drive
+// token + Firestore load continues in the background. Without this, every single cold open stared
+// at a blank "checking" splash for however long that round trip happened to take — usually a couple
+// seconds, but Apps Script's own cold-start latency can occasionally push it to 20-30s, with nothing
+// to look at even though the last-synced vault was sitting right there in local storage the whole
+// time. Returns whether it actually painted anything — false only for a genuinely first-ever open on
+// this device, where nothing's cached yet to show (the blank splash is the correct, unavoidable
+// experience exactly once, until this device has synced at least one real load). The real load below
+// still runs exactly as before either way and replaces whatever's on screen once it lands — this is
+// purely a perceived-speed improvement, never a change to what data ends up authoritative.
+async function paintFromLocalCacheIfAny(uid){
+  const cachedDocs = await loadOfflineDocumentList();
+  const cachedCategories = loadOfflineCategories();
+  if(!cachedDocs.length && !cachedCategories.length) return false;
+  if(!state.user || state.user.uid !== uid) return false; // signed out (or switched accounts) while reading the cache
+  state.documents = cachedDocs;
+  state.categories = cachedCategories;
+  state.quickRefs = loadOfflineQuickRefs();
+  await loadOfflineDocIds();
+  // Re-checked, not just assumed still true from the guard above — that was before a SECOND await
+  // (this one), a real window for a sign-out (e.g. from another tab sharing the same Firebase
+  // session) to land in between. Without this, a sign-out landing exactly here would already have
+  // shown the login screen, only for this call to resume right after and silently paint the stale
+  // cached vault back over it.
+  if(!state.user || state.user.uid !== uid) return false;
+  collapseAllCategories();
+  state.screen = 'vault';
+  render();
+  armExitGuardIfIdle();
+  return true;
+}
+
 // Firebase persists the sign-in session by default, but the app never checked for it on load —
 // every fresh page open showed the login screen regardless of a still-valid session, which reads
 // to the user as "the app keeps logging me out." Restore silently here: if Firebase still has the
@@ -9220,16 +9551,21 @@ auth.onAuthStateChanged(async (user) => {
   if(state.user || authFlowInProgress) return;
   authFlowInProgress = true;
   state.user = {name: user.displayName, email: user.email, uid: user.uid, photoURL: user.photoURL};
+  // mintDriveAccessTokenWithRetry() alone (not acquireDriveAccess()) — a cold open should never
+  // pop a consent screen unprompted; NO_GRANT/GRANT_REVOKED routes to the "Welcome back" screen
+  // instead, where the user's own tap is what makes the popup a real, gesture-backed one. The
+  // retry (not just a plain mint) matters specifically here: this is the one call standing between
+  // "app just opened" and either a real vault or a false "offline" — see the function's own
+  // comment for why a cold open is exactly when a transient network hiccup is most likely.
+  // Fired in parallel with the Firestore reads loadUserData() needs (see prefetchUserMetaReads)
+  // instead of one after the other — the two hit independent backends with no dependency
+  // between them for a returning user, so there's no reason the slower of the two (typically
+  // the Apps Script round trip) should delay the other from even starting. Kicked off before
+  // paintFromLocalCacheIfAny() below (not after) so neither promise loses time to that local read.
+  const tokenPromise = mintDriveAccessTokenWithRetry();
+  const metaReadsPromise = prefetchUserMetaReads(user.uid);
+  await paintFromLocalCacheIfAny(user.uid);
   try{
-    // mintDriveAccessToken() alone (not acquireDriveAccess()) — a cold open should never pop a
-    // consent screen unprompted; NO_GRANT/GRANT_REVOKED routes to the "Welcome back" screen
-    // instead, where the user's own tap is what makes the popup a real, gesture-backed one.
-    // Fired in parallel with the Firestore reads loadUserData() needs (see prefetchUserMetaReads)
-    // instead of one after the other — the two hit independent backends with no dependency
-    // between them for a returning user, so there's no reason the slower of the two (typically
-    // the Apps Script round trip) should delay the other from even starting.
-    const tokenPromise = mintDriveAccessToken();
-    const metaReadsPromise = prefetchUserMetaReads(user.uid);
     const tokenResp = await tokenPromise;
     applyDriveTokenResponse(tokenResp);
     await loadUserData(metaReadsPromise);
@@ -9247,6 +9583,7 @@ auth.onAuthStateChanged(async (user) => {
     const reason = e && e.details && e.details.reason;
     if(reason === 'NO_GRANT' || reason === 'GRANT_REVOKED'){
       console.warn('Drive grant missing or revoked — asking for a one-tap reconnect.', e);
+      state.reconnectReason = reason; // see renderReconnect()'s own comment on why this matters
       state.screen = 'reconnect';
       render();
       armExitGuardIfIdle();
