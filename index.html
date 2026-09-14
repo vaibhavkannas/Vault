@@ -860,7 +860,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.14 · 12:40';
+const APP_VERSION = '2026.09.14 · 12:58';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1339,6 +1339,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.14 · 12:58',
+    items: [
+      "Fixed: a new document added to a category with \"Keep documents offline by default\" turned on wasn't actually available offline until the app was later reloaded — it's now cached the moment it's saved."
+    ]
+  },
   {
     version: '2026.09.14 · 12:40',
     items: [
@@ -6739,6 +6745,15 @@ async function finalizeAndStoreDocument({title, category, expiry, reminderDays, 
     throw e;
   }
   state.documents.unshift(doc);
+  // A category with "keep offline by default" on means THIS exact moment — right after upload —
+  // is when the new document should actually become available offline, not just flagged as such in
+  // its metadata until autoDownloadKeepOfflineDocuments happens to run on some later full reload.
+  // The blob is already in memory from the upload above, so this is a local IndexedDB write, not a
+  // second network round trip — cheap enough to await so the very next render already shows it
+  // correctly as "Kept offline" instead of briefly (and incorrectly) looking uncached. A failure
+  // here (e.g. storage quota) is non-fatal to the save itself, same as every other keep-offline
+  // caching path — the document is already safely created either way.
+  if(doc.keepOffline) await cacheDocumentOffline(doc, blob);
   return doc;
 }
 
@@ -8618,11 +8633,12 @@ async function runSyncFromDrive(){
       for(const f of (json.files || [])){
         if(knownIds.has(f.id)) continue;
         let ocrText = '';
+        let syncedBlob = null; // reused below for keepOffline caching if this was an image (OCR already fetched it)
         if(f.mimeType && f.mimeType.startsWith('image/')){
           try{
             const contentRes = await driveFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`);
-            const blob = await contentRes.blob();
-            const dataUrl = await readFileAsDataURL(blob);
+            syncedBlob = await contentRes.blob();
+            const dataUrl = await readFileAsDataURL(syncedBlob);
             ocrText = await runOcr(dataUrl);
           } catch(ocrErr){ console.error('Could not OCR a synced file', ocrErr); }
         }
@@ -8639,6 +8655,19 @@ async function runSyncFromDrive(){
         state.documents.unshift(doc);
         knownIds.add(f.id);
         importedCount++;
+        // Same reasoning as finalizeAndStoreDocument: a keep-offline-by-default category means this
+        // synced-in file should actually be cached now, not just flagged until some later reload.
+        // Non-image files never fetched a blob above (no OCR to run), so fetch it here instead —
+        // one extra round trip only for the files that actually need it.
+        if(doc.keepOffline){
+          try{
+            if(!syncedBlob){
+              const contentRes = await driveFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`);
+              syncedBlob = await contentRes.blob();
+            }
+            await cacheDocumentOffline(doc, syncedBlob);
+          } catch(cacheErr){ console.error('Could not cache a synced keep-offline file', cacheErr); }
+        }
       }
       }
     }
