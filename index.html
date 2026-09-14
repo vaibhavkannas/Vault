@@ -866,7 +866,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.14 · 15:41';
+const APP_VERSION = '2026.09.14 · 16:10';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1345,6 +1345,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.14 · 16:10',
+    items: [
+      "Renamed the per-category \"Offline\" toggle to \"Keep offline\", and added a short explanation above the category list — so it's clear it's a setting for future documents, not a status of the app right now.",
+    ]
+  },
   {
     version: '2026.09.14 · 15:41',
     items: [
@@ -3858,6 +3864,7 @@ function renderSettings(app){
       <div class="settings-section">
         ${settingsGroupHeaderHtml('categories', 'Categories')}
         ${!categoriesCollapsed ? `
+          <p class="field-hint" style="margin:4px 0 14px;">Keep offline downloads every new document added to a category right away and keeps it on your device for good, even if storage runs low — just viewing a document caches it too, but that copy can get cleared later to make space. Turning it off doesn't delete anything already downloaded; it only stops applying to documents added after that point.</p>
           ${state.categories.map((c,i) => {
             // Not-yet-cached, non-deleted documents currently in this category — turning the
             // keep-offline switch ON now offers to cache exactly this backlog too (see
@@ -3878,7 +3885,7 @@ function renderSettings(app){
               <div class="cat-manage-row">
                 <span class="cm-icon">${categoryIconHtml(c, 17)}</span>
                 <span class="cm-label">${escapeHtml(c.label)}</span>
-                <span class="cm-offline-label" id="catOfflineLabel-${c.id}">Offline</span>
+                <span class="cm-offline-label" id="catOfflineLabel-${c.id}">Keep offline</span>
                 ${catKeepOfflineSwitchHtml(c)}
                 <div class="action-menu-wrap">
                   <button class="icon-only-btn small" data-cat-menu-toggle="${c.id}" aria-label="More actions for ${escapeHtml(c.label)}" aria-haspopup="true" aria-expanded="${catMenuOpen}">${icon('more',18)}</button>
