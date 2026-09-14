@@ -619,12 +619,18 @@
      a document card's own overflow menu uses) instead of up to 4 separate buttons crammed into this
      row — that used to force a wrap onto a second line on most phone widths, not just at 320px,
      making the whole Categories section noticeably tall for very little actually shown at once. */
-  .cat-manage-row{display:flex;align-items:center;gap:10px;background:var(--paper-2);border-radius:var(--radius);padding:10px 12px;margin-bottom:8px;box-shadow:var(--elevation-1);}
+  .cat-item{margin-bottom:8px;}
+  .cat-manage-row{display:flex;align-items:center;gap:10px;background:var(--paper-2);border-radius:var(--radius);padding:10px 12px;box-shadow:var(--elevation-1);}
   .cat-manage-row .cm-icon{width:32px;height:32px;border-radius:50%;background:var(--primary-container);color:var(--on-primary-container);display:flex;align-items:center;justify-content:center;flex:none;}
   .cat-manage-row .cm-label{flex:1;min-width:0;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  /* The small subline under the "Keep X documents offline" switch's label — either informational
-     (a backlog waiting for the switch to be turned on) or, when styled as -link, an actual button
-     for the rarer case of retrying a backlog left over after the switch is already on. */
+  /* "Offline" label pairs with the switch right next to it so the toggle's purpose reads at a
+     glance without repeating the category name (which the row already shows to its left). */
+  .cat-manage-row .cm-offline-label{flex:none;font-size:11px;color:var(--ink-soft);letter-spacing:0.02em;}
+  /* The small subline below the merged row — either informational (a backlog waiting for the
+     switch to be turned on) or, when styled as -link, an actual button for the rarer case of
+     retrying a backlog left over after the switch is already on. Indented to align under the
+     category label (icon width + gap + row padding). */
+  .cat-offline-subline-row{padding:4px 12px 0 54px;}
   .cat-offline-hint{font-size:11.5px;color:var(--ink-soft);}
   .cat-offline-hint-link{font-size:11.5px;color:var(--brass);background:none;border:none;padding:0;margin:0;cursor:pointer;font-family:inherit;text-decoration:underline;}
   .danger-zone{border-radius:16px;padding:14px;background:var(--danger-bg);}
@@ -833,12 +839,12 @@ async function acquireDriveAccess(){
 }
 
 const DEFAULT_CATEGORIES = [
-  {id:'id', label:'ID proof', icon:'id'},
-  {id:'bill', label:'Bill', icon:'receipt'},
-  {id:'warranty', label:'Warranty', icon:'tool'},
-  {id:'licence', label:'Licence', icon:'car'},
-  {id:'insurance', label:'Insurance', icon:'umbrella'},
-  {id:'other', label:'Other', icon:'doc'}
+  {id:'id', label:'ID proof', icon:'id', keepOfflineDefault:true},
+  {id:'bill', label:'Bill', icon:'receipt', keepOfflineDefault:true},
+  {id:'warranty', label:'Warranty', icon:'tool', keepOfflineDefault:true},
+  {id:'licence', label:'Licence', icon:'car', keepOfflineDefault:true},
+  {id:'insurance', label:'Insurance', icon:'umbrella', keepOfflineDefault:true},
+  {id:'other', label:'Other', icon:'doc', keepOfflineDefault:true}
 ];
 const EXPIRED_REMINDER_GRACE_DAYS = 30; // how long an already-expired doc keeps nagging in "Renewals coming up"
 // Display-only mirror of DIGEST_MILESTONE_DAYS in apps-script/Code.gs (the backend digest job is
@@ -860,7 +866,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.14 · 13:10';
+const APP_VERSION = '2026.09.14 · 15:41';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1339,6 +1345,13 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.14 · 15:41',
+    items: [
+      "Categories in Settings now show the \"keep offline\" switch right on the category row itself, instead of as a separate row underneath — one compact row per category.",
+      "New categories, and the six categories every account starts with, now default to keeping their documents offline (previously off by default)."
+    ]
+  },
   {
     version: '2026.09.14 · 13:10',
     items: [
@@ -2737,12 +2750,12 @@ async function provisionVault(){
   for(let i=0; i<DEFAULT_CATEGORIES.length; i++){
     const c = DEFAULT_CATEGORIES[i];
     const driveFolderId = await driveFindOrCreateFolder(c.label, vaultFolderId);
-    categories.push({id:c.id, label:c.label, icon:c.icon, driveFolderId, order:i});
+    categories.push({id:c.id, label:c.label, icon:c.icon, driveFolderId, order:i, keepOfflineDefault: !!c.keepOfflineDefault});
   }
   await userDoc().collection('meta').doc('vault').set({vaultFolderId, createdAt: new Date().toISOString()});
   const batch = db.batch();
   categories.forEach(c => {
-    batch.set(userDoc().collection('categories').doc(c.id), {label:c.label, icon:c.icon, driveFolderId:c.driveFolderId, order:c.order});
+    batch.set(userDoc().collection('categories').doc(c.id), {label:c.label, icon:c.icon, driveFolderId:c.driveFolderId, order:c.order, keepOfflineDefault:c.keepOfflineDefault});
   });
   await batch.commit();
   state.vaultFolderId = vaultFolderId;
@@ -3847,40 +3860,41 @@ function renderSettings(app){
         ${!categoriesCollapsed ? `
           ${state.categories.map((c,i) => {
             // Not-yet-cached, non-deleted documents currently in this category — turning the
-            // keep-offline switch below ON now offers to cache exactly this backlog too (see
-            // toggleCategoryKeepOfflineDefault), so the hint/link under the switch only needs to
-            // cover the two cases that switch doesn't already handle: OFF with a backlog waiting
-            // (informational), or ON with a backlog left over from a past failed/partial run
-            // (a small retry link, reusing the same requestCacheCategoryDocuments confirmation).
+            // keep-offline switch ON now offers to cache exactly this backlog too (see
+            // toggleCategoryKeepOfflineDefault), so the hint/link below only needs to cover the two
+            // cases that switch doesn't already handle: OFF with a backlog waiting (informational),
+            // or ON with a backlog left over from a past failed/partial run (a small retry link,
+            // reusing the same requestCacheCategoryDocuments confirmation).
             const catPendingCount = state.documents.filter(d => d.category === c.id && !d.deletedAt && !state.offlineDocIds.has(d.id)).length;
             const catMenuOpen = state.openCategoryMenu === c.id;
             const offlineSubline = categoryCacheRunningIds.has(c.id)
-              ? `<br><span class="cat-offline-hint" id="cacheCatStatus-${c.id}">Caching…</span>`
+              ? `<span class="cat-offline-hint" id="cacheCatStatus-${c.id}">Caching…</span>`
               : catPendingCount === 0 ? ''
               : c.keepOfflineDefault
-                ? `<br><button type="button" class="cat-offline-hint-link" data-cache-cat="${c.id}">Retry caching ${catPendingCount} document${catPendingCount===1?'':'s'}</button>`
-                : `<br><span class="cat-offline-hint">${catPendingCount} existing document${catPendingCount===1?'':'s'} not cached yet</span>`;
+                ? `<button type="button" class="cat-offline-hint-link" data-cache-cat="${c.id}">Retry caching ${catPendingCount} document${catPendingCount===1?'':'s'}</button>`
+                : `<span class="cat-offline-hint">${catPendingCount} existing document${catPendingCount===1?'':'s'} not cached yet</span>`;
             return `
-            <div class="cat-manage-row">
-              <span class="cm-icon">${categoryIconHtml(c, 17)}</span>
-              <span class="cm-label">${escapeHtml(c.label)}</span>
-              <div class="action-menu-wrap">
-                <button class="icon-only-btn small" data-cat-menu-toggle="${c.id}" aria-label="More actions for ${escapeHtml(c.label)}" aria-haspopup="true" aria-expanded="${catMenuOpen}">${icon('more',18)}</button>
-                ${catMenuOpen ? `
-                  <div class="action-menu" id="catActionMenu-${c.id}">
-                    ${state.categories.length > 1 ? `
-                      <button data-cat-menu-action="up" data-cat="${c.id}" ${(i===0 || categoryReorderInFlight) ? 'disabled' : ''}><span style="display:inline-flex;transform:rotate(180deg);">${icon('chevronDown',15)}</span> Move up</button>
-                      <button data-cat-menu-action="down" data-cat="${c.id}" ${(i===state.categories.length-1 || categoryReorderInFlight) ? 'disabled' : ''}>${icon('chevronDown',15)} Move down</button>
-                    ` : ''}
-                    <button data-cat-menu-action="rename" data-cat="${c.id}">${icon('edit',15)} Rename</button>
-                    <button class="danger" data-cat-menu-action="delete" data-cat="${c.id}">${icon('trash',15)} Delete</button>
-                  </div>
-                ` : ''}
+            <div class="cat-item">
+              <div class="cat-manage-row">
+                <span class="cm-icon">${categoryIconHtml(c, 17)}</span>
+                <span class="cm-label">${escapeHtml(c.label)}</span>
+                <span class="cm-offline-label" id="catOfflineLabel-${c.id}">Offline</span>
+                ${catKeepOfflineSwitchHtml(c)}
+                <div class="action-menu-wrap">
+                  <button class="icon-only-btn small" data-cat-menu-toggle="${c.id}" aria-label="More actions for ${escapeHtml(c.label)}" aria-haspopup="true" aria-expanded="${catMenuOpen}">${icon('more',18)}</button>
+                  ${catMenuOpen ? `
+                    <div class="action-menu" id="catActionMenu-${c.id}">
+                      ${state.categories.length > 1 ? `
+                        <button data-cat-menu-action="up" data-cat="${c.id}" ${(i===0 || categoryReorderInFlight) ? 'disabled' : ''}><span style="display:inline-flex;transform:rotate(180deg);">${icon('chevronDown',15)}</span> Move up</button>
+                        <button data-cat-menu-action="down" data-cat="${c.id}" ${(i===state.categories.length-1 || categoryReorderInFlight) ? 'disabled' : ''}>${icon('chevronDown',15)} Move down</button>
+                      ` : ''}
+                      <button data-cat-menu-action="rename" data-cat="${c.id}">${icon('edit',15)} Rename</button>
+                      <button class="danger" data-cat-menu-action="delete" data-cat="${c.id}">${icon('trash',15)} Delete</button>
+                    </div>
+                  ` : ''}
+                </div>
               </div>
-            </div>
-            <div class="settings-row">
-              <span>Keep ${escapeHtml(c.label)} documents offline by default${offlineSubline}</span>
-              ${catKeepOfflineSwitchHtml(c)}
+              ${offlineSubline ? `<div class="cat-offline-subline-row">${offlineSubline}</div>` : ''}
             </div>
           `; }).join('')}
           <button class="ghost" id="addCategoryBtn">+ Add category</button>
@@ -8503,8 +8517,11 @@ async function saveNewCategory(){
     const id = 'cat_' + Date.now();
     const driveFolderId = await driveCreateFolder(label, state.vaultFolderId);
     const order = Math.max(-1, ...state.categories.map(c => c.order)) + 1;
-    await userDoc().collection('categories').doc(id).set({label, icon: iconKey, driveFolderId, order});
-    state.categories.push({id, label, icon: iconKey, driveFolderId, order});
+    // Defaults on: a category you've just deliberately created is very likely one you'll want
+    // available offline from the start, same reasoning as the stock categories every new account
+    // starts with — off is still one tap away in Settings for anyone who wants it that way.
+    await userDoc().collection('categories').doc(id).set({label, icon: iconKey, driveFolderId, order, keepOfflineDefault: true});
+    state.categories.push({id, label, icon: iconKey, driveFolderId, order, keepOfflineDefault: true});
     closeModal();
     toast('Category created');
   } catch(e){
