@@ -831,7 +831,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.14 · 06:36';
+const APP_VERSION = '2026.09.14 · 06:52';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -944,6 +944,12 @@ function defaultCollapsedSettingsGroups(){
 
 const state = {
   screen: 'checking', // 'checking' | 'login' | 'reconnect' | 'vault' | 'settings' | 'quickref' | 'upcoming'
+  // 'upcoming' is the only screen reachable from more than one place (the vault's own "Renewals >
+  // See all" link, or Settings' "See every document expiring soon" View button) — everything else
+  // only ever opens from 'vault', so clearTopLayerState() can safely hardcode returning there. This
+  // records whichever screen was active right before navigating to 'upcoming', so Back actually
+  // returns to Settings when that's where it was opened from, instead of skipping past it to vault.
+  upcomingReturnScreen: null,
   user: null,           // {name, email, uid, photoURL}
   driveAccessToken: null,     // OAuth token for Drive API calls; separate from the Firebase auth session
   driveTokenExpiresAt: null,  // ms epoch; Google doesn't silently refresh this client-side (no backend)
@@ -1193,7 +1199,8 @@ function clearTopLayerState(){
   } else if(state.showDeleted){
     state.showDeleted = false;
   } else if(state.screen === 'settings' || state.screen === 'quickref' || state.screen === 'upcoming'){
-    state.screen = 'vault';
+    state.screen = (state.screen === 'upcoming' && state.upcomingReturnScreen) ? state.upcomingReturnScreen : 'vault';
+    state.upcomingReturnScreen = null;
     state.quickRefSearchQuery = '';
   }
 }
@@ -1301,6 +1308,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.14 · 06:52',
+    items: [
+      "Fixed: going back from \"See every document expiring soon\" (opened from Settings) landed on the main Vault screen instead of returning to Settings."
+    ]
+  },
   {
     version: '2026.09.14 · 06:36',
     items: [
@@ -3949,7 +3962,7 @@ function renderSettings(app){
   if(forgotQrPassphraseBtn) forgotQrPassphraseBtn.onclick = () => { state.modal = 'quickRefForgotPassphrase'; pushAppHistoryState(); render(); };
 
   const viewUpcomingBtn = document.getElementById('viewUpcomingBtn');
-  if(viewUpcomingBtn) viewUpcomingBtn.onclick = () => { state.screen = 'upcoming'; pushAppHistoryState(); render(); };
+  if(viewUpcomingBtn) viewUpcomingBtn.onclick = () => { state.upcomingReturnScreen = state.screen; state.screen = 'upcoming'; pushAppHistoryState(); render(); };
   const emailDigestSwitch = document.getElementById('emailDigestSwitch');
   if(emailDigestSwitch) emailDigestSwitch.onchange = toggleEmailDigest;
   const pushSwitch = document.getElementById('pushSwitch');
@@ -4775,7 +4788,7 @@ function renderVault(app){
   // Only rendered alongside the Renewals section itself (see the template above), same reasoning
   // as openSettingsBtn/openQuickRefBtn's null-guards.
   const seeAllUpcomingBtn = document.getElementById('seeAllUpcomingBtn');
-  if(seeAllUpcomingBtn) seeAllUpcomingBtn.onclick = () => { state.screen = 'upcoming'; pushAppHistoryState(); render(); };
+  if(seeAllUpcomingBtn) seeAllUpcomingBtn.onclick = () => { state.upcomingReturnScreen = state.screen; state.screen = 'upcoming'; pushAppHistoryState(); render(); };
   const enterSelectModeBtn = document.getElementById('enterSelectModeBtn');
   if(enterSelectModeBtn) enterSelectModeBtn.onclick = () => enterSelectMode();
   const exitSelectModeBtn = document.getElementById('exitSelectModeBtn');
@@ -8824,7 +8837,7 @@ function resetToLoggedOutState(){
     vaultFolderId: null, deletedFolderId: null, categories: [], documents: [], modal: null, quickRefsDriveFileId: null,
     searchQuery: '', showArchived: false, showDeleted: false, collapsedCats: {},
     collapsedSettingsGroups: defaultCollapsedSettingsGroups(), // fresh collapsed defaults for the next sign-in — see that function's own comment
-    openActionMenu: null, openCategoryMenu: null, isOfflineMode: false,
+    openActionMenu: null, openCategoryMenu: null, upcomingReturnScreen: null, isOfflineMode: false,
     selectMode: false, selectedDocIds: new Set(), // no stale bulk-select state should survive into the next signed-in session
     keepOfflineInFlightIds: new Set(), // no stale "downloading" markers should survive into the next signed-in session
     // A derived Quick Reference encryption key is exactly the kind of in-memory secret that must
