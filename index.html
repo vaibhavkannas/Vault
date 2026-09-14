@@ -13,6 +13,13 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
 <meta name="theme-color" content="#1a73e8">
+<!-- iOS Safari (including the installed Home Screen / standalone PWA) doesn't read theme-color for
+     its own status bar at all — apple-mobile-web-app-status-bar-style is the one tag that does, so
+     without it the status bar stayed opaque light/dark-text regardless of the app's actual theme.
+     apple-mobile-web-app-capable is what puts the app in standalone mode in the first place, needed
+     for status-bar-style to have any effect. Both toggled below alongside theme-color. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <script>
   // Applied before first paint so there's no flash of the wrong theme (or the wrong OS chrome
   // color alongside it) on load.
@@ -21,6 +28,10 @@
     if(saved === 'dark' || saved === 'light') document.documentElement.setAttribute('data-theme', saved);
     const isDark = saved === 'dark' || (saved !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
     document.querySelector('meta[name="theme-color"]').setAttribute('content', isDark ? '#111214' : '#1a73e8');
+    // black-translucent draws the app's own background under the iOS status bar (paired with the
+    // safe-area-inset-top padding on header.topbar/.login-screen below) instead of leaving it a
+    // fixed opaque bar that visibly clashes with the dark theme's background right underneath it.
+    document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]').setAttribute('content', isDark ? 'black-translucent' : 'default');
   } catch(e){}
 </script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
@@ -87,8 +98,16 @@
   @media (prefers-reduced-motion: reduce){
     *{animation-duration:0.001ms !important; animation-iteration-count:1 !important; transition-duration:0.001ms !important;}
   }
-  .app{max-width:480px;margin:0 auto;min-height:100vh;background:var(--paper);position:relative;}
-  header.topbar{display:flex;align-items:center;justify-content:space-between;padding:20px 16px 12px;}
+  /* dvh after vh (not instead of it — older engines that don't understand dvh just keep the vh
+     value, a browser ignores a whole declaration it can't parse rather than falling back within it):
+     in an ordinary (non-installed) mobile tab, vh is pinned to the toolbar-hidden viewport height, so
+     these recompute and visibly reflow every time Safari/Chrome's own address bar shows or hides;
+     dvh tracks the actual visible viewport instead. */
+  .app{max-width:480px;margin:0 auto;min-height:100vh;min-height:100dvh;background:var(--paper);position:relative;}
+  /* The viewport meta's viewport-fit=cover opts into drawing content under the iOS status bar/notch/
+     Dynamic Island — env(safe-area-inset-top) is what actually reserves room for it again, without
+     which this (the topmost thing on every screen) sat right against or under the status bar. */
+  header.topbar{display:flex;align-items:center;justify-content:space-between;padding:max(20px, env(safe-area-inset-top)) 16px 12px;}
   .topbar-actions{display:flex;align-items:center;gap:2px;}
   /* Bulk multi-select mode's topbar (see renderVault) — replaces the Quick Reference/Settings
      icons with a plain count label plus a single Cancel (×), reusing .icon-only-btn for that × so
@@ -97,7 +116,10 @@
   .select-count-label{font-size:13.5px;font-weight:500;color:var(--ink);white-space:nowrap;}
   .brand{display:flex;align-items:center;gap:10px;}
   .brand-mark{width:36px;height:36px;border-radius:28%;background:var(--brass);display:flex;align-items:center;justify-content:center;flex:none;}
-  .brand-name{font-size:22px;font-weight:400;letter-spacing:0;}
+  /* Now an <h1> (each screen's own page title — see the Vault/Settings/Quick Reference/Recently
+     Deleted/Upcoming markup), so its browser-default block margin needs zeroing to sit inline with
+     its topbar/settings-header flex siblings exactly as the plain <div> it used to be did. */
+  .brand-name{font-size:22px;font-weight:400;letter-spacing:0;margin:0;}
   /* A plain static dot reads as decoration, not status — the dot itself stays put (so it's never
      mistaken for a loading spinner) and a periodic expanding, fading ring around it is what
      actually signals "live". Online pulses slow and quiet (a reassuring background fact); offline
@@ -113,7 +135,7 @@
   .conn-label{font-size:11px;font-weight:500;color:var(--danger);letter-spacing:0.2px;}
   @keyframes connPing{0%{transform:scale(1);opacity:0.55;}100%{transform:scale(2.6);opacity:0;}}
 
-  .login-screen{padding:56px 28px 40px;text-align:center;}
+  .login-screen{padding:max(56px, calc(env(safe-area-inset-top) + 24px)) 28px 40px;text-align:center;}
   /* The app-lock screen (renderLocked) adds this on top of the base rule above so it's always the
      topmost, unavoidable layer regardless of what else is in the document — a defense-in-depth
      backstop alongside renderLocked()'s own modal teardown, not a substitute for it. */
@@ -122,7 +144,9 @@
   .login-screen h1{font-weight:400;font-size:28px;margin:0 0 8px;}
   .checking-spinner{width:26px;height:26px;margin:20px auto 0;border:3px solid var(--surface-container);border-top-color:var(--brass);border-radius:50%;animation:spin 0.8s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
-  .version-tag{text-align:center;font-size:10px;color:var(--ink-soft);opacity:0.55;margin-top:16px;font-variant-numeric:tabular-nums;letter-spacing:0.04em;text-transform:uppercase;}
+  /* No opacity here — --ink-soft alone already passes WCAG AA against --paper/--paper-2 (~6:1
+     light, ~11:1 dark); alpha-blending it with opacity dropped that below 4.5:1 in both themes. */
+  .version-tag{text-align:center;font-size:10px;color:var(--ink-soft);margin-top:16px;font-variant-numeric:tabular-nums;letter-spacing:0.04em;text-transform:uppercase;}
   .login-screen p{color:var(--ink-soft);font-size:14px;line-height:1.55;margin:0 auto 30px;max-width:320px;}
   .google-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:12px 16px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius-full);font-size:14px;font-weight:500;color:var(--ink);cursor:pointer;box-shadow:var(--elevation-1);}
   .google-btn:active{transform:scale(0.98);}
@@ -141,7 +165,11 @@
      that one context rather than the shared default, which those other screens still need. */
   .settings-section .version-tag{text-align:left;text-transform:none;letter-spacing:normal;opacity:1;font-size:12px;margin-top:6px;}
 
-  input[type="text"], input[type="date"], input[type="password"], select, textarea{width:100%;padding:12px 14px;border:1px solid transparent;border-radius:var(--radius-sm);background:var(--surface-container);font-size:14px;color:var(--ink);margin-bottom:12px;font-family:inherit;}
+  /* font-size:16px, not 14px: iOS Safari auto-zooms the whole page on focus whenever a field's
+     computed font-size is under 16px, which fought directly with this app's own
+     maximum-scale=1,user-scalable=no viewport setting (chosen specifically so the app wouldn't have
+     to fight browser-level zoom) — focusing almost any field used to zoom the page in regardless. */
+  input[type="text"], input[type="date"], input[type="password"], select, textarea{width:100%;padding:12px 14px;border:1px solid transparent;border-radius:var(--radius-sm);background:var(--surface-container);font-size:16px;color:var(--ink);margin-bottom:12px;font-family:inherit;}
   input[type="text"]:focus, input[type="date"]:focus, input[type="password"]:focus, select:focus, textarea:focus{outline:2px solid var(--brass);outline-offset:-1px;}
   input[type="text"]:disabled{opacity:0.55;cursor:not-allowed;}
   input[type="password"]{letter-spacing:0.3em;}
@@ -167,8 +195,8 @@
 
   .vault{padding:8px 16px 86px;}
   .search-bar{position:relative;margin-bottom:14px;}
-  .search-bar input{margin-bottom:0;padding-left:44px;padding-right:40px;background:var(--surface-container);border-radius:var(--radius-full);box-shadow:var(--elevation-1);}
-  .search-clear{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;width:30px;height:30px;border:none;border-radius:50%;background:none;color:var(--ink-soft);cursor:pointer;}
+  .search-bar input{margin-bottom:0;padding-left:44px;padding-right:46px;background:var(--surface-container);border-radius:var(--radius-full);box-shadow:var(--elevation-1);}
+  .search-clear{position:absolute;right:3px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;width:40px;height:40px;border:none;border-radius:50%;background:none;color:var(--ink-soft);cursor:pointer;}
   .search-clear:hover{color:var(--ink);}
   .search-bar .sicon{position:absolute;left:15px;top:50%;transform:translateY(-50%);display:flex;color:var(--ink-soft);}
   .search-hint{font-size:11.5px;color:var(--ink-soft);margin:6px 2px 0;}
@@ -189,6 +217,12 @@
   .quick-actions button{flex:1;padding:11px 8px;background:var(--surface-container);border:none;border-radius:var(--radius-sm);font-size:13px;font-weight:500;cursor:pointer;color:var(--ink);}
 
   .section-title{font-size:13px;font-weight:500;color:var(--ink);margin:18px 4px 9px;display:flex;align-items:center;justify-content:space-between;}
+  /* .cat-toggle is the clickable variant (a whole category's collapse/expand control) — the plain
+     .section-title above has no padding at all, which is fine for a non-interactive label like
+     "Pinned", but left this one's actual tappable band only as tall as its 13px text (~16-18px),
+     well under a comfortable touch target. Padding added here instead of on the shared base rule,
+     with margin trimmed by the same amount so the visible gap around it is unchanged. */
+  .section-title.cat-toggle{margin:8px 4px 0;padding:10px 0 9px;}
   .cat-toggle{cursor:pointer;user-select:none;}
   .cat-title-label{display:inline-flex;align-items:center;gap:7px;}
   .cat-count{font-weight:400;color:var(--ink-soft);font-size:12px;display:inline-flex;align-items:center;gap:2px;}
@@ -226,11 +260,7 @@
   .renewal-title{font-size:13px;font-weight:500;color:var(--ink);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .renewal-days{font-size:11.5px;font-weight:500;color:var(--success);}
   .renewal-card.urgent .renewal-days{color:var(--danger);}
-  .renewal-actions{display:flex;gap:2px;margin:6px 0 -4px -6px;}
-  /* .icon-only-btn.small (two classes) otherwise outranks a plain "button" element selector here,
-     so the intended 28px compact size never actually applied — matching its own specificity by
-     naming the class here too, rather than reaching for !important. */
-  .renewal-actions button.icon-only-btn{width:28px;height:28px;padding:0;}
+  .renewal-actions{display:flex;gap:8px;margin:6px 0 -4px -6px;}
   .renewal-actions svg{width:14px;height:14px;}
 
   /* Staggered entrance for freshly-inserted rows (renewal cards, doc cards, quick-ref rows) — an
@@ -254,12 +284,14 @@
   */
 
   .doc-card{background:var(--paper-2);border-radius:var(--radius);padding:12px;margin-bottom:8px;display:flex;gap:11px;align-items:flex-start;box-shadow:var(--elevation-1);}
-  /* Scoped to the icon/title/meta/snippet only, not the whole card — dimming .doc-actions too made
-     the ⋮ overflow menu (and View/Share) look disabled/unclickable, when they're fully usable. */
-  .doc-card.is-archived .doc-icon, .doc-card.is-archived .doc-title,
-  .doc-card.is-archived .doc-meta, .doc-card.is-archived .doc-snippet{opacity:0.65;}
-  .doc-card.is-offline-unavailable .doc-icon, .doc-card.is-offline-unavailable .doc-title,
-  .doc-card.is-offline-unavailable .doc-meta, .doc-card.is-offline-unavailable .doc-snippet{opacity:0.55;}
+  /* Scoped to the icon only, not the title/meta/snippet text — dimming .doc-actions too made the ⋮
+     overflow menu (and View/Share) look disabled/unclickable, when they're fully usable, and dimming
+     the TEXT with opacity alpha-blended it into the card background below WCAG AA contrast (as low
+     as ~2.35:1 for offline-unavailable text) even though the underlying --ink/--ink-soft colors pass
+     comfortably on their own. The icon alone still reads as "muted" at a glance; the text stays fully
+     legible. */
+  .doc-card.is-archived .doc-icon{opacity:0.65;}
+  .doc-card.is-offline-unavailable .doc-icon{opacity:0.55;}
   /* Bulk multi-select mode (see renderDocCard/renderVault) — a checked card gets a tinted
      background so the selection is obvious at a glance across a whole grid of cards, same
      --primary-container tint the ⋮ menu's own hover state already uses elsewhere. */
@@ -278,7 +310,11 @@
   .doc-snippet{font-size:12px;color:var(--ink-soft);margin:4px 0 0;background:var(--surface-container);padding:6px 9px;border-radius:8px;}
   .doc-snippet mark{background:var(--primary-container);color:var(--on-primary-container);padding:0 1px;border-radius:2px;}
   .doc-expiry{font-size:11.5px;margin-top:4px;display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:20px;}
-  .doc-actions{display:flex;align-items:center;gap:6px;margin-top:8px;}
+  /* flex-wrap so View + Share + the conditional Renew + the kebab menu wrap to a second line
+     instead of forcing the whole doc-card (and the page) wider than the viewport — verified this was
+     happening on every expired document at a 320px width, not just an unusually-long-label edge
+     case. */
+  .doc-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:8px;}
   .chip-btn{background:var(--primary-container);color:var(--on-primary-container);border:none;border-radius:8px;padding:10px 14px;font-size:12.5px;font-weight:500;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:5px;min-height:20px;}
   .chip-btn.secondary{background:none;color:var(--ink-soft);padding:10px 12px;}
   .chip-btn.danger{background:var(--danger-bg);color:var(--danger);}
@@ -321,10 +357,12 @@
   .icon-pick-btn{width:44px;height:44px;border-radius:50%;border:1px solid var(--line);background:var(--paper-2);color:var(--ink-soft);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;}
   .icon-pick-btn.selected{background:var(--primary-container);color:var(--on-primary-container);border-color:transparent;}
   .action-menu-wrap{position:relative;margin-left:auto;}
-  .action-menu{position:absolute;right:0;top:44px;background:var(--paper-2);border-radius:12px;box-shadow:var(--elevation-2);padding:6px;min-width:170px;z-index:20;display:flex;flex-direction:column;}
-  .action-menu button{background:none;border:none;text-align:left;padding:10px 12px;font-size:13.5px;color:var(--ink);border-radius:8px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:9px;white-space:nowrap;}
+  .action-menu{position:absolute;right:0;top:44px;background:var(--paper-2);border-radius:12px;box-shadow:var(--elevation-2);padding:6px;min-width:170px;z-index:20;display:flex;flex-direction:column;gap:2px;}
+  .action-menu button{background:none;border:none;text-align:left;padding:13px 12px;font-size:13.5px;color:var(--ink);border-radius:8px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:9px;white-space:nowrap;}
   .action-menu button:hover{background:var(--surface-container);}
-  .action-menu button.danger{color:var(--danger);}
+  /* A visual break before the destructive action, so a fat-finger tap landing one row off doesn't
+     land on Delete by accident, and it reads as separate from the routine actions above it. */
+  .action-menu button.danger{color:var(--danger);border-top:1px solid var(--line);border-radius:0 0 8px 8px;margin-top:4px;padding-top:14px;}
 
   .empty-state{text-align:center;padding:40px 20px;color:var(--ink-soft);font-size:13.5px;}
 
@@ -343,7 +381,11 @@
      --paper is the page's own background — using it here too was exactly why the sheet visually
      merged into the page behind it, with only the backdrop dimming (and not much else) marking
      where one ends and the other begins. */
-  .modal-sheet{width:100%;max-width:480px;background:var(--paper-2);border-radius:28px 28px 0 0;padding:22px 20px 28px;max-height:88vh;overflow-y:auto;overscroll-behavior:contain;animation:sheetSlideUp 0.24s cubic-bezier(0.05,0.7,0.1,1);position:relative;}
+  /* Same idea as .fab/.toast just above: a flat bottom padding put every sheet's trailing
+     primary/danger button closer to the iPhone home-indicator than the FAB sits, and a flat
+     horizontal padding doesn't clear the safe-area inset that moves to the sides in landscape on a
+     notched/Dynamic-Island iPhone. */
+  .modal-sheet{width:100%;max-width:480px;background:var(--paper-2);border-radius:28px 28px 0 0;padding:22px max(20px, env(safe-area-inset-right)) max(28px, calc(env(safe-area-inset-bottom) + 8px)) max(20px, env(safe-area-inset-left));max-height:88vh;max-height:88dvh;overflow-y:auto;overscroll-behavior:contain;animation:sheetSlideUp 0.24s cubic-bezier(0.05,0.7,0.1,1);position:relative;}
   @keyframes overlayFadeIn{from{opacity:0;}to{opacity:1;}}
   @keyframes sheetSlideUp{from{transform:translateY(28px);opacity:0;}to{transform:translateY(0);opacity:1;}}
   .modal-sheet h3{font-weight:400;font-size:20px;margin:0 0 4px;}
@@ -355,7 +397,7 @@
      actually gets scaled (see wireViewFileZoom()). A scaled-up element still expands its parent's
      scrollable region in every modern browser, so panning a zoomed document is just this
      container's own native scroll/touch-drag — no custom pan-dragging code needed for it. */
-  #viewFileContent{overflow:auto;max-height:65vh;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;overscroll-behavior:contain;}
+  #viewFileContent{overflow:auto;max-height:65vh;max-height:65dvh;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;overscroll-behavior:contain;}
   .view-zoom-inner{transform-origin:0 0;touch-action:pan-x pan-y;}
   label.field-label{font-size:12px;font-weight:500;color:var(--ink-soft);display:block;margin-bottom:6px;}
   /* Floats in the corner instead of its own full-width row above the title — the previous stacked
@@ -363,7 +405,7 @@
      needlessly tall, mostly-empty header before any real content ever showed. Sharing one compact
      band with the handle below fixes that for every sheet at once. */
   .modal-close{position:absolute;top:10px;right:10px;z-index:1;}
-  .modal-close button{background:none;border:none;font-size:20px;color:var(--ink-soft);cursor:pointer;padding:6px;border-radius:50%;}
+  .modal-close button{background:none;border:none;font-size:20px;color:var(--ink-soft);cursor:pointer;padding:0;border-radius:50%;min-width:40px;min-height:40px;display:flex;align-items:center;justify-content:center;}
   .modal-close button:hover{background:var(--surface-container);}
   /* Drag-to-dismiss handle: dragging content itself only ever counts as a dismiss attempt when
      it's already scrolled to the very top, so it can silently do nothing if that's ever untrue —
@@ -371,7 +413,10 @@
      actual touch target a proper ~44px even though the visible bar itself stays small and quiet.
      Present on every slide-in sheet now — renderModal()'s shared tail inserts one generically for
      any modal whose own markup didn't already include it, so this can't be missed again. */
-  .sheet-handle{display:flex;justify-content:center;padding:8px 0 10px;margin:-22px -20px 0;touch-action:none;cursor:grab;}
+  /* This is the only zone that can start a swipe-to-dismiss (see enableSwipeToDismiss's own
+     comment), so its padding — not just the visible pill's own size — needs to reach a real touch
+     target; 8px/10px only came to ~22px tall. */
+  .sheet-handle{display:flex;justify-content:center;padding:14px 0 16px;margin:-28px -20px -6px;touch-action:none;cursor:grab;}
   .sheet-handle::before{content:'';width:36px;height:4px;border-radius:2px;background:var(--line);}
   .file-drop{border:1.5px dashed var(--line);border-radius:var(--radius-sm);padding:18px;text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;cursor:pointer;background:var(--surface-container);}
   .file-drop.has-file{color:var(--success);background:var(--success-bg);}
@@ -409,6 +454,12 @@
   .page-thumb-wrap{position:relative;flex:none;}
   .page-thumb{width:56px;height:56px;border-radius:10px;object-fit:cover;display:block;cursor:pointer;}
   .page-thumb-del{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--danger);color:var(--on-danger);border:2px solid var(--paper);font-size:13px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;}
+  /* The visible 20px dot stays that size (it sits right on a 56px thumbnail's corner, deliberately
+     small) — this invisible layer is what a finger actually has to land on, same pattern as
+     .crop-handle::before. Capped at 32px rather than the usual ~40-44px: these thumbnails sit only
+     8px apart in a horizontally-scrolling strip, so a larger hit area would start overlapping the
+     neighboring thumbnail's own tap target instead of just this button's. */
+  .page-thumb-del::before{content:'';position:absolute;top:50%;left:50%;width:32px;height:32px;transform:translate(-50%,-50%);}
   /* Sized to the image's own rendered box (inline-block shrinks to content) so the crop quad's
      points land directly in the image's on-screen coordinate space — no letterboxing offset math
      needed anywhere in wireCropOverlay(). */
@@ -512,12 +563,17 @@
   .settings-header{display:flex;align-items:center;gap:14px;padding:20px 16px 14px;}
   .settings{padding:12px 20px 60px;}
   .settings-section{margin-bottom:28px;}
-  .settings-section h4{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);margin:0 0 10px;font-weight:500;}
-  /* Clickable h4 for one of Settings' collapsible groups — same base look as the plain section
-     h4 above (uppercase, small, muted), plus the layout needed for a chevron on the right and a
+  /* h2, not h4 — Settings' own title (now a real h1, see .brand-name) had nothing but bare <h4>s
+     under it anywhere on the screen, so a screen-reader user jumping by heading level either found
+     nothing or landed straight on "Account" as if it were the top-level heading. */
+  .settings-section h2{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);margin:0 0 10px;font-weight:500;}
+  /* Clickable h2 for one of Settings' collapsible groups — same base look as the plain section
+     h2 above (uppercase, small, muted), plus the layout needed for a chevron on the right and a
      tap target across the whole row. The chevron itself reuses .cat-chevron (see the vault's own
      category-collapse headers) rather than defining a second copy of the same rotate transition. */
-  .settings-group-header{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;user-select:none;}
+  /* padding (not just the inherited margin from .settings-section h4 above) so the actual tappable
+     band reaches a comfortable touch-target height instead of just the 12px text's own line-height. */
+  .settings-group-header{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;user-select:none;padding:10px 0;margin-bottom:2px;}
   /* A light sub-label distinguishing two merged topics inside one collapsible group (e.g. "App
      lock" vs "Quick Reference encryption" inside Security & Privacy) — deliberately smaller/lighter
      than the group's own h4 so it never reads as a peer heading, just a divider between two halves. */
@@ -545,15 +601,37 @@
   .quickref-value{font-size:13px;color:var(--ink-soft);font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:0.03em;word-break:break-all;margin:0;}
   .quickref-actions{display:flex;flex:none;}
   .settings-row button{flex:none;}
-  .cat-manage-row{display:flex;align-items:center;gap:10px;background:var(--paper-2);border-radius:var(--radius);padding:10px 12px;margin-bottom:8px;box-shadow:var(--elevation-1);}
+  /* flex-wrap so a narrow phone that can't fit icon + label + all 4 action buttons on one line
+     wraps the whole action-button group to a second line, instead of forcing the row (and the whole
+     page) wider than the viewport — verified this was happening even with the app's own stock
+     category labels at 320px, not just long custom ones. */
+  .cat-manage-row{display:flex;align-items:center;gap:10px;background:var(--paper-2);border-radius:var(--radius);padding:10px 12px;margin-bottom:8px;box-shadow:var(--elevation-1);flex-wrap:wrap;}
   .cat-manage-row .cm-icon{width:32px;height:32px;border-radius:50%;background:var(--primary-container);color:var(--on-primary-container);display:flex;align-items:center;justify-content:center;flex:none;}
-  .cat-manage-row .cm-label{flex:1;font-size:13.5px;}
+  .cat-manage-row .cm-label{flex:1;min-width:60px;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  /* Grouped so flex-wrap above moves all four action buttons together as one unit, rather than
+     wrapping mid-group into an inconsistent split. Slightly larger than the shared .icon-btn default
+     (used elsewhere for lighter contexts) since this row's up/down/Rename/Delete are the main way to
+     manage a category on mobile. */
+  .cat-manage-row .cm-actions{display:flex;flex:none;gap:8px;margin-left:auto;}
+  .cat-manage-row .cm-actions .icon-btn{padding:9px 12px;font-size:13px;}
+  .cat-manage-row .cm-actions .icon-btn.danger{margin-left:4px;}
   .danger-zone{border-radius:16px;padding:14px;background:var(--danger-bg);}
   .danger-zone p{font-size:12.5px;color:var(--ink-soft);margin:0 0 12px;}
   .theme-toggle-row{display:flex;gap:8px;}
   .theme-toggle-row button{flex:1;padding:11px;border-radius:var(--radius-full);border:1px solid var(--line);background:var(--paper-2);color:var(--ink);cursor:pointer;font-size:13px;font-family:inherit;}
   .theme-toggle-row button.active{background:var(--primary-container);color:var(--on-primary-container);border-color:transparent;}
 
+  /* Tablet-portrait (roughly 600-859px — iPad Mini/Air/Pro portrait, most Android tablets in
+     portrait): previously the ONLY breakpoint was the 860px one below, so this whole range rendered
+     as the exact same 480px-capped single-column phone layout as a narrow phone, with large dead
+     margins on both sides (measured live at a 768px viewport: .app pinned to 480px wide, 288px/37.5%
+     of empty background gutter on each side, the multi-column grid below never engaging). Not a
+     broken/overflowing render, just an unaddressed middle range — this widens the shell and turns on
+     a 2-column grid without going as far as the full desktop treatment below. */
+  @media (min-width:600px){
+    .app{max-width:700px;}
+    .doc-card-grid{display:grid;grid-template-columns:repeat(auto-fill, minmax(260px,1fr));gap:10px;}
+  }
   /* Responsive: wider viewports get real desktop treatment, not a stretched mobile column */
   @media (min-width:860px){
     .app{max-width:1100px;}
@@ -563,6 +641,17 @@
     .fab{max-width:1100px;justify-content:flex-end;padding-right:40px;}
     .modal-overlay{align-items:center;}
     .modal-sheet{border-radius:16px;max-width:520px;}
+  }
+  /* Short/landscape viewports (a phone rotated sideways, ~375-430px tall): the camera preview's
+     fixed 3:4 aspect-ratio and the crop image's 56vh cap were both sized only for portrait use and,
+     measured live at e.g. 667x375, computed to roughly 1.7x the entire modal sheet's own available
+     height on their own, before the header/controls/buttons underneath were even counted — forcing
+     ~250-300px of scrolling just to reach Capture or "Use this crop". object-fit:cover on the video
+     (see .camera-wrap video/canvas) means capping height here just crops the preview a bit more
+     tightly, it doesn't distort or break it. */
+  @media (max-height:500px){
+    .camera-wrap{max-height:32vh;}
+    .crop-stage img{max-height:34vh;}
   }
 </style>
 </head>
@@ -744,7 +833,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.13 · 22:58';
+const APP_VERSION = '2026.09.14 · 06:16';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -784,6 +873,10 @@ const ICONS = {
   tag: '<path d="M20.59 13.41L13.42 20.59a2 2 0 0 1-2.83 0l-8.18-8.18A2 2 0 0 1 2 11V4a2 2 0 0 1 2-2h7a2 2 0 0 1 1.41.59l8.18 8.18a2 2 0 0 1 0 2.83z"></path><circle cx="7.5" cy="7.5" r="1.3" fill="currentColor" stroke="none"></circle>'
 };
 const CATEGORY_ICON_KEYS = ['id','receipt','tool','car','umbrella','shield','doc','folder','star','heart','home','calendar','key','clipboard','camera','share'];
+// Human-readable names for the icon-only picker buttons below (icon() itself renders aria-hidden
+// SVGs, so without this every button in the picker announces as an indistinguishable bare "button"
+// to a screen reader).
+const CATEGORY_ICON_LABELS = {id:'ID card', receipt:'Receipt', tool:'Tool', car:'Car', umbrella:'Insurance', shield:'Shield', doc:'Document', folder:'Folder', star:'Star', heart:'Heart', home:'Home', calendar:'Calendar', key:'Key', clipboard:'Clipboard', camera:'Camera', share:'Share'};
 
 function icon(key, size){
   size = size || 20;
@@ -815,8 +908,8 @@ function iconPickerHtml(inputId, selected){
   const sel = ICONS[selected] ? selected : 'doc';
   return `
     <input type="hidden" id="${inputId}" value="${sel}" />
-    <div class="icon-picker" id="${inputId}Picker">
-      ${CATEGORY_ICON_KEYS.map(key => `<button type="button" class="icon-pick-btn ${key===sel?'selected':''}" data-icon-key="${key}">${icon(key,18)}</button>`).join('')}
+    <div class="icon-picker" id="${inputId}Picker" role="group" aria-label="Icon">
+      ${CATEGORY_ICON_KEYS.map(key => `<button type="button" class="icon-pick-btn ${key===sel?'selected':''}" data-icon-key="${key}" aria-label="${CATEGORY_ICON_LABELS[key] || key}" aria-pressed="${key===sel}">${icon(key,18)}</button>`).join('')}
     </div>
   `;
 }
@@ -827,7 +920,11 @@ function wireIconPicker(inputId){
   wrap.querySelectorAll('[data-icon-key]').forEach(btn => {
     btn.onclick = () => {
       input.value = btn.getAttribute('data-icon-key');
-      wrap.querySelectorAll('[data-icon-key]').forEach(b => b.classList.toggle('selected', b===btn));
+      wrap.querySelectorAll('[data-icon-key]').forEach(b => {
+        const isSel = b===btn;
+        b.classList.toggle('selected', isSel);
+        b.setAttribute('aria-pressed', isSel);
+      });
     };
   });
 }
@@ -1043,13 +1140,30 @@ function safePushHistoryState(data){
 function currentHistorySeq(){
   return (history.state && typeof history.state.seq === 'number') ? history.state.seq : 0;
 }
+// Captured here (not in each individual "open X" function — there are dozens) since every one of
+// them calls pushAppHistoryState() right after setting the layer to open, while document.activeElement
+// is still whatever the user just clicked to get here. A full render() replaces the whole screen's
+// DOM (see the comment on renderModal() et al.), destroying that original element, so an id — not the
+// element reference itself — is what actually survives to be looked up again once the layer closes.
+let modalTriggerElementId = null;
 function pushAppHistoryState(){
+  modalTriggerElementId = (document.activeElement && document.activeElement.id) || null;
   // Whatever guard was armed underneath is no longer the topmost entry — clear the flag so
   // popping back out of THIS layer is treated as an ordinary layer-peel, not as "the exit guard
   // was just consumed" (that was the bug: guardArmed stayed stale/true from the very first arm,
   // so Back from Settings/Archive incorrectly triggered the exit-confirmation).
   guardArmed = false;
   safePushHistoryState({seq: currentHistorySeq() + 1});
+}
+// Restores keyboard focus to whatever opened the layer that just closed — without this, closing any
+// modal (or leaving Settings/Archived) dropped focus to <body>, forcing a keyboard/screen-reader user
+// to re-navigate from scratch instead of picking up where they left off.
+function restoreLayerTriggerFocus(){
+  const id = modalTriggerElementId;
+  modalTriggerElementId = null;
+  if(!id) return;
+  const el = document.getElementById(id);
+  if(el) el.focus();
 }
 function clearTopLayerState(){
   if(state.modal){
@@ -1092,6 +1206,7 @@ function goBackOneLayer(){
     // history.back() navigating away from the site entirely.
     clearTopLayerState();
     render();
+    restoreLayerTriggerFocus();
     armExitGuardIfIdle();
   }
 }
@@ -1157,6 +1272,7 @@ window.addEventListener('popstate', () => {
   }
   clearTopLayerState();
   render();
+  restoreLayerTriggerFocus();
   armExitGuardIfIdle();
 });
 
@@ -1186,6 +1302,19 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.14 · 06:16',
+    items: [
+      "Improved: touch targets across the app (close buttons, search-clear, settings/category rows, the kebab menu, renewal card buttons) are now comfortably tap-sized instead of tiny.",
+      "Fixed: on a narrow phone (320px), an expired document's action buttons and Settings' category rows could overflow the screen — they now wrap instead.",
+      "Fixed: on iPhone, focusing almost any text field zoomed the whole page in; the status bar and modal sheets now also clear the notch/Dynamic Island and home-indicator areas properly.",
+      "Fixed: archived/offline-unavailable document text was dimmed low enough to be hard to read — only the icon dims now, text stays fully legible.",
+      "Added: every form field now has a proper label for screen readers, dialogs announce their title, and closing one returns keyboard focus to what opened it.",
+      "Added: the crop screen's handles can now be adjusted with the keyboard (Tab to a handle, arrow keys to nudge), not just by touch.",
+      "Fixed: a Mac trackpad pinch no longer fights the browser's own zoom, and the camera screen now offers \"Upload a file instead\" if no camera is available.",
+      "Improved: tablets in portrait now get a wider two-column layout instead of a stretched phone-width column."
+    ]
+  },
   {
     version: '2026.09.13 · 22:58',
     items: [
@@ -2232,9 +2361,18 @@ window.addEventListener('offline', () => render());
 function isInsideZoomableViewer(target){
   return !!(target && target.closest && target.closest('#viewFileContent'));
 }
-document.addEventListener('gesturestart', (e) => {
-  if(!isInsideZoomableViewer(e.target)) e.preventDefault();
-});
+// 'gesturestart' isn't actually mobile-only — macOS Safari fires the exact same event for a
+// trackpad two-finger pinch, and with no touch/pointer-type hint on the event to tell the two
+// apart, this used to block a Mac user's ordinary trackpad pinch-to-zoom everywhere outside the
+// viewer, with no replacement. navigator.maxTouchPoints is 0 on a plain Mac (no touch digitizer at
+// all) and >0 on an actual touchscreen, so gating on it is what actually tells these apart. Inside
+// the viewer this doesn't matter either way — wireViewFileZoom() has its own gesturestart handler
+// that runs regardless of this guard.
+if(navigator.maxTouchPoints > 0){
+  document.addEventListener('gesturestart', (e) => {
+    if(!isInsideZoomableViewer(e.target)) e.preventDefault();
+  });
+}
 // Both touchstart AND touchmove: some browsers commit to their own native pinch-zoom gesture as
 // soon as a second finger touches down, before any touchmove ever fires — catching only touchmove
 // can be a beat too late for those. touch-action (see html/body's own rule) is the real fix for
@@ -3513,10 +3651,10 @@ async function completeReconnect(){
 function settingsGroupHeaderHtml(groupKey, label){
   const collapsed = !!state.collapsedSettingsGroups[groupKey];
   return `
-    <h4 class="settings-group-header" data-settings-group="${groupKey}" role="button" tabindex="0" aria-expanded="${!collapsed}">
+    <h2 class="settings-group-header" data-settings-group="${groupKey}" role="button" tabindex="0" aria-expanded="${!collapsed}">
       <span>${label}</span>
       <span class="cat-chevron ${collapsed ? 'collapsed' : ''}">${icon('chevronDown',15)}</span>
-    </h4>
+    </h2>
   `;
 }
 
@@ -3534,11 +3672,11 @@ function renderSettings(app){
   app.innerHTML = `
     <div class="settings-header">
       <button class="icon-only-btn" id="backToVaultBtn" aria-label="Back">${icon('back',22)}</button>
-      <div class="brand-name">Settings</div>
+      <h1 class="brand-name">Settings</h1>
     </div>
     <div class="settings">
       <div class="settings-section">
-        <h4>Account</h4>
+        <h2>Account</h2>
         <div class="acct-card">
           ${state.user.photoURL ? `<img class="acct-avatar" src="${state.user.photoURL}" alt="">` : `<div class="acct-avatar"></div>`}
           <div>
@@ -3550,7 +3688,7 @@ function renderSettings(app){
       </div>
 
       <div class="settings-section">
-        <h4>Appearance</h4>
+        <h2>Appearance</h2>
         <div class="theme-toggle-row">
           <button data-theme-choice="system" class="${currentTheme()==='system'?'active':''}" aria-pressed="${currentTheme()==='system'}">System</button>
           <button data-theme-choice="light" class="${currentTheme()==='light'?'active':''}" aria-pressed="${currentTheme()==='light'}">Light</button>
@@ -3601,12 +3739,14 @@ function renderSettings(app){
             <div class="cat-manage-row">
               <span class="cm-icon">${categoryIconHtml(c, 17)}</span>
               <span class="cm-label">${escapeHtml(c.label)}</span>
-              ${state.categories.length > 1 ? `
-                <button class="icon-btn" data-cat-move="${c.id}" data-cat-dir="up" aria-label="Move ${escapeHtml(c.label)} up" ${(i===0 || categoryReorderInFlight) ? 'disabled' : ''}>↑</button>
-                <button class="icon-btn" data-cat-move="${c.id}" data-cat-dir="down" aria-label="Move ${escapeHtml(c.label)} down" ${(i===state.categories.length-1 || categoryReorderInFlight) ? 'disabled' : ''}>↓</button>
-              ` : ''}
-              <button class="icon-btn" data-rename-cat="${c.id}">Rename</button>
-              <button class="icon-btn danger" data-delete-cat="${c.id}">Delete</button>
+              <div class="cm-actions">
+                ${state.categories.length > 1 ? `
+                  <button class="icon-btn" data-cat-move="${c.id}" data-cat-dir="up" aria-label="Move ${escapeHtml(c.label)} up" ${(i===0 || categoryReorderInFlight) ? 'disabled' : ''}>↑</button>
+                  <button class="icon-btn" data-cat-move="${c.id}" data-cat-dir="down" aria-label="Move ${escapeHtml(c.label)} down" ${(i===state.categories.length-1 || categoryReorderInFlight) ? 'disabled' : ''}>↓</button>
+                ` : ''}
+                <button class="icon-btn" data-rename-cat="${c.id}">Rename</button>
+                <button class="icon-btn danger" data-delete-cat="${c.id}">Delete</button>
+              </div>
             </div>
             <div class="settings-row">
               <span>Keep new "${escapeHtml(c.label)}" documents offline automatically</span>
@@ -3684,7 +3824,7 @@ function renderSettings(app){
           <div class="settings-row"><span>See a step-by-step tour of what Vault can do</span><button class="icon-btn" id="takeTourBtn">Take a tour</button></div>
           <button type="button" class="privacy-link" id="privacyLinkBtn">Privacy Policy</button>
           <div class="version-tag">Version ${APP_VERSION}</div>
-          <h4>Danger zone</h4>
+          <h2>Danger zone</h2>
           <div class="danger-zone">
             <p>Permanently deletes every document, the Vault folder in your Drive, and this sign-in account. This cannot be undone.</p>
             <button class="danger-solid" id="deleteAccountBtn">Delete account &amp; vault</button>
@@ -3706,11 +3846,16 @@ function renderSettings(app){
   // flip the flag, re-render. Settings isn't a hot render path, so a plain full render() here
   // (rather than the vault's own animated grid-collapse) is perfectly fine.
   document.querySelectorAll('[data-settings-group]').forEach(el => {
-    el.onclick = () => {
+    const toggle = () => {
       const key = el.getAttribute('data-settings-group');
       state.collapsedSettingsGroups[key] = !state.collapsedSettingsGroups[key];
       render();
     };
+    el.onclick = toggle;
+    // This header carries role="button"/tabindex="0" (see settingsGroupHeaderHtml) but an <h4> isn't
+    // a native interactive element, so the browser won't synthesize a click for Enter/Space on its
+    // own the way it would for a real <button> — same fix already applied to .cat-toggle.
+    el.onkeydown = (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); toggle(); } };
   });
 
   document.querySelectorAll('[data-theme-choice]').forEach(btn => {
@@ -3897,7 +4042,7 @@ function renderQuickRef(app){
   app.innerHTML = `
     <div class="settings-header">
       <button class="icon-only-btn" id="backToVaultBtn" aria-label="Back">${icon('back',22)}</button>
-      <div class="brand-name">Quick Reference</div>
+      <h1 class="brand-name">Quick Reference</h1>
       ${qrEncrypted ? `
         <button class="icon-only-btn" id="qrLockToggleBtn" style="margin-left:auto;" aria-label="${state.qrUnlocked ? 'Lock Quick Reference' : 'Unlock Quick Reference'}" title="${state.qrUnlocked ? 'Lock now' : 'Unlock'}">${icon('key',20)}</button>
       ` : ''}
@@ -4469,7 +4614,7 @@ function renderVault(app){
 
   app.innerHTML = `
     <header class="topbar">
-      <div class="brand"><div class="brand-mark">${brandMarkSvg(20)}</div><div class="brand-name">Vault</div><span class="conn-indicator ${isAppOnline() ? 'online' : 'offline'}" title="${isAppOnline() ? 'Online' : 'Offline'}" role="status" aria-label="${isAppOnline() ? 'Online' : 'Offline'}"><span class="conn-dot"></span>${isAppOnline() ? '' : '<span class="conn-label">Offline</span>'}</span></div>
+      <div class="brand"><div class="brand-mark">${brandMarkSvg(20)}</div><h1 class="brand-name">Vault</h1><span class="conn-indicator ${isAppOnline() ? 'online' : 'offline'}" title="${isAppOnline() ? 'Online' : 'Offline'}" role="status" aria-label="${isAppOnline() ? 'Online' : 'Offline'}"><span class="conn-dot"></span>${isAppOnline() ? '' : '<span class="conn-label">Offline</span>'}</span></div>
       ${state.selectMode ? `
         <div class="topbar-actions select-mode-bar">
           <span class="select-count-label">${state.selectedDocIds.size} selected</span>
@@ -4512,15 +4657,15 @@ function renderVault(app){
       </div>
 
       ${pinnedDocs.length ? `
-        <div class="section-title">Pinned</div>
+        <h2 class="section-title">Pinned</h2>
         <div class="doc-card-grid" data-grid-key="pinned"></div>
       ` : ''}
 
       ${!state.searchQuery && !state.showArchived && !state.selectMode && upcoming.length ? `
-        <div class="section-title">
+        <h2 class="section-title">
           <span>Renewals</span>
           <button type="button" class="privacy-link" id="seeAllUpcomingBtn" style="display:inline;margin:0;">See all</button>
-        </div>
+        </h2>
         <div class="renewal-strip-wrap">
           <div class="renewal-strip">
             ${upcoming.map((d,i) => `
@@ -4547,10 +4692,10 @@ function renderVault(app){
         // back, so clearing the search restores exactly whatever was collapsed before.
         const isCollapsed = !state.searchQuery && state.collapsedCats[cat];
         return `
-        <div class="section-title cat-toggle" data-cat="${cat}" role="button" tabindex="0" aria-expanded="${!isCollapsed}">
+        <h2 class="section-title cat-toggle" data-cat="${cat}" role="button" tabindex="0" aria-expanded="${!isCollapsed}">
           <span class="cat-title-label">${categoryIconHtml(meta,15)} ${escapeHtml(meta.label)}</span>
           <span class="cat-count">${grouped[cat].length}<span class="cat-chevron ${isCollapsed ? 'collapsed' : ''}">${icon('chevronDown',15)}</span></span>
-        </div>
+        </h2>
         <div class="doc-card-grid-wrap ${isCollapsed ? 'is-collapsed' : ''}" data-cat-panel="${cat}"><div class="doc-card-grid-inner ${isCollapsed ? '' : 'overflow-visible'}"><div class="doc-card-grid" data-grid-key="cat:${cat}"></div></div></div>
       `; }).join('')}
       ${state.showArchived
@@ -4954,7 +5099,7 @@ function renderDeletedView(app){
   app.innerHTML = `
     <div class="settings-header">
       <button class="icon-only-btn" id="backFromDeletedBtn" aria-label="Back">${icon('back',22)}</button>
-      <div class="brand-name">Recently deleted</div>
+      <h1 class="brand-name">Recently deleted</h1>
     </div>
     <div class="settings">
       <p class="quickref-caution">Documents here are permanently deleted ${TRASH_RETENTION_DAYS} days after being moved here, unless you restore them first.</p>
@@ -5141,7 +5286,7 @@ function renderUpcoming(app){
   app.innerHTML = `
     <div class="settings-header">
       <button class="icon-only-btn" id="backToVaultBtn" aria-label="Back">${icon('back',22)}</button>
-      <div class="brand-name">Upcoming renewals</div>
+      <h1 class="brand-name">Upcoming renewals</h1>
     </div>
     <div class="settings">
       <div class="theme-toggle-row">
@@ -5368,29 +5513,29 @@ function renderModal(){
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>${renewalTarget ? 'Upload replacement document' : 'Add a document'}</h3>
         <p class="sub">${renewalTarget ? `This replaces "${escapeHtml(renewalTarget.title)}" — once saved, that document is archived and linked to this one.` : `OCR runs on-device to make it searchable and to suggest an expiry date.`}</p>
-        <label class="field-label">File</label>
-        <div class="file-drop" id="fileDrop">Tap to choose a file</div>
+        <span class="field-label" id="fileDropLabel">File</span>
+        <div class="file-drop" id="fileDrop" role="button" tabindex="0" aria-labelledby="fileDropLabel">Choose a file</div>
         <input type="file" id="fileInput" accept="image/*,application/pdf" style="display:none;" />
         <div class="search-hint" id="pdfNote" style="display:none;">Multi-page PDFs are OCR'd one page at a time, so this can take a little longer.</div>
         <div class="progress-row" id="ocrProgress" style="display:none;"></div>
-        <label class="field-label">Document title</label>
+        <label class="field-label" for="docTitle">Document title</label>
         <input type="text" id="docTitle" placeholder="e.g. Aadhaar card" value="${renewalTarget ? escapeHtml(renewalTarget.title) : ''}" />
         <div class="suggest-note" id="titleSuggestNote" style="display:none;"></div>
-        <label class="field-label">Category</label>
+        <label class="field-label" for="docCategory">Category</label>
         <select id="docCategory">${categoryOptionsHtml(renewalTarget ? renewalTarget.category : undefined)}</select>
         <div class="suggest-note" id="categorySuggestNote" style="display:none;"></div>
-        <label class="field-label">Expiry date (optional)</label>
+        <label class="field-label" for="docExpiry">Expiry date (optional)</label>
         <div class="expiry-row">
           <input type="date" id="docExpiry" />
           <button type="button" class="icon-btn" id="docExpiryClearBtn">Clear</button>
         </div>
         <div class="suggest-note" id="expirySuggestNote" style="display:none;"></div>
         <div id="docReminderWrap" style="display:none;">
-          <label class="field-label">Remind me (days before expiry, optional)</label>
+          <label class="field-label" for="docReminderDays">Remind me (days before expiry, optional)</label>
           <input type="text" id="docReminderDays" placeholder="e.g. 90, 30, 7" />
           <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
         </div>
-        <label class="field-label">Tags (optional)</label>
+        <label class="field-label" for="docTags">Tags (optional)</label>
         <input type="text" id="docTags" placeholder="e.g. car, warranty, 2026" />
         <div class="error-text" id="addErr" style="display:none;"></div>
         <button class="primary" id="saveDocBtn">${renewalTarget ? 'Save & archive old document' : 'Save document'}</button>
@@ -5399,6 +5544,7 @@ function renderModal(){
     document.body.appendChild(overlay);
     document.getElementById('closeModalBtn').onclick = closeModal;
     document.getElementById('fileDrop').onclick = () => document.getElementById('fileInput').click();
+    document.getElementById('fileDrop').onkeydown = (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); document.getElementById('fileInput').click(); } };
     document.getElementById('docCategory').onchange = () => { categoryManuallyChanged = true; };
     syncReminderDaysEnabled('docExpiry', 'docReminderDays', 'docReminderWrap');
     document.getElementById('docExpiry').addEventListener('input', () => syncReminderDaysEnabled('docExpiry', 'docReminderDays', 'docReminderWrap'));
@@ -5456,21 +5602,21 @@ function renderModal(){
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>Edit document</h3>
         <p class="sub">Changing category moves the file to that category's folder in Drive.</p>
-        <label class="field-label">Document title</label>
+        <label class="field-label" for="editTitle">Document title</label>
         <input type="text" id="editTitle" value="${escapeHtml(doc.title)}" />
-        <label class="field-label">Category</label>
+        <label class="field-label" for="editCategory">Category</label>
         <select id="editCategory">${categoryOptionsHtml(doc.category)}</select>
-        <label class="field-label">Expiry date (optional)</label>
+        <label class="field-label" for="editExpiry">Expiry date (optional)</label>
         <div class="expiry-row">
           <input type="date" id="editExpiry" value="${escapeHtml(doc.expiry || '')}" />
           <button type="button" class="icon-btn" id="editExpiryClearBtn">Clear</button>
         </div>
         <div id="editReminderWrap" style="display:${doc.expiry ? '' : 'none'};">
-          <label class="field-label">Remind me (days before expiry, optional)</label>
+          <label class="field-label" for="editReminderDays">Remind me (days before expiry, optional)</label>
           <input type="text" id="editReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml((doc.reminderDays || []).join(', '))}" />
           <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
         </div>
-        <label class="field-label">Tags (optional)</label>
+        <label class="field-label" for="editTags">Tags (optional)</label>
         <input type="text" id="editTags" placeholder="e.g. car, warranty, 2026" value="${escapeHtml((doc.tags || []).join(', '))}" />
         <div class="error-text" id="editErr" style="display:none;"></div>
         <button class="primary" id="saveEditBtn">Save changes</button>
@@ -5592,7 +5738,7 @@ function renderModal(){
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>Move ${docs.length} document${docs.length===1?'':'s'}</h3>
         <p class="sub">Moves the file(s) to the new category's folder in Drive. Any already in the chosen category are left alone.</p>
-        <label class="field-label">Move to category</label>
+        <label class="field-label" for="bulkMoveCategorySelect">Move to category</label>
         <select id="bulkMoveCategorySelect">${categoryOptionsHtml()}</select>
         <button class="primary" id="confirmBulkMoveBtn">Move</button>
         <button class="ghost" id="cancelBulkMoveBtn">Cancel</button>
@@ -5782,9 +5928,9 @@ function renderModal(){
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>${existing ? 'Edit entry' : 'Add entry'}</h3>
-        <label class="field-label">Label</label>
+        <label class="field-label" for="qrLabelInput">Label</label>
         <input type="text" id="qrLabelInput" placeholder="e.g. Electricity bill account number" value="${existing ? escapeHtml(existing.label) : ''}" />
-        <label class="field-label">Value</label>
+        <label class="field-label" for="qrValueInput">Value</label>
         <input type="text" id="qrValueInput" placeholder="e.g. 1234567890" value="${escapeHtml(existingDisplayValue)}" />
         ${isQuickRefEncryptionEnabled() ? `<p class="field-hint">Encrypted with your Quick Reference passphrase before it's saved.</p>` : ''}
         <div class="error-text" id="qrFormErr" style="display:none;"></div>
@@ -5820,7 +5966,7 @@ function renderModal(){
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>Unlock Quick Reference</h3>
         <p class="sub">Enter your passphrase to decrypt your saved values on this device.</p>
-        <label class="field-label">Passphrase</label>
+        <label class="field-label" for="qrUnlockPassphrase">Passphrase</label>
         <input type="password" id="qrUnlockPassphrase" autocomplete="off" />
         <div class="error-text" id="qrUnlockErr" style="display:none;"></div>
         <button class="primary" id="qrUnlockBtn">Unlock</button>
@@ -5842,12 +5988,12 @@ function renderModal(){
           ? 'Re-encrypts every saved value with a new passphrase. Stored only on this device — if you forget it, it cannot be recovered, only reset (which wipes existing entries).'
           : 'A passphrase only you know, used to encrypt every Quick Reference value. It never leaves this device and is never sent anywhere — not even to Vault\'s own servers. If you forget it, it cannot be recovered: there\'s no reset link, only a destructive wipe-and-start-over.'}</p>
         ${alreadyEnabled ? `
-          <label class="field-label">Current passphrase</label>
+          <label class="field-label" for="qrCurrentPassphrase">Current passphrase</label>
           <input type="password" id="qrCurrentPassphrase" autocomplete="off" />
         ` : ''}
-        <label class="field-label">${alreadyEnabled ? 'New passphrase' : 'Passphrase'} (min. ${QUICKREF_MIN_PASSPHRASE_LENGTH} characters)</label>
+        <label class="field-label" for="qrNewPassphrase">${alreadyEnabled ? 'New passphrase' : 'Passphrase'} (min. ${QUICKREF_MIN_PASSPHRASE_LENGTH} characters)</label>
         <input type="password" id="qrNewPassphrase" autocomplete="off" />
-        <label class="field-label">Confirm ${alreadyEnabled ? 'new ' : ''}passphrase</label>
+        <label class="field-label" for="qrConfirmPassphrase">Confirm ${alreadyEnabled ? 'new ' : ''}passphrase</label>
         <input type="password" id="qrConfirmPassphrase" autocomplete="off" />
         <div class="error-text" id="qrCryptoSetupErr" style="display:none;"></div>
         <button class="primary" id="qrCryptoSetupSaveBtn">${alreadyEnabled ? 'Update passphrase' : 'Turn on encryption'}</button>
@@ -5905,7 +6051,7 @@ function renderModal(){
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>Forgot your passphrase?</h3>
         <p class="sub">There is no way to recover a forgotten Quick Reference passphrase — it never leaves this device, so nothing can decrypt your existing entries without it. Resetting permanently deletes every existing Quick Reference entry and turns encryption back off. This cannot be undone.</p>
-        <label class="field-label">Type RESET to confirm</label>
+        <label class="field-label" for="qrForgotConfirmPhrase">Type RESET to confirm</label>
         <input type="text" id="qrForgotConfirmPhrase" placeholder="RESET" />
         <div class="error-text" id="qrForgotErr" style="display:none;"></div>
         <button class="danger-solid" id="confirmQrForgotBtn" disabled>Delete entries &amp; turn off encryption</button>
@@ -5950,7 +6096,7 @@ function renderModal(){
           <button class="primary" id="captureReplacementBtn">${icon('camera',16)} Capture with camera</button>
           <button class="ghost" id="uploadReplacementBtn">${icon('download',16)} Upload a file</button>
         </div>
-        <label class="field-label" style="margin-top:16px;">Or link an existing document as the replacement</label>
+        <label class="field-label" for="renewReplacementSelect" style="margin-top:16px;">Or link an existing document as the replacement</label>
         <select id="renewReplacementSelect">
           <option value="">— Not tracking a replacement —</option>
           ${otherActiveDocs.map(d => `<option value="${d.id}">${escapeHtml(d.title)}</option>`).join('')}
@@ -5993,7 +6139,7 @@ function renderModal(){
           <h3>Adjust page</h3>
           <p class="sub">Drag a corner to crop, an edge to move both its corners together, or drag inside the frame to move all of it.</p>
           <div class="crop-stage" id="cropStage">
-            <img id="cropImage" src="${state.cropSourceDataUrl}" draggable="false" />
+            <img id="cropImage" src="${state.cropSourceDataUrl}" draggable="false" alt="Photo being cropped" />
             <svg class="crop-mask" id="cropMask" xmlns="http://www.w3.org/2000/svg">
               <path id="cropMaskPath" fill="rgba(0,0,0,0.45)" fill-rule="evenodd"></path>
               <polygon id="cropQuadPoly" class="crop-quad" fill="rgba(26,115,232,0.16)" stroke="#1a73e8" stroke-width="2"></polygon>
@@ -6002,14 +6148,14 @@ function renderModal(){
                  otherwise lists tl/tr/bl/br first) so their larger invisible hit-area (see
                  .crop-handle::before) paints on top where it overlaps a neighboring edge handle's —
                  a tap ambiguous between the two should grab the corner, the more precise target. -->
-            <div class="crop-handle crop-handle-edge crop-handle-edge-h" data-handle="top"></div>
-            <div class="crop-handle crop-handle-edge crop-handle-edge-h" data-handle="bottom"></div>
-            <div class="crop-handle crop-handle-edge crop-handle-edge-v" data-handle="left"></div>
-            <div class="crop-handle crop-handle-edge crop-handle-edge-v" data-handle="right"></div>
-            <div class="crop-handle" data-handle="tl"></div>
-            <div class="crop-handle" data-handle="tr"></div>
-            <div class="crop-handle" data-handle="bl"></div>
-            <div class="crop-handle" data-handle="br"></div>
+            <div class="crop-handle crop-handle-edge crop-handle-edge-h" data-handle="top" tabindex="0" role="slider" aria-label="Top edge" aria-roledescription="Arrow keys to adjust"></div>
+            <div class="crop-handle crop-handle-edge crop-handle-edge-h" data-handle="bottom" tabindex="0" role="slider" aria-label="Bottom edge" aria-roledescription="Arrow keys to adjust"></div>
+            <div class="crop-handle crop-handle-edge crop-handle-edge-v" data-handle="left" tabindex="0" role="slider" aria-label="Left edge" aria-roledescription="Arrow keys to adjust"></div>
+            <div class="crop-handle crop-handle-edge crop-handle-edge-v" data-handle="right" tabindex="0" role="slider" aria-label="Right edge" aria-roledescription="Arrow keys to adjust"></div>
+            <div class="crop-handle" data-handle="tl" tabindex="0" role="slider" aria-label="Top-left corner" aria-roledescription="Arrow keys to adjust"></div>
+            <div class="crop-handle" data-handle="tr" tabindex="0" role="slider" aria-label="Top-right corner" aria-roledescription="Arrow keys to adjust"></div>
+            <div class="crop-handle" data-handle="bl" tabindex="0" role="slider" aria-label="Bottom-left corner" aria-roledescription="Arrow keys to adjust"></div>
+            <div class="crop-handle" data-handle="br" tabindex="0" role="slider" aria-label="Bottom-right corner" aria-roledescription="Arrow keys to adjust"></div>
             <div class="crop-magnifier-tail" id="cropMagnifierTail"></div>
             <div class="crop-magnifier" id="cropMagnifier"></div>
           </div>
@@ -6046,32 +6192,38 @@ function renderModal(){
           <div class="camera-controls">
             <button class="capture-btn" id="captureBtn">Capture page</button>
           </div>
+          <!-- Hidden until startCamera() actually fails (no camera, or permission denied — the
+               common desktop case) — see its catch block below. Without this, Capture page just
+               silently did nothing once there was no live stream, with no way forward short of
+               noticing the small error text, closing this modal, and finding the separate "Add
+               document" FAB on the vault screen. -->
+          <button class="ghost" id="camUploadFallbackBtn" style="display:none;">Upload a file instead</button>
           <p class="scroll-hint">${icon('chevronDown',14)} Title, category, expiry &amp; save button below</p>
           ${state.capturedPages.length ? `<div class="page-thumbs">${state.capturedPages.map((p,i)=>`
             <div class="page-thumb-wrap">
-              <img class="page-thumb" src="${p}" data-edit-page="${i}">
+              <img class="page-thumb" src="${p}" data-edit-page="${i}" alt="Page ${i+1}">
               <button type="button" class="page-thumb-del" data-remove-page="${i}" aria-label="Remove this page">×</button>
             </div>
           `).join('')}</div>` : ''}
           <div class="progress-row" id="ocrProgress" style="display:none;"></div>
-          <label class="field-label">Document title</label>
+          <label class="field-label" for="camTitle">Document title</label>
           <input type="text" id="camTitle" placeholder="e.g. Electricity bill" value="${escapeHtml(pendingCamTitle)}" />
           <div class="suggest-note" id="camTitleSuggestNote" style="display:none;"></div>
-          <label class="field-label">Category</label>
+          <label class="field-label" for="camCategory">Category</label>
           <select id="camCategory">${categoryOptionsHtml(pendingCamCategory)}</select>
           <div class="suggest-note" id="camCategorySuggestNote" style="display:none;"></div>
-          <label class="field-label">Expiry date (optional)</label>
+          <label class="field-label" for="camExpiry">Expiry date (optional)</label>
           <div class="expiry-row">
             <input type="date" id="camExpiry" value="${pendingCamExpiry}" />
             <button type="button" class="icon-btn" id="camExpiryClearBtn">Clear</button>
           </div>
           <div class="suggest-note" id="camExpirySuggestNote" style="display:none;"></div>
           <div id="camReminderWrap" style="display:${pendingCamExpiry ? '' : 'none'};">
-            <label class="field-label">Remind me (days before expiry, optional)</label>
+            <label class="field-label" for="camReminderDays">Remind me (days before expiry, optional)</label>
             <input type="text" id="camReminderDays" placeholder="e.g. 90, 30, 7" value="${escapeHtml(pendingCamReminderDaysText)}" />
             <p class="field-hint">Default schedule: ${DEFAULT_REMINDER_SCHEDULE_LABEL}. Once expired, you'll hear about it every day until you archive it.</p>
           </div>
-          <label class="field-label">Tags (optional)</label>
+          <label class="field-label" for="camTags">Tags (optional)</label>
           <input type="text" id="camTags" placeholder="e.g. car, warranty, 2026" value="${escapeHtml(pendingCamTagsText)}" />
           <div class="error-text" id="camErr" style="display:none;"></div>
           <button class="primary" id="saveCamBtn" ${state.capturedPages.length ? '' : 'disabled'}>${renewalTarget ? 'Save & archive old' : 'Save as PDF'} (${state.capturedPages.length} page${state.capturedPages.length===1?'':'s'})</button>
@@ -6080,6 +6232,10 @@ function renderModal(){
       document.body.appendChild(overlay);
       document.getElementById('closeModalBtn').onclick = closeModal;
       document.getElementById('captureBtn').onclick = capturePage;
+      document.getElementById('camUploadFallbackBtn').onclick = () => {
+        if(state.renewalUploadTargetId) openAddModalForRenewal(state.renewalUploadTargetId);
+        else openAddModal();
+      };
       document.getElementById('saveCamBtn').onclick = saveCameraDocument;
       document.getElementById('camCategory').onchange = () => {
         categoryManuallyChanged = true;
@@ -6127,7 +6283,7 @@ function renderModal(){
         <p class="sub">Creates a matching subfolder inside Vault in your Drive.</p>
         <label class="field-label">Icon</label>
         ${iconPickerHtml('newCatIcon', 'doc')}
-        <label class="field-label">Label</label>
+        <label class="field-label" for="newCatLabel">Label</label>
         <input type="text" id="newCatLabel" placeholder="e.g. Medical" />
         <div class="error-text" id="newCatErr" style="display:none;"></div>
         <button class="primary" id="saveNewCatBtn">Create category</button>
@@ -6146,9 +6302,9 @@ function renderModal(){
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3 id="lockSetupTitle">${alreadyEnabled ? 'Change PIN' : 'Set up app lock'}</h3>
         <p class="sub" id="lockSetupSub">A quick PIN to re-open Vault, on top of staying signed in to Google. Stored only on this device — a new device starts fresh.</p>
-        <label class="field-label" id="newLockPinLabel">New PIN (4–8 digits)</label>
+        <label class="field-label" id="newLockPinLabel" for="newLockPin">New PIN (4–8 digits)</label>
         <input type="password" inputmode="numeric" pattern="[0-9]*" id="newLockPin" maxlength="8" />
-        <label class="field-label" id="confirmLockPinLabel">Confirm PIN</label>
+        <label class="field-label" id="confirmLockPinLabel" for="confirmLockPin">Confirm PIN</label>
         <input type="password" inputmode="numeric" pattern="[0-9]*" id="confirmLockPin" maxlength="8" />
         <div class="error-text" id="lockSetupErr" style="display:none;"></div>
         <button class="primary" id="saveLockPinBtn">${alreadyEnabled ? 'Update PIN' : 'Turn on app lock'}</button>
@@ -6238,7 +6394,7 @@ function renderModal(){
         <p class="sub">Also renames the matching folder in Drive to match.</p>
         <label class="field-label">Icon</label>
         ${iconPickerHtml('editCatIcon', cat.icon)}
-        <label class="field-label">Label</label>
+        <label class="field-label" for="editCatLabel">Label</label>
         <input type="text" id="editCatLabel" value="${escapeHtml(cat.label)}" />
         <div class="error-text" id="editCatErr" style="display:none;"></div>
         <button class="primary" id="saveEditCatBtn">Save changes</button>
@@ -6262,7 +6418,7 @@ function renderModal(){
             <input type="checkbox" id="deleteBackupFirst" checked style="width:auto;margin:0;flex:none;" />
           </label>
         ` : ''}
-        <label class="field-label">Type DELETE to confirm</label>
+        <label class="field-label" for="deleteConfirmPhrase">Type DELETE to confirm</label>
         <input type="text" id="deleteConfirmPhrase" placeholder="DELETE" />
         <div class="error-text" id="deleteAccountErr" style="display:none;"></div>
         <button class="danger-solid" id="confirmDeleteAccountBtn" disabled>Permanently delete everything</button>
@@ -6282,6 +6438,14 @@ function renderModal(){
   if(sheetEl){
     sheetEl.setAttribute('role', 'dialog');
     sheetEl.setAttribute('aria-modal', 'true');
+    // Generic across every modal rather than hand-wiring each one's own <h3> with a unique id — only
+    // one modal is ever open at a time, so a single shared id here is always safe, and this is what
+    // actually gives assistive tech an accessible NAME for the dialog (role/aria-modal alone don't).
+    const heading = sheetEl.querySelector('h3');
+    if(heading){
+      heading.id = heading.id || 'modalSheetTitle';
+      sheetEl.setAttribute('aria-labelledby', heading.id);
+    }
     if(!sheetEl.classList.contains('crop-sheet') && !sheetEl.querySelector('.sheet-handle')){
       const handle = document.createElement('div');
       handle.className = 'sheet-handle';
@@ -6490,6 +6654,16 @@ function snapshotCamFormFields(){
 }
 async function startCamera(){
   const video = document.getElementById('cameraVideo');
+  // iOS force-terminates any in-page camera track the instant the tab/installed PWA is
+  // backgrounded — locking the screen, switching apps, a call, Control Center, or the app's own
+  // App-Lock grace timer firing while this modal is still open. state.cameraStream stays a
+  // truthy MediaStream across that (nothing here used to ever notice), so without this check the
+  // reuse path below would reattach a dead, permanently black/frozen stream on returning to the
+  // foreground instead of asking for a fresh one.
+  if(state.cameraStream){
+    const track = state.cameraStream.getVideoTracks()[0];
+    if(!track || track.readyState !== 'live') state.cameraStream = null;
+  }
   if(state.cameraStream){
     // Every capture re-renders the modal, which rebuilds the <video> element from scratch — the
     // stream itself is still live, so reattach it instead of requesting a brand-new one from
@@ -6521,6 +6695,8 @@ async function startCamera(){
   } catch(e){
     const err = document.getElementById('camErr');
     if(err){ err.textContent = "Couldn't access the camera — check browser permissions."; err.style.display='block'; }
+    const fallbackBtn = document.getElementById('camUploadFallbackBtn');
+    if(fallbackBtn) fallbackBtn.style.display = '';
   }
 }
 function stopCamera(){
@@ -6955,6 +7131,38 @@ function wireCropOverlay(){
   quadPoly.addEventListener('pointerdown', (e) => onPointerDown('move', e));
   Object.keys(handles).forEach(k => handles[k].addEventListener('pointerdown', (e) => onPointerDown(k, e)));
   Object.keys(edgeHandles).forEach(k => edgeHandles[k].addEventListener('pointerdown', (e) => onPointerDown(k, e)));
+
+  // Keyboard equivalent of a drag — every handle now carries tabindex="0" (see the crop screen's
+  // markup) so a keyboard-only user (no mouse/trackpad) can actually adjust an imperfect
+  // auto-detected quad instead of only being able to accept it as-is or abandon the crop entirely.
+  // No HANDLE_OFFSET here: that offset exists purely to keep a dragging FINGER clear of the point it
+  // controls — there's no finger to keep clear of on a keyboard nudge, so this moves the point
+  // directly, straight to the pressed position.
+  const CROP_KEY_STEP = 4, CROP_KEY_STEP_FAST = 20; // Shift held = a bigger jump per press
+  const ARROW_KEY_DELTA = {ArrowUp: [0,-1], ArrowDown: [0,1], ArrowLeft: [-1,0], ArrowRight: [1,0]};
+  function onHandleKeyDown(mode, e){
+    const dir = ARROW_KEY_DELTA[e.key];
+    if(!dir) return;
+    e.preventDefault();
+    refreshStageSize();
+    const step = e.shiftKey ? CROP_KEY_STEP_FAST : CROP_KEY_STEP;
+    const dx = dir[0] * step, dy = dir[1] * step;
+    if(EDGE_CORNERS[mode]){
+      const [a, b] = EDGE_CORNERS[mode];
+      state.cropQuad = {...state.cropQuad,
+        [a]: {x: clamp(state.cropQuad[a].x + dx, 0, stageW), y: clamp(state.cropQuad[a].y + dy, 0, stageH)},
+        [b]: {x: clamp(state.cropQuad[b].x + dx, 0, stageW), y: clamp(state.cropQuad[b].y + dy, 0, stageH)}
+      };
+    } else {
+      state.cropQuad = {...state.cropQuad, [mode]: {
+        x: clamp(state.cropQuad[mode].x + dx, 0, stageW),
+        y: clamp(state.cropQuad[mode].y + dy, 0, stageH)
+      }};
+    }
+    paintQuad();
+  }
+  Object.keys(handles).forEach(k => handles[k].addEventListener('keydown', (e) => onHandleKeyDown(k, e)));
+  Object.keys(edgeHandles).forEach(k => edgeHandles[k].addEventListener('keydown', (e) => onHandleKeyDown(k, e)));
 
   // The actual per-frame work: compute the new quad from the latest recorded pointer delta, paint
   // it, and update the loupe. Runs at most once per animation frame (scheduled below), regardless
@@ -7465,6 +7673,29 @@ function wireViewFileZoom(contentEl){
   };
   contentEl.addEventListener('pointerup', clearPointer);
   contentEl.addEventListener('pointercancel', clearPointer);
+
+  // A trackpad pinch (Mac, no touchscreen involved at all) never satisfies the 2-pointer path
+  // above — it's reported as its own distinct gesture, not two simultaneous touch contacts — so
+  // without this it fell through to the browser's own native whole-page zoom instead of this
+  // element's. Chrome/Firefox synthesize a trackpad pinch as a ctrl-key'd wheel event (a real
+  // ctrl+wheel scroll is rare enough that treating every ctrlKey wheel as a pinch is the standard,
+  // accepted tradeoff); Safari instead fires its own non-standard gesturestart/gesturechange
+  // events with a cumulative e.scale relative to whatever zoom was active when the gesture began.
+  // Browsers that don't support one path simply never fire it, so both can stay registered
+  // unconditionally.
+  contentEl.addEventListener('wheel', (e) => {
+    if(!e.ctrlKey) return; // a plain wheel scroll — leave it to the browser's native scrolling
+    e.preventDefault();
+    zoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, zoom * (1 - e.deltaY * 0.01)));
+    applyZoom();
+  }, {passive: false});
+  let gestureStartZoom = 1;
+  contentEl.addEventListener('gesturestart', (e) => { e.preventDefault(); gestureStartZoom = zoom; });
+  contentEl.addEventListener('gesturechange', (e) => {
+    e.preventDefault();
+    zoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, gestureStartZoom * e.scale));
+    applyZoom();
+  });
 
   // A quick double-tap/double-click toggles 1x <-> 2x, roughly centered on the tapped point — a
   // faster shortcut than pinching for the common case of "just let me read that".
