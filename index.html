@@ -860,7 +860,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.14 · 12:16';
+const APP_VERSION = '2026.09.14 · 12:40';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1339,6 +1339,13 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.14 · 12:40',
+    items: [
+      "Clearer offline-copy labels: a document just opened while online now shows \"Offline for now\" (it may get cleared later), instead of looking identical to a document you've explicitly \"Kept offline\" (which never gets cleared).",
+      "The per-category Settings toggle now reads \"Keep [category] documents offline by default\" — it only sets what happens for documents added to that category from now on, which wasn't clear before."
+    ]
+  },
   {
     version: '2026.09.14 · 12:16',
     items: [
@@ -3837,7 +3844,7 @@ function renderSettings(app){
               </div>
             </div>
             <div class="settings-row">
-              <span>Keep ${escapeHtml(c.label)} documents offline${offlineSubline}</span>
+              <span>Keep ${escapeHtml(c.label)} documents offline by default${offlineSubline}</span>
               ${catKeepOfflineSwitchHtml(c)}
             </div>
           `; }).join('')}
@@ -5272,19 +5279,27 @@ function renderDocCard(d, opts){
   // see the offline-cache comment above. Distinguish the two rather than letting every card look
   // equally open-able when only some actually are.
   const offlineUnavailable = state.isOfflineMode && !state.offlineDocIds.has(d.id);
-  // Four states now instead of two: a document deliberately kept offline (and actually cached) gets
-  // its own label so it reads as protected, not just incidentally available; one currently being
-  // downloaded for that same deliberate reason shows an in-flight indicator instead of looking
-  // identical to "not cached at all" mid-download. The plain incidentally-cached and
-  // offline-and-uncached cases are unchanged from before.
+  // Four states, each with its own visible label: a document deliberately kept offline (and
+  // actually cached) reads as protected ("Kept offline"), one currently being downloaded for that
+  // same deliberate reason shows an in-flight indicator instead of looking identical to "not cached
+  // at all" mid-download, and a document merely opened once while online — cached as an incidental
+  // side effect, with no guarantee it stays that way — reads as "Offline for now" rather than
+  // looking identical to the protected state. That distinction (automatic-and-evictable vs
+  // deliberate-and-permanent) is the actual point of the Keep Offline toggle, and a bare icon with
+  // only a tooltip never conveyed it on a touchscreen with no hover.
   const isKeepOfflineDownloading = state.keepOfflineInFlightIds.has(d.id);
   let offlineBadgeHtml = '';
   if(isKeepOfflineDownloading){
     offlineBadgeHtml = `<span class="offline-badge downloading with-label" title="Caching for offline use…" aria-label="Caching for offline use">${icon('download',12)} Caching…</span>`;
   } else if(d.keepOffline && state.offlineDocIds.has(d.id)){
-    offlineBadgeHtml = `<span class="offline-badge with-label" title="Kept offline" aria-label="Kept offline">${icon('download',12)} Kept offline</span>`;
+    offlineBadgeHtml = `<span class="offline-badge with-label" title="Kept offline — won't be cleared to free up space" aria-label="Kept offline — won't be cleared to free up space">${icon('download',12)} Kept offline</span>`;
   } else if(state.offlineDocIds.has(d.id)){
-    offlineBadgeHtml = `<span class="offline-badge" title="Available offline" aria-label="Available offline">${icon('download',12)}</span>`;
+    // A visible label, not just a tooltip — the previous bare-icon badge and "Kept offline" looked
+    // identical in meaning at a glance, and a tooltip alone never reaches a touchscreen user (no
+    // hover on mobile, which is exactly where this was actually confusing someone). "Offline for
+    // now" next to "Kept offline" makes the temporary-vs-protected contrast visible with no tap or
+    // hover needed — same with-label styling as the other three states, no new CSS.
+    offlineBadgeHtml = `<span class="offline-badge with-label" title="Offline for now — may be cleared to free up space" aria-label="Offline for now — may be cleared to free up space">${icon('download',12)} Offline for now</span>`;
   } else if(offlineUnavailable){
     offlineBadgeHtml = `<span class="offline-badge unavailable">Not available offline</span>`;
   }
@@ -5593,7 +5608,7 @@ function switchHtml(id, checked, disabled, ariaLabel){
 // these renders per category, so a plain id (switchHtml's usual approach, fine for every other
 // single-instance switch on this screen) would collide across categories.
 function catKeepOfflineSwitchHtml(cat){
-  return `<label class="switch"><input type="checkbox" data-cat-keep-offline-default="${cat.id}" ${cat.keepOfflineDefault ? 'checked' : ''} aria-label="${escapeHtml('Keep ' + cat.label + ' documents offline')}"><span class="switch-track"><span class="switch-thumb"></span></span></label>`;
+  return `<label class="switch"><input type="checkbox" data-cat-keep-offline-default="${cat.id}" ${cat.keepOfflineDefault ? 'checked' : ''} aria-label="${escapeHtml('Keep ' + cat.label + ' documents offline by default')}"><span class="switch-track"><span class="switch-thumb"></span></span></label>`;
 }
 
 function renderModal(){
