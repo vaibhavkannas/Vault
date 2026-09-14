@@ -601,20 +601,18 @@
   .quickref-value{font-size:13px;color:var(--ink-soft);font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:0.03em;word-break:break-all;margin:0;}
   .quickref-actions{display:flex;flex:none;}
   .settings-row button{flex:none;}
-  /* flex-wrap so a narrow phone that can't fit icon + label + all 4 action buttons on one line
-     wraps the whole action-button group to a second line, instead of forcing the row (and the whole
-     page) wider than the viewport — verified this was happening even with the app's own stock
-     category labels at 320px, not just long custom ones. */
-  .cat-manage-row{display:flex;align-items:center;gap:10px;background:var(--paper-2);border-radius:var(--radius);padding:10px 12px;margin-bottom:8px;box-shadow:var(--elevation-1);flex-wrap:wrap;}
+  /* Reorder/rename/delete now live behind a single kebab menu (.action-menu-wrap, the same pattern
+     a document card's own overflow menu uses) instead of up to 4 separate buttons crammed into this
+     row — that used to force a wrap onto a second line on most phone widths, not just at 320px,
+     making the whole Categories section noticeably tall for very little actually shown at once. */
+  .cat-manage-row{display:flex;align-items:center;gap:10px;background:var(--paper-2);border-radius:var(--radius);padding:10px 12px;margin-bottom:8px;box-shadow:var(--elevation-1);}
   .cat-manage-row .cm-icon{width:32px;height:32px;border-radius:50%;background:var(--primary-container);color:var(--on-primary-container);display:flex;align-items:center;justify-content:center;flex:none;}
-  .cat-manage-row .cm-label{flex:1;min-width:60px;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  /* Grouped so flex-wrap above moves all four action buttons together as one unit, rather than
-     wrapping mid-group into an inconsistent split. Slightly larger than the shared .icon-btn default
-     (used elsewhere for lighter contexts) since this row's up/down/Rename/Delete are the main way to
-     manage a category on mobile. */
-  .cat-manage-row .cm-actions{display:flex;flex:none;gap:8px;margin-left:auto;}
-  .cat-manage-row .cm-actions .icon-btn{padding:9px 12px;font-size:13px;}
-  .cat-manage-row .cm-actions .icon-btn.danger{margin-left:4px;}
+  .cat-manage-row .cm-label{flex:1;min-width:0;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  /* The small subline under the "Keep X documents offline" switch's label — either informational
+     (a backlog waiting for the switch to be turned on) or, when styled as -link, an actual button
+     for the rarer case of retrying a backlog left over after the switch is already on. */
+  .cat-offline-hint{font-size:11.5px;color:var(--ink-soft);}
+  .cat-offline-hint-link{font-size:11.5px;color:var(--brass);background:none;border:none;padding:0;margin:0;cursor:pointer;font-family:inherit;text-decoration:underline;}
   .danger-zone{border-radius:16px;padding:14px;background:var(--danger-bg);}
   .danger-zone p{font-size:12.5px;color:var(--ink-soft);margin:0 0 12px;}
   .theme-toggle-row{display:flex;gap:8px;}
@@ -833,7 +831,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.14 · 06:16';
+const APP_VERSION = '2026.09.14 · 06:36';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -994,6 +992,7 @@ const state = {
   openActionMenu: null, // instance key (see renderDocCard's opts.instanceKey — distinguishes a
                         // pinned-section card from its own-category copy of the same doc) whose
                         // card's ⋮ overflow menu is currently open, or null
+  openCategoryMenu: null, // category id whose ⋮ menu is open in Settings > Categories, or null
   selectMode: false, // true while the bulk multi-select action bar (Move/Archive/Delete) is active
                       // over the document list — see enterSelectMode()/exitSelectMode() below
   selectedDocIds: new Set(), // ids of documents currently checked in select mode. Deliberately
@@ -1302,6 +1301,13 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.14 · 06:36',
+    items: [
+      "Redesigned: Settings > Categories is far more compact now — reorder/rename/delete moved behind a single ⋮ menu per category instead of 4 always-visible buttons.",
+      "Changed: turning on \"Keep [category] documents offline\" now also offers to cache that category's existing documents (with the same size estimate shown before), instead of only ever applying to documents added afterward."
+    ]
+  },
   {
     version: '2026.09.14 · 06:16',
     items: [
@@ -3730,35 +3736,42 @@ function renderSettings(app){
         ${settingsGroupHeaderHtml('categories', 'Categories')}
         ${!categoriesCollapsed ? `
           ${state.categories.map((c,i) => {
-            // Not-yet-cached, non-deleted documents currently in this category — the "cache existing
-            // documents" button below only ever shows up when there's actually something for it to do,
-            // and stays visible for the whole run (categoryCacheRunningIds) even as this count shrinks
-            // toward 0 mid-download.
+            // Not-yet-cached, non-deleted documents currently in this category — turning the
+            // keep-offline switch below ON now offers to cache exactly this backlog too (see
+            // toggleCategoryKeepOfflineDefault), so the hint/link under the switch only needs to
+            // cover the two cases that switch doesn't already handle: OFF with a backlog waiting
+            // (informational), or ON with a backlog left over from a past failed/partial run
+            // (a small retry link, reusing the same requestCacheCategoryDocuments confirmation).
             const catPendingCount = state.documents.filter(d => d.category === c.id && !d.deletedAt && !state.offlineDocIds.has(d.id)).length;
+            const catMenuOpen = state.openCategoryMenu === c.id;
+            const offlineSubline = categoryCacheRunningIds.has(c.id)
+              ? `<br><span class="cat-offline-hint" id="cacheCatStatus-${c.id}">Caching…</span>`
+              : catPendingCount === 0 ? ''
+              : c.keepOfflineDefault
+                ? `<br><button type="button" class="cat-offline-hint-link" data-cache-cat="${c.id}">Retry caching ${catPendingCount} document${catPendingCount===1?'':'s'}</button>`
+                : `<br><span class="cat-offline-hint">${catPendingCount} existing document${catPendingCount===1?'':'s'} not cached yet</span>`;
             return `
             <div class="cat-manage-row">
               <span class="cm-icon">${categoryIconHtml(c, 17)}</span>
               <span class="cm-label">${escapeHtml(c.label)}</span>
-              <div class="cm-actions">
-                ${state.categories.length > 1 ? `
-                  <button class="icon-btn" data-cat-move="${c.id}" data-cat-dir="up" aria-label="Move ${escapeHtml(c.label)} up" ${(i===0 || categoryReorderInFlight) ? 'disabled' : ''}>↑</button>
-                  <button class="icon-btn" data-cat-move="${c.id}" data-cat-dir="down" aria-label="Move ${escapeHtml(c.label)} down" ${(i===state.categories.length-1 || categoryReorderInFlight) ? 'disabled' : ''}>↓</button>
+              <div class="action-menu-wrap">
+                <button class="icon-only-btn small" data-cat-menu-toggle="${c.id}" aria-label="More actions for ${escapeHtml(c.label)}" aria-haspopup="true" aria-expanded="${catMenuOpen}">${icon('more',18)}</button>
+                ${catMenuOpen ? `
+                  <div class="action-menu" id="catActionMenu-${c.id}">
+                    ${state.categories.length > 1 ? `
+                      <button data-cat-menu-action="up" data-cat="${c.id}" ${(i===0 || categoryReorderInFlight) ? 'disabled' : ''}><span style="display:inline-flex;transform:rotate(180deg);">${icon('chevronDown',15)}</span> Move up</button>
+                      <button data-cat-menu-action="down" data-cat="${c.id}" ${(i===state.categories.length-1 || categoryReorderInFlight) ? 'disabled' : ''}>${icon('chevronDown',15)} Move down</button>
+                    ` : ''}
+                    <button data-cat-menu-action="rename" data-cat="${c.id}">${icon('edit',15)} Rename</button>
+                    <button class="danger" data-cat-menu-action="delete" data-cat="${c.id}">${icon('trash',15)} Delete</button>
+                  </div>
                 ` : ''}
-                <button class="icon-btn" data-rename-cat="${c.id}">Rename</button>
-                <button class="icon-btn danger" data-delete-cat="${c.id}">Delete</button>
               </div>
             </div>
             <div class="settings-row">
-              <span>Keep new "${escapeHtml(c.label)}" documents offline automatically</span>
+              <span>Keep ${escapeHtml(c.label)} documents offline${offlineSubline}</span>
               ${catKeepOfflineSwitchHtml(c)}
             </div>
-            ${(catPendingCount > 0 || categoryCacheRunningIds.has(c.id)) ? `
-              <div class="settings-row">
-                <span>${catPendingCount} existing document${catPendingCount===1?'':'s'} not yet cached for offline use</span>
-                <button class="icon-btn" data-cache-cat="${c.id}" ${categoryCacheRunningIds.has(c.id) ? 'disabled' : ''}>Cache ${catPendingCount} existing document${catPendingCount===1?'':'s'}</button>
-              </div>
-              <div class="search-hint" id="cacheCatStatus-${c.id}"></div>
-            ` : ''}
           `; }).join('')}
           <button class="ghost" id="addCategoryBtn">+ Add category</button>
         ` : ''}
@@ -3946,15 +3959,36 @@ function renderSettings(app){
 
   const addCategoryBtn = document.getElementById('addCategoryBtn');
   if(addCategoryBtn) addCategoryBtn.onclick = openAddCategoryModal;
-  document.querySelectorAll('[data-cat-move]').forEach(btn => {
-    btn.onclick = () => moveCategoryOrder(btn.getAttribute('data-cat-move'), btn.getAttribute('data-cat-dir') === 'up' ? -1 : 1);
+  // Reorder/rename/delete now live behind one kebab menu per category (see the cat-manage-row
+  // markup above) — same open/close-on-outside-click pattern as a document card's own ⋮ menu
+  // (data-menu-toggle/data-menu-action below), just keyed on state.openCategoryMenu instead of
+  // state.openActionMenu since these are unrelated menus that could otherwise stomp on each other.
+  document.querySelectorAll('[data-cat-menu-toggle]').forEach(el => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const key = el.getAttribute('data-cat-menu-toggle');
+      state.openCategoryMenu = state.openCategoryMenu === key ? null : key;
+      render();
+    };
   });
-  document.querySelectorAll('[data-rename-cat]').forEach(btn => {
-    btn.onclick = () => openEditCategoryModal(btn.getAttribute('data-rename-cat'));
+  document.querySelectorAll('[data-cat-menu-action]').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const catId = btn.getAttribute('data-cat');
+      const action = btn.getAttribute('data-cat-menu-action');
+      state.openCategoryMenu = null;
+      if(action === 'up') moveCategoryOrder(catId, -1);
+      else if(action === 'down') moveCategoryOrder(catId, 1);
+      else if(action === 'rename') openEditCategoryModal(catId);
+      else if(action === 'delete') deleteCategory(catId);
+    };
   });
-  document.querySelectorAll('[data-delete-cat]').forEach(btn => {
-    btn.onclick = () => deleteCategory(btn.getAttribute('data-delete-cat'));
-  });
+  if(categoryMenuOutsideClickHandler) document.removeEventListener('click', categoryMenuOutsideClickHandler);
+  categoryMenuOutsideClickHandler = null;
+  if(state.openCategoryMenu){
+    categoryMenuOutsideClickHandler = () => { state.openCategoryMenu = null; categoryMenuOutsideClickHandler = null; render(); };
+    document.addEventListener('click', categoryMenuOutsideClickHandler, {once: true});
+  }
   document.querySelectorAll('[data-cat-keep-offline-default]').forEach(el => {
     el.onchange = (e) => toggleCategoryKeepOfflineDefault(el.getAttribute('data-cat-keep-offline-default'), e.target.checked);
   });
@@ -3991,6 +4025,7 @@ function renderSettings(app){
 }
 
 let actionMenuOutsideClickHandler = null;
+let categoryMenuOutsideClickHandler = null;
 let searchRenderTimer = null;
 function matchesSearch(doc){
   if(!state.searchQuery) return {match:true, snippet:null};
@@ -5489,7 +5524,7 @@ function switchHtml(id, checked, disabled, ariaLabel){
 // these renders per category, so a plain id (switchHtml's usual approach, fine for every other
 // single-instance switch on this screen) would collide across categories.
 function catKeepOfflineSwitchHtml(cat){
-  return `<label class="switch"><input type="checkbox" data-cat-keep-offline-default="${cat.id}" ${cat.keepOfflineDefault ? 'checked' : ''} aria-label="${escapeHtml('Keep new ' + cat.label + ' documents offline automatically')}"><span class="switch-track"><span class="switch-thumb"></span></span></label>`;
+  return `<label class="switch"><input type="checkbox" data-cat-keep-offline-default="${cat.id}" ${cat.keepOfflineDefault ? 'checked' : ''} aria-label="${escapeHtml('Keep ' + cat.label + ' documents offline')}"><span class="switch-track"><span class="switch-thumb"></span></span></label>`;
 }
 
 function renderModal(){
@@ -8388,8 +8423,18 @@ async function toggleCategoryKeepOfflineDefault(catId, checked){
     cat.keepOfflineDefault = previous;
     render();
     toast(friendlyCloudError(e));
+    return;
   }
-  // No render() on success — same reasoning as bioUnlockSwitch above: the checkbox already shows
+  // Turning this on is exactly the moment the user has said "I want this category available
+  // offline" — without this, that only ever applied to documents added from now on, leaving
+  // whatever was already in the category behind until the separate retry link (or the confirm
+  // step reused here) was found and used on its own. Reusing requestCacheCategoryDocuments means
+  // the same size-estimate confirmation the standalone action already had still applies here.
+  if(checked){
+    const pendingCount = state.documents.filter(d => d.category === catId && !d.deletedAt && !state.offlineDocIds.has(d.id)).length;
+    if(pendingCount > 0){ requestCacheCategoryDocuments(catId); return; }
+  }
+  // No render() otherwise — same reasoning as bioUnlockSwitch above: the checkbox already shows
   // its own new state natively, and nothing else on screen reads keepOfflineDefault right now.
 }
 
@@ -8779,7 +8824,7 @@ function resetToLoggedOutState(){
     vaultFolderId: null, deletedFolderId: null, categories: [], documents: [], modal: null, quickRefsDriveFileId: null,
     searchQuery: '', showArchived: false, showDeleted: false, collapsedCats: {},
     collapsedSettingsGroups: defaultCollapsedSettingsGroups(), // fresh collapsed defaults for the next sign-in — see that function's own comment
-    openActionMenu: null, isOfflineMode: false,
+    openActionMenu: null, openCategoryMenu: null, isOfflineMode: false,
     selectMode: false, selectedDocIds: new Set(), // no stale bulk-select state should survive into the next signed-in session
     keepOfflineInFlightIds: new Set(), // no stale "downloading" markers should survive into the next signed-in session
     // A derived Quick Reference encryption key is exactly the kind of in-memory secret that must
