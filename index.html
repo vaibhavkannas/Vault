@@ -925,7 +925,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.14 · 21:38';
+const APP_VERSION = '2026.09.14 · 21:50';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1408,6 +1408,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.14 · 21:50',
+    items: [
+      "Password-protected PDFs are now caught at upload and rejected with a clear message, instead of silently uploading a document that would later fail to open when you tried to view it.",
+    ]
+  },
   {
     version: '2026.09.14 · 21:38',
     items: [
@@ -3525,10 +3531,18 @@ function withTimeout(promise, ms, fallbackValue){
 // Rendered well above renderPdfInto's screen-sized viewing resolution, since OCR accuracy benefits
 // from more detail than a preview needs; capped so an unusually large page doesn't run OCR against
 // an oversized, slow-to-process image for no real accuracy gain.
-async function runOcrOnPdfFile(file, onProgress){
+// onOpened, if given, fires the instant getDocument() confirms the file actually opens — before the
+// page-by-page OCR loop below, which is the slow part for a multi-page PDF and deliberately NOT
+// something a caller should have to wait on just to know "is this file even readable." getDocument()
+// rejects with a PasswordException here (caught by the caller, not this function) well before that
+// loop ever starts for a password-protected PDF, so callers that only care about that specific case
+// don't need to wait for OCR either way — this callback just gives the "it's fine, proceed" signal
+// its own fast, dedicated moment instead of only being inferable once the whole OCR run finishes.
+async function runOcrOnPdfFile(file, onProgress, onOpened){
   await loadPdfJsScript();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
+  if(onOpened) onOpened();
   const pageTexts = [];
   for(let pageNum = 1; pageNum <= pdf.numPages; pageNum++){
     const text = await withTimeout(ocrOnePdfPage(pdf, pageNum, (pct) => onProgress && onProgress(pct, pageNum, pdf.numPages)), 25000, '');
@@ -5648,6 +5662,13 @@ let pendingExpirySuggested = false;
 let pendingCategorySuggested = false;
 let pendingTitleSuggested = false;
 let categoryManuallyChanged = false;
+// Set when pendingFile turns out to be a password-protected PDF (see the fileInput onchange
+// handler's PDF branch and runOcrOnPdfFile's onOpened callback) — a document Vault can never
+// actually open is worse than useless here: it can't be previewed, OCR'd, or searched, so it's
+// rejected at upload time rather than saved and left to fail confusingly later when viewed. Holds
+// the exact message to show; empty string means "not blocked." saveDocument() checks this
+// synchronously as a defense-in-depth backstop, not just the Save button's disabled attribute.
+let pendingFileBlockedReason = '';
 // No longer blocks Save — the user shouldn't have to wait for on-device OCR just to save a
 // document. Still tracked so saveDocument()/saveCameraDocument() know whether to kick off
 // extractTextForDocument() as a background backfill once OCR (which keeps running either way)
@@ -5658,11 +5679,11 @@ let pendingOcrRunning = false;
 // (runOcr / runOcrOnPdfFile) the moment a file is picked — so, like wireCropOverlay() warming
 // OpenCV early for the crop screen, kick off both loaders here non-blockingly (swallowing any
 // rejection) so they're very likely already loaded by the time they're actually awaited.
-function openAddModal(){ state.modal = 'add'; state.renewalUploadTargetId = null; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); loadTesseractScript().catch(() => {}); loadPdfJsScript().catch(() => {}); }
+function openAddModal(){ state.modal = 'add'; state.renewalUploadTargetId = null; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pendingFileBlockedReason = ''; pushAppHistoryState(); render(); loadTesseractScript().catch(() => {}); loadPdfJsScript().catch(() => {}); }
 // Opens the same 'add' modal, but flagged so saveDocument() links the new file to oldDocId as its
 // replacement and archives oldDocId once the upload succeeds — the direct "upload now" path from
 // the Renew flow, rather than only being able to pick an already-existing document as the reason.
-function openAddModalForRenewal(oldDocId){ state.modal = 'add'; state.renewalUploadTargetId = oldDocId; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pushAppHistoryState(); render(); loadTesseractScript().catch(() => {}); loadPdfJsScript().catch(() => {}); }
+function openAddModalForRenewal(oldDocId){ state.modal = 'add'; state.renewalUploadTargetId = oldDocId; pendingFile = null; pendingOcrText = ''; pendingExpirySuggested = false; pendingCategorySuggested = false; pendingTitleSuggested = false; categoryManuallyChanged = false; pendingOcrRunning = false; pendingFileBlockedReason = ''; pushAppHistoryState(); render(); loadTesseractScript().catch(() => {}); loadPdfJsScript().catch(() => {}); }
 function closeModal(){
   goBackOneLayer();
 }
@@ -5882,13 +5903,19 @@ function renderModal(){
       pendingExpirySuggested = false;
       pendingCategorySuggested = false;
       pendingTitleSuggested = false;
+      pendingFileBlockedReason = ''; // clears any block left over from a previously picked file
+      const addErrEl = document.getElementById('addErr');
+      if(addErrEl) addErrEl.style.display = 'none';
       const drop = document.getElementById('fileDrop');
       drop.textContent = f.name; drop.classList.add('has-file');
       document.getElementById('pdfNote').style.display = f.type === 'application/pdf' ? 'block' : 'none';
       // Deliberately doesn't disable Save while this runs — see saveDocument()'s own background-OCR
       // fallback below, which is what lets someone save immediately without waiting for on-device
       // OCR to finish at all. The progress bar and expiry/category suggestions are still worth
-      // showing if they do wait, just not required to.
+      // showing if they do wait, just not required to. The one exception is the PDF branch's own
+      // brief disable below, which only lasts until we know the file actually opens — see its
+      // comment for why that's a real guarantee, not just an optimistic race, without reintroducing
+      // a wait for full OCR.
       if(f.type.startsWith('image/')){
         pendingOcrRunning = true;
         const dataUrl = await readFileAsDataURL(f);
@@ -5901,13 +5928,30 @@ function renderModal(){
         pendingOcrRunning = false;
       } else if(f.type === 'application/pdf'){
         pendingOcrRunning = true;
+        // Held disabled only until runOcrOnPdfFile's onOpened callback fires — that's the fast
+        // getDocument() parse/decrypt step, not the slow page-by-page OCR loop after it, so this
+        // never waits on anything OCR itself would take a while on. Closes the narrow window where
+        // a reflexively-fast tap on Save could otherwise land before a password-protected PDF has
+        // even been detected as such — saveDocument() also checks pendingFileBlockedReason directly
+        // as a second, synchronous backstop regardless of this button state.
+        const saveBtn = document.getElementById('saveDocBtn');
+        if(saveBtn) saveBtn.disabled = true;
         try{
-          pendingOcrText = await runOcrOnPdfFile(f, setOcrProgress);
+          pendingOcrText = await runOcrOnPdfFile(f, setOcrProgress, () => { if(saveBtn) saveBtn.disabled = false; });
           applyExpirySuggestionIfEmpty('docExpiry', 'expirySuggestNote', pendingOcrText);
           syncReminderDaysEnabled('docExpiry', 'docReminderDays', 'docReminderWrap');
           applyCategorySuggestionIfUntouched('docCategory', 'categorySuggestNote', pendingOcrText);
           applyTitleSuggestionIfEmpty('docTitle', 'titleSuggestNote', pendingOcrText);
-        } catch(err){ console.error('PDF OCR failed', err); }
+        } catch(err){
+          if(err && err.name === 'PasswordException'){
+            pendingFileBlockedReason = "This PDF is password-protected — remove the password and re-upload.";
+            if(addErrEl){ addErrEl.textContent = pendingFileBlockedReason; addErrEl.style.display = 'block'; }
+            // saveBtn stays disabled — onOpened never fired for a file that never actually opened.
+          } else {
+            console.error('PDF OCR failed', err);
+            if(saveBtn) saveBtn.disabled = false; // the file itself is fine, just OCR/text-extraction failed — still savable, same as before
+          }
+        }
         document.getElementById('ocrProgress').style.display = 'none';
         pendingOcrRunning = false;
       }
@@ -6863,6 +6907,10 @@ async function saveDocument(){
 
   if(!title){ errEl.textContent='Enter a document title.'; errEl.style.display='block'; return; }
   if(!pendingFile){ errEl.textContent='Choose a file.'; errEl.style.display='block'; return; }
+  // Synchronous backstop, independent of the Save button's disabled attribute (see the fileInput
+  // onchange handler's PDF branch) — a password-protected PDF can't be previewed, OCR'd, or
+  // searched once saved, so this refuses to store one no matter how Save ended up getting triggered.
+  if(pendingFileBlockedReason){ errEl.textContent = pendingFileBlockedReason; errEl.style.display = 'block'; return; }
   errEl.style.display = 'none';
   saveBtn.disabled = true;
   saveBtn.textContent = 'Saving…';
