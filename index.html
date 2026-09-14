@@ -860,7 +860,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.14 · 12:58';
+const APP_VERSION = '2026.09.14 · 13:10';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -915,7 +915,7 @@ function categoryIconHtml(cat, size){
   // Legacy accounts may still carry a raw emoji in their category icon field — pass it through
   // rather than silently swapping in the wrong glyph for a category the user picked deliberately.
   const key = (cat && cat.icon) || 'doc';
-  return ICONS[key] ? icon(key, size) : `<span class="legacy-emoji-icon">${key}</span>`;
+  return ICONS[key] ? icon(key, size) : `<span class="legacy-emoji-icon">${escapeHtml(key)}</span>`;
 }
 
 function brandMarkSvg(size){
@@ -1339,6 +1339,16 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.14 · 13:10',
+    items: [
+      "Fixed: editing a document could silently discard changes made from another tab or device (pin, archive, offline status) by overwriting them back to stale values — edits now only touch the fields actually being changed.",
+      "Fixed: restoring a deleted document, or permanently deleting one, could — in rare failure cases — leave a document either silently destroyed later or orphaned in Drive with no record of it left anywhere. Both now happen in the safer order.",
+      "Fixed: pinning, archiving, or toggling offline access on a document could silently fail and revert on its own later with no explanation — these now tell you if something went wrong and undo the change cleanly.",
+      "Added a general safety net so an unexpected error shows a message instead of an interaction silently going dead.",
+      "Updated the Privacy Policy to disclose the optional email digest feature's backend data access, and clarified that App Lock only gates the app itself, not the same files via Google Drive directly."
+    ]
+  },
   {
     version: '2026.09.14 · 12:58',
     items: [
@@ -2434,6 +2444,25 @@ async function attemptSilentDriveRefresh(){
 function isAppOnline(){ return navigator.onLine && !state.isOfflineMode; }
 window.addEventListener('online', () => render());
 window.addEventListener('offline', () => render());
+
+// Defense-in-depth backstop, not a fix for any known bug — every render()/renderX() caller already
+// defensively guards against missing/malformed data, so nothing here is currently expected to
+// throw uncaught. But render() is called synchronously from nearly every click/input handler in the
+// app with no try/catch of its own, so a future rendering bug (or a not-yet-anticipated document
+// shape) would otherwise throw out of whatever interaction triggered it and leave it silently dead,
+// with no visible sign to the user that anything went wrong. This at least surfaces something
+// actionable instead of nothing. Throttled so a rapidly-repeating error (e.g. inside a timer)
+// can't spam a wall of toasts.
+let lastGlobalErrorToastAt = 0;
+function reportUnexpectedError(err){
+  console.error('Unexpected error', err);
+  const now = Date.now();
+  if(now - lastGlobalErrorToastAt < 4000) return;
+  lastGlobalErrorToastAt = now;
+  try{ toast('Something went wrong — try reloading the app.'); } catch(toastErr){ /* nothing further to fall back to */ }
+}
+window.addEventListener('error', (e) => reportUnexpectedError(e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => reportUnexpectedError(e.reason));
 
 // The viewport meta tag's maximum-scale/user-scalable=no (see <head>) doesn't actually stop
 // pinch/double-tap zoom on every browser — iOS Safari has deliberately ignored those two
@@ -3765,7 +3794,7 @@ function renderSettings(app){
       <div class="settings-section">
         <h2>Account</h2>
         <div class="acct-card">
-          ${state.user.photoURL ? `<img class="acct-avatar" src="${state.user.photoURL}" alt="">` : `<div class="acct-avatar"></div>`}
+          ${state.user.photoURL ? `<img class="acct-avatar" src="${escapeHtml(state.user.photoURL)}" alt="">` : `<div class="acct-avatar"></div>`}
           <div>
             <div class="acct-name">${escapeHtml(state.user.name)}</div>
             <div class="acct-email">${escapeHtml(state.user.email)}</div>
@@ -5999,7 +6028,7 @@ function renderModal(){
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3>Privacy Policy</h3>
-        <p class="sub">Last updated: September 5, 2026</p>
+        <p class="sub">Last updated: September 14, 2026</p>
         <p class="sub">Vault is a personal document storage app. This explains what data it accesses, where it's stored, and how you're in control of it.</p>
         <div class="section-title" style="margin-top:20px;">What Vault accesses, and why</div>
         <ul class="changelog-list">
@@ -6014,6 +6043,7 @@ function renderModal(){
           <li><strong>Document details</strong> (titles, categories, expiry dates, and similar metadata — not the files themselves) are stored in Google Cloud Firestore, under an account record tied to your unique Google user ID.</li>
           <li><strong>Persistent Drive access</strong>: so you don't have to re-approve access every time you open Vault, a Drive refresh token is stored server-side in a Google Apps Script project, associated with your account ID. This runs entirely on Google's own infrastructure and is never shared with any other party.</li>
           <li><strong>Text recognition (OCR)</strong>, used to help fill in details automatically when you add a document, runs entirely inside your browser using open-source software. Your document images are never uploaded to any OCR or AI service.</li>
+          <li><strong>Email digest (optional)</strong>: if you turn on the daily reminder for documents expiring soon (Settings &gt; Reminders &amp; Notifications), a scheduled backend process reads document titles, categories, and due dates — never file contents — across every account that has this turned on, in order to send that day's reminder emails. This runs with elevated access not limited by the per-account rules the app itself is normally bound by. You can turn this off any time in Settings.</li>
         </ul>
         <div class="section-title" style="margin-top:20px;">What Vault does not do</div>
         <ul class="changelog-list">
@@ -6426,7 +6456,7 @@ function renderModal(){
       <div class="modal-sheet">
         <div class="modal-close"><button id="closeModalBtn" aria-label="Close">×</button></div>
         <h3 id="lockSetupTitle">${alreadyEnabled ? 'Change PIN' : 'Set up app lock'}</h3>
-        <p class="sub" id="lockSetupSub">A quick PIN to re-open Vault, on top of staying signed in to Google. Stored only on this device — a new device starts fresh.</p>
+        <p class="sub" id="lockSetupSub">A quick PIN to re-open Vault, on top of staying signed in to Google. Stored only on this device — a new device starts fresh. This only gates the Vault app itself — while you're signed in, the same documents are still reachable directly through Google Drive.</p>
         <label class="field-label" id="newLockPinLabel" for="newLockPin">New PIN (4–8 digits)</label>
         <input type="password" inputmode="numeric" pattern="[0-9]*" id="newLockPin" maxlength="8" />
         <label class="field-label" id="confirmLockPinLabel" for="confirmLockPin">Confirm PIN</label>
@@ -7690,9 +7720,15 @@ async function saveEditedDocument(){
     if(newCat.id !== oldCat.id){
       await driveMoveFile(doc.driveFileId, oldCat.driveFolderId, newCat.driveFolderId);
     }
-    const updated = {...doc, title, category: newCat.id, expiry: expiry || null, reminderDays, tags};
-    await persistDocument(updated);
-    Object.assign(doc, updated);
+    // A targeted .update() with only the fields this form actually edits, not persistDocument()'s
+    // full .set() — this doc object in memory can be stale relative to Firestore (e.g. archived,
+    // pinned, keepOffline, or deletedAt changed from another tab/device since this one last loaded
+    // it, since nothing here uses a realtime listener). Spreading the whole local copy into a .set()
+    // would silently revert any of those fields back to what this tab last saw, discarding whatever
+    // changed elsewhere.
+    const changes = {title, category: newCat.id, expiry: expiry || null, reminderDays, tags};
+    await userDoc().collection('documents').doc(doc.id).update(changes);
+    Object.assign(doc, changes);
     closeModal();
     toast('Document updated');
   } catch(e){
@@ -7936,6 +7972,7 @@ function requestArchiveDocument(id){ state.modal = 'confirmArchive'; state.archi
 async function toggleArchive(id){
   const doc = state.documents.find(d => d.id === id);
   if(!doc) return;
+  const previousArchived = doc.archived, previousArchivedAt = doc.archivedAt;
   doc.archived = !doc.archived;
   // Needed so an optional "auto-delete archived documents after N days" setting has something to
   // measure age from — restoring clears it back to null rather than leaving a stale date behind
@@ -7944,7 +7981,17 @@ async function toggleArchive(id){
   render();
   toast(doc.archived ? 'Archived' : 'Restored', {onAction: () => toggleArchive(id)});
   try{ await userDoc().collection('documents').doc(id).update({archived: doc.archived, archivedAt: doc.archivedAt}); }
-  catch(e){ console.error('Failed to update archive state', e); }
+  catch(e){
+    // Was previously a silent console.error only — the flag could flip in the open tab while
+    // Firestore quietly kept the old value, with no sign anything went wrong until a later reload
+    // reverted it with no explanation. Same rollback-and-report shape as every other optimistic
+    // toggle in this file (toggleCategoryKeepOfflineDefault, the bulk actions).
+    console.error('Failed to update archive state', e);
+    doc.archived = previousArchived;
+    doc.archivedAt = previousArchivedAt;
+    render();
+    toast(friendlyCloudError(e));
+  }
 }
 
 // Guided path for retiring an expired document: archives it (same effect as the generic Archive
@@ -7988,11 +8035,17 @@ async function confirmRenewExpired(){
 async function togglePin(id){
   const doc = state.documents.find(d => d.id === id);
   if(!doc) return;
+  const previous = doc.pinned;
   doc.pinned = !doc.pinned;
   render();
   toast(doc.pinned ? 'Pinned to top' : 'Unpinned', {onAction: () => togglePin(id)});
   try{ await userDoc().collection('documents').doc(id).update({pinned: doc.pinned}); }
-  catch(e){ console.error('Failed to update pin state', e); }
+  catch(e){
+    console.error('Failed to update pin state', e);
+    doc.pinned = previous;
+    render();
+    toast(friendlyCloudError(e));
+  }
 }
 
 // Same optimistic-update-then-persist shape as togglePin above, but turning the flag ON additionally
@@ -8005,10 +8058,20 @@ async function togglePin(id){
 async function toggleKeepOffline(id){
   const doc = state.documents.find(d => d.id === id);
   if(!doc) return;
+  const previous = doc.keepOffline;
   doc.keepOffline = !doc.keepOffline;
   render();
   try{ await userDoc().collection('documents').doc(id).update({keepOffline: doc.keepOffline}); }
-  catch(e){ console.error('Failed to update keep-offline state', e); }
+  catch(e){
+    // Bail out here, not just log-and-continue — if the flag itself never actually saved, there is
+    // nothing for the caching logic below to correctly act on (it would otherwise download and
+    // cache a document Firestore still says isn't flagged keepOffline, or vice versa).
+    console.error('Failed to update keep-offline state', e);
+    doc.keepOffline = previous;
+    render();
+    toast(friendlyCloudError(e));
+    return;
+  }
 
   if(state.offlineDocIds.has(id)) await updateOfflineDocumentMetadata(doc);
   if(!doc.keepOffline) return; // OFF: flag flipped (and metadata un-protected, above) — nothing else to do
@@ -8072,8 +8135,15 @@ async function confirmDeleteDocument(){
     const deletedFolderId = await ensureDeletedFolderId();
     if(doc.driveFileId) await driveMoveFile(doc.driveFileId, categoryFor(doc.category).driveFolderId, deletedFolderId);
     const deletedAt = new Date().toISOString();
-    await userDoc().collection('documents').doc(id).update({deletedAt});
-    await db.collection('trashSubscribers').doc(state.user.uid).set({uid: state.user.uid, updatedAt: deletedAt});
+    // One atomic batch, not two sequential writes — the server-side trash-cleanup job
+    // (apps-script/Code.gs) only ever looks at accounts present in trashSubscribers, so if these
+    // were separate calls and the second one failed after the first succeeded, this document would
+    // sit in Recently Deleted forever, never actually auto-purged despite the "gone for good in N
+    // days" promise shown to the user.
+    const batch = db.batch();
+    batch.update(userDoc().collection('documents').doc(id), {deletedAt});
+    batch.set(db.collection('trashSubscribers').doc(state.user.uid), {uid: state.user.uid, updatedAt: deletedAt});
+    await batch.commit();
     doc.deletedAt = deletedAt;
     removeOfflineDocument(id);
     closeModal();
@@ -8096,9 +8166,18 @@ async function confirmPurgeDocument(){
   toast('Permanently deleted');
   removeOfflineDocument(id);
   try{
-    await userDoc().collection('documents').doc(id).delete();
+    // Drive first, Firestore record second — the reverse of the old order. This record already has
+    // deletedAt set from the earlier soft-delete, so if the Firestore delete below fails, the
+    // already-scheduled trash-cleanup job (apps-script/Code.gs) will simply find it again later and
+    // retry both. The old order could delete the Firestore record and then have the Drive call
+    // fail, leaving that file permanently orphaned in Drive with nothing anywhere left to reference
+    // it, ever — the app had already told the user it was "Permanently deleted" regardless.
     if(doc && doc.driveFileId) await driveDelete(doc.driveFileId);
-  } catch(e){ console.error('Failed to remove document from storage', e); }
+    await userDoc().collection('documents').doc(id).delete();
+  } catch(e){
+    console.error('Failed to remove document from storage', e);
+    toast('Removed from Vault, but cleanup hit a problem — it will be cleared automatically later.');
+  }
 }
 // Moves a trashed document's file back to its category folder and clears deletedAt — the reverse
 // of confirmDeleteDocument(). Optimistic like togglePin/toggleArchive: flips local state and
@@ -8110,15 +8189,33 @@ async function restoreDeletedDocument(id){
   doc.deletedAt = null;
   render();
   toast('Restored');
+  // Firestore's deletedAt is what the scheduled trash-cleanup job (apps-script/Code.gs) actually
+  // decides "permanently delete this" from — not which Drive folder the file happens to be sitting
+  // in. Writing that FIRST (not the Drive move first, as this used to do) means the worst case if
+  // the Drive move below then fails is just the file sitting in the wrong (Deleted) Drive folder
+  // while Firestore and the app both correctly already show it as restored — the cleanup job leaves
+  // it alone either way. The old order could leave a file already moved OUT of Deleted with
+  // Firestore still saying deletedAt was set, if the Firestore write failed after a successful Drive
+  // move — the cleanup job would still find and permanently destroy that file on schedule, despite
+  // the user having just "restored" it.
   try{
-    const deletedFolderId = await ensureDeletedFolderId();
-    if(doc.driveFileId) await driveMoveFile(doc.driveFileId, deletedFolderId, categoryFor(doc.category).driveFolderId);
     await userDoc().collection('documents').doc(id).update({deletedAt: null});
   } catch(e){
-    console.error('Failed to restore document', e);
+    console.error('Failed to restore document (Firestore write)', e);
     doc.deletedAt = previousDeletedAt;
     render();
     toast(friendlyCloudError(e));
+    return;
+  }
+  try{
+    const deletedFolderId = await ensureDeletedFolderId();
+    if(doc.driveFileId) await driveMoveFile(doc.driveFileId, deletedFolderId, categoryFor(doc.category).driveFolderId);
+  } catch(e){
+    // The document IS safely restored at this point (Firestore already agrees) — only the Drive
+    // folder move failed, a cosmetic mismatch, not something to revert or report as a failed
+    // restore.
+    console.error('Restored, but could not move the Drive file out of Deleted', e);
+    toast('Restored, but couldn’t move the file out of Deleted in Drive — it’s safe, just in the wrong folder there.');
   }
 }
 
@@ -8259,12 +8356,17 @@ async function performBulkDelete(){
     const failed = docs.length - succeeded.length;
     if(succeeded.length){
       const deletedAt = new Date().toISOString();
+      // trashSubscribers is folded into every chunk's own batch (not written once, separately,
+      // after all chunks commit) — same reasoning as confirmDeleteDocument's single-document path:
+      // if that separate write failed after the chunks above already succeeded, these documents
+      // would sit in Recently Deleted forever, since the cleanup job only visits accounts actually
+      // present in trashSubscribers. Repeating the same idempotent .set() across chunks is harmless.
       for(const chunk of chunkArray(succeeded, 400)){
         const batch = db.batch();
         chunk.forEach(d => batch.update(userDoc().collection('documents').doc(d.id), {deletedAt}));
+        batch.set(db.collection('trashSubscribers').doc(state.user.uid), {uid: state.user.uid, updatedAt: deletedAt});
         await batch.commit();
       }
-      await db.collection('trashSubscribers').doc(state.user.uid).set({uid: state.user.uid, updatedAt: deletedAt});
       succeeded.forEach(d => { d.deletedAt = deletedAt; removeOfflineDocument(d.id); });
     }
     render();
