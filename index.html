@@ -574,10 +574,13 @@
   /* padding (not just the inherited margin from .settings-section h4 above) so the actual tappable
      band reaches a comfortable touch-target height instead of just the 12px text's own line-height. */
   .settings-group-header{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;user-select:none;padding:10px 0;margin-bottom:2px;}
-  /* A light sub-label distinguishing two merged topics inside one collapsible group (e.g. "App
-     lock" vs "Quick Reference encryption" inside Security & Privacy) — deliberately smaller/lighter
-     than the group's own h4 so it never reads as a peer heading, just a divider between two halves. */
-  .settings-subheading{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);font-weight:500;margin:16px 0 8px;}
+  /* A sub-label distinguishing two merged topics inside one collapsible group (e.g. "App lock" vs
+     "Quick Reference encryption" inside Security & Privacy) — the group header's own uppercase +
+     letter-spaced "eyebrow" treatment is reserved exclusively for top-level group headers app-wide,
+     so this deliberately uses a different, smaller-scale treatment (normal case, no letter-spacing,
+     bolder weight for legibility at this size) rather than sharing that exact style, which used to
+     make an expanded group's subsections read as more top-level headers, not a level underneath. */
+  .settings-subheading{font-size:12.5px;text-transform:none;letter-spacing:normal;color:var(--ink);font-weight:600;margin:16px 0 8px;}
   .settings-subheading:first-of-type{margin-top:0;}
   /* Spacing before the folded-in Danger zone heading at the bottom of the About group — About's
      own content (Privacy Policy link + version tag) has no trailing margin to push against. */
@@ -831,7 +834,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.14 · 06:52';
+const APP_VERSION = '2026.09.14 · 06:55';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1308,6 +1311,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.14 · 06:55',
+    items: [
+      "Fixed: Settings subsection labels (\"App lock\", \"Quick Reference encryption\", \"Storage usage\", \"Backup & sync\") looked identical to the section headers above them — they now use a visually distinct, clearly secondary style."
+    ]
+  },
   {
     version: '2026.09.14 · 06:52',
     items: [
