@@ -524,7 +524,13 @@
      in, for precisely lining it up against the document's real edge. pointer-events:none so it never
      itself becomes a drag target; last in the stage's DOM order
      (see the crop screen markup) so it paints above the mask/handles with no z-index needed. */
-  .crop-magnifier{position:absolute;width:110px;height:110px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 12px rgba(0,0,0,0.45),0 0 0 1px rgba(0,0,0,0.15);pointer-events:none;background-repeat:no-repeat;display:none;overflow:hidden;}
+  /* opacity, not display:none, for the hidden state — see wireCropOverlay()'s own comment on why:
+     a display:none element generates no box at all, and some browser engines skip decoding a
+     background-image that's never actually going to be painted, which would silently defeat
+     setting it early specifically to pre-warm that decode before the first touch needs it.
+     pointer-events:none (already here) means staying "in" the render tree at opacity:0 costs
+     nothing functionally — it still can't be tapped or block anything underneath it. */
+  .crop-magnifier{position:absolute;width:110px;height:110px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 12px rgba(0,0,0,0.45),0 0 0 1px rgba(0,0,0,0.15);pointer-events:none;background-repeat:no-repeat;opacity:0;overflow:hidden;}
   .crop-magnifier::before, .crop-magnifier::after{content:'';position:absolute;background:#1a73e8;}
   .crop-magnifier::before{left:50%;top:0;bottom:0;width:1px;transform:translateX(-50%);}
   .crop-magnifier::after{top:50%;left:0;right:0;height:1px;transform:translateY(-50%);}
@@ -537,7 +543,7 @@
      glance, the same way iOS's own text-selection loupe is a teardrop pointing at its target rather
      than a plain disconnected circle. transform-origin:left keeps rotation anchored at the loupe's
      edge, since its length (not just its angle) changes every frame as the finger moves. */
-  .crop-magnifier-tail{position:absolute;height:2px;background:#fff;box-shadow:0 0 3px rgba(0,0,0,0.5);pointer-events:none;display:none;transform-origin:left center;}
+  .crop-magnifier-tail{position:absolute;height:2px;background:#fff;box-shadow:0 0 3px rgba(0,0,0,0.5);pointer-events:none;opacity:0;transform-origin:left center;}
   .progress-row{font-size:12.5px;color:var(--ink-soft);text-align:center;margin:10px 0;}
   .progress-track{height:4px;background:var(--surface-container);border-radius:4px;overflow:hidden;margin-bottom:6px;}
   .progress-fill{height:100%;background:var(--brass);transition:width 0.2s ease;}
@@ -744,16 +750,19 @@ if('serviceWorker' in navigator){
 
 // Warms OpenCV.js (script fetch + WASM compile) as early as physically possible in the app's own
 // lifecycle — not gated on sign-in at all, since it's a static library with no user data involved.
-// It's the library the crop screen's perspective-correction needs, and its one-time WASM compile is
-// genuine, synchronous, main-thread work: if it's still mid-compile exactly when a user's first
-// touch on a crop handle lands, that touch's own event handler queues behind it, felt as a one-time
-// input delay. openCameraModal() already tried to get ahead of this by warming here the moment the
-// camera opens, but that only gives it the few seconds between opening the camera and tapping the
-// shutter — not always enough, especially on a slower device, which is why this bug kept coming
-// back after that fix. Starting here instead — as soon as the app itself finishes loading, whether
-// or not the user ever opens the camera at all this session — gives it the entire time the user
-// spends signing in and browsing their vault before ever reaching for "add a document," which is
-// enough head start in practice for the compile to be long finished by the time it matters.
+// It's the library confirmCrop()'s perspective correction needs once the user finishes adjusting a
+// crop and taps confirm (see warpQuadToDataUrl()) — nothing during the drag interaction itself ever
+// touches OpenCV (onPointerDown/applyDragMove/paintQuad/showMagnifier don't reference cv in any
+// form), so this warm-up has no bearing on how responsive the crop handles themselves feel; a
+// separate, real cause was found and fixed for that (see wireCropOverlay()'s own comment on the
+// crop-magnifier's backgroundImage). This still earns its keep on its own terms though: without it,
+// a user who adjusts a crop quickly and taps confirm before OpenCV has ever been touched would
+// otherwise wait on its ~8MB script fetch + WASM compile right at that moment instead of it already
+// being ready. Starting here — as soon as the app itself finishes loading, whether or not the user
+// ever opens the camera at all this session — gives it the entire time the user spends signing in
+// and browsing their vault as a head start, well before openCameraModal()'s own (still useful,
+// still correct) warm-up call, which only covers the narrower window from opening the camera to
+// actually confirming a crop.
 // waitForOpenCvReady/loadOpenCvScript are declared later in this file but hoisted, so calling them
 // here is safe; loadOpenCvScript caches its own promise, so this and every later warm call (camera
 // open, wireCropOverlay itself) just await the same one in-flight/settled attempt, never a second
@@ -925,7 +934,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.15 · 07:12';
+const APP_VERSION = '2026.09.15 · 07:29';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1414,6 +1423,12 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.15 · 07:29',
+    items: [
+      "Actually fixed the crop screen's first-touch delay this time — measured and confirmed the real cause (the magnifying loupe was decoding the full photo from scratch on every single handle touch, not just OpenCV as previously thought) and pre-loads it once when the crop screen opens instead.",
+    ]
+  },
   {
     version: '2026.09.15 · 07:12',
     items: [
@@ -7433,6 +7448,18 @@ function wireCropOverlay(){
   const magnifier = document.getElementById('cropMagnifier');
   const magnifierTail = document.getElementById('cropMagnifierTail');
   if(state.cropEnhanceOn) img.style.filter = ENHANCE_FILTER;
+  // Set once, here, instead of on every showMagnifier() call — this is the actual, measured root
+  // cause of "first touch on a crop handle feels laggy" (confirmed by direct timing, not guessed):
+  // a real phone photo's data: URL can run into the many-megabytes range, and assigning THAT full
+  // string to a CSS background-image is a genuinely slow, synchronous, string-length-proportional
+  // operation — NOT a cheap property set, and NOT something the browser skips on repeat identical
+  // assignments either (measured as consistently slow on every call, not just the first). The
+  // previous fix attempt (warming OpenCV.js earlier) targeted the wrong cost entirely — OpenCV's
+  // compile has nothing to do with this drag interaction at all; it's only ever used later, by
+  // confirmCrop()'s perspective correction. Doing this assignment once, here, during setup (which
+  // already has some slack before the user's first touch, same reasoning as that OpenCV warm-up)
+  // means onPointerDown's first (and every) call to showMagnifier() below is just a display toggle.
+  if(magnifier) magnifier.style.backgroundImage = `url("${state.cropSourceDataUrl}")`;
 
   // Cached once per gesture (onPointerDown) / once at initial layout (initQuad), not re-read on
   // every pointermove — see the note above. The SVG viewBox only depends on this, so it's set here
@@ -7498,13 +7525,12 @@ function wireCropOverlay(){
   }
   function showMagnifier(){
     if(!magnifier) return;
-    magnifier.style.backgroundImage = `url("${state.cropSourceDataUrl}")`;
-    magnifier.style.display = 'block';
-    if(magnifierTail) magnifierTail.style.display = 'block';
+    magnifier.style.opacity = '1';
+    if(magnifierTail) magnifierTail.style.opacity = '1';
   }
   function hideMagnifier(){
-    if(magnifier) magnifier.style.display = 'none';
-    if(magnifierTail) magnifierTail.style.display = 'none';
+    if(magnifier) magnifier.style.opacity = '0';
+    if(magnifierTail) magnifierTail.style.opacity = '0';
   }
   function updateMagnifier(pt){
     if(!magnifier) return;
@@ -7540,7 +7566,11 @@ function wireCropOverlay(){
     startPointer = {x: e.clientX, y: e.clientY};
     startQuad = JSON.parse(JSON.stringify(state.cropQuad));
     refreshStageSize(); // stage size is fixed for the whole gesture — one read here, reused for every move
-    stage.setPointerCapture(e.pointerId);
+    // Guarded: a capture request can be rejected (e.g. the pointer already went away between this
+    // event being queued and handled) — losing capture just means a finger that drifts outside the
+    // stage mid-gesture stops being tracked a little sooner than ideal, not a reason to abort the
+    // whole drag over.
+    try{ stage.setPointerCapture(e.pointerId); } catch(err){}
     // No loupe for a whole-quad move — there's no single precise point to zoom in on, and the
     // finger isn't hiding an edge/corner the way it does for the other drag modes.
     if(mode !== 'move'){
