@@ -925,7 +925,7 @@ function daysSinceIso(isoString){
 
 // Bumped by hand on every push so a deployed build can be checked against what was actually pushed
 // — shown on the login and vault screens. Format: YYYY.MM.DD · HH:MM (24h, no seconds).
-const APP_VERSION = '2026.09.14 · 21:50';
+const APP_VERSION = '2026.09.15 · 07:12';
 
 /* ---------- icon system ----------
    Inline SVG (stroke-based, 24x24 viewBox) replacing emoji glyphs throughout the app, so color
@@ -1026,6 +1026,12 @@ function wireIconPicker(inputId){
 // working through the sign-in / Drive-token dance — see the onAuthStateChanged listener below for
 // why this guard against the two racing is needed.
 let authFlowInProgress = false;
+// The cold-start flow's own in-flight token-mint attempt, so driveFetch() can wait for it instead
+// of immediately failing — see driveFetch()'s own comment on why. Sits alongside authFlowInProgress
+// (that one gates rendering/refresh decisions; this one is the actual promise to await) and is
+// always a promise that resolves, never rejects, regardless of whether the mint itself succeeded —
+// driveFetch() only cares that the attempt has settled one way or another, not its outcome.
+let coldStartTokenSettled = null;
 
 // Fresh defaults for the Settings screen's collapsible groups (see renderSettings()) — every
 // collapsible group starts collapsed, both on first load and again after each sign-out, so a
@@ -1408,6 +1414,14 @@ const WELCOME_FEATURES = [
 // a change is worth telling users about; skip purely internal fixes with nothing to show. Each item
 // should read like something you'd tell a friend, not a commit message.
 const CHANGELOG = [
+  {
+    version: '2026.09.15 · 07:12',
+    items: [
+      "Fixed a false \"Google Drive connection expired\" message showing right after signing in or reopening the app, even while everything was actually connecting normally in the background — it also blocked the Reconnect button from doing anything useful, since there was nothing to reconnect.",
+      "Fixed documents (including ones you'd just uploaded) sometimes failing to open right after signing in, while the app was still finishing its normal connection to Google Drive.",
+      "Fixed certain photos (most commonly HEIC photos saved by iPhone cameras) showing only a broken image icon with no explanation — Vault now tells you it can't preview that format and points you to Share or Download instead.",
+    ]
+  },
   {
     version: '2026.09.14 · 21:50',
     items: [
@@ -2649,6 +2663,15 @@ function applyDriveTokenResponse(tokenResp){
 // call here throws DRIVE_TOKEN_EXPIRED so callers can prompt the user to reconnect instead of
 // surfacing a raw 401.
 async function driveFetch(url, options={}){
+  if(!driveTokenValid() && coldStartTokenSettled){
+    // The cold-start flow's own initial connect is still in flight (see its own comment) — most
+    // likely reason: paintFromLocalCacheIfAny() already painted the vault from local cache, and
+    // something (opening a just-uploaded document, an action menu item) reached Drive before that
+    // flow's token mint resolved. Waiting the (short, bounded) remainder of that one attempt instead
+    // of failing immediately is the difference between "briefly connecting" and a false "your
+    // connection expired" for a document that was, in fact, just uploaded moments ago.
+    await coldStartTokenSettled;
+  }
   if(!driveTokenValid()){
     const err = new Error('Your Google Drive connection expired.');
     err.code = 'DRIVE_TOKEN_EXPIRED';
@@ -4886,7 +4909,9 @@ function renderVault(app){
   if(state.showDeleted) return renderDeletedView(app);
   // Try to self-heal before ever showing "Reconnect" — see attemptSilentDriveRefresh(). Fire-and-
   // forget: render() must stay synchronous, and a successful attempt re-renders itself.
-  if(!state.isOfflineMode && !driveTokenValid()) attemptSilentDriveRefresh();
+  // authFlowInProgress is excluded here for the same reason it's excluded from the banner below —
+  // see that condition's own comment.
+  if(!state.isOfflineMode && !driveTokenValid() && !authFlowInProgress) attemptSilentDriveRefresh();
   // Soft-deleted documents (see confirmDeleteDocument/runArchiveCleanup) never show in the normal
   // active/archived views regardless of their archived flag — they only ever appear in the
   // "Recently deleted" view above.
@@ -4938,6 +4963,17 @@ function renderVault(app){
   // captureExistingDocGrids().
   const existingDocGrids = captureExistingDocGrids(app);
 
+  // The "Google Drive connection expired" banner below was designed for a token expiring
+  // MID-session (rare — the background refresh timer normally catches that first) and assumed
+  // driveTokenValid() was always already true the first time this screen ever rendered, since the
+  // old cold-start flow never showed the vault until after a token was already applied.
+  // paintFromLocalCacheIfAny() changed that: it paints this exact screen from local cache WHILE the
+  // real cold-start connect is still in flight, during which driveTokenValid() is legitimately
+  // false for a normal, working reason — not because anything actually expired. The banner's own
+  // condition (below) excludes authFlowInProgress (true for that flow's entire duration, see
+  // auth.onAuthStateChanged) to tell the two cases apart; without that, this alarming banner — and
+  // the "online" dot right next to it in the header, which reads general network reachability, not
+  // Drive-token status — contradicted each other on every single cold open.
   app.innerHTML = `
     <header class="topbar">
       <div class="brand"><div class="brand-mark">${brandMarkSvg(20)}</div><h1 class="brand-name">Vault</h1><span class="conn-indicator ${isAppOnline() ? 'online' : 'offline'}" title="${isAppOnline() ? 'Online' : escapeHtml(state.offlineReason || 'Offline')}" role="status" aria-label="${isAppOnline() ? 'Online' : escapeHtml(state.offlineReason || 'Offline')}"><span class="conn-dot"></span>${isAppOnline() ? '' : '<span class="conn-label">Offline</span>'}</span></div>
@@ -4960,7 +4996,7 @@ function renderVault(app){
           <span class="rtitle">You're offline — only documents you've viewed before can be opened${state.offlineReason ? `<br><span class="cat-offline-hint">${escapeHtml(state.offlineReason)}</span>` : ''}</span>
           <button class="icon-btn" id="reconnectDriveBtn">Retry</button>
         </div>
-      ` : !driveTokenValid() ? `
+      ` : (!driveTokenValid() && !authFlowInProgress) ? `
         <div class="reminder-card urgent">
           <span class="rtitle">Google Drive connection expired</span>
           <button class="icon-btn" id="reconnectDriveBtn">Reconnect</button>
@@ -8012,6 +8048,30 @@ async function renderViewedBlob(blob, doc, id){
   if(doc.mimeType === 'application/pdf'){
     await renderPdfInto(contentEl, blob, id);
   } else {
+    // A plain <img> tag has no promise/exception to catch when its bytes can't be decoded as an
+    // image — it just fails silently, leaving the browser's own broken-image icon with no
+    // explanation (the actual bug report this fixes: "shows the name and a small image icon but
+    // doesn't load the actual document"). The most common real cause is a format the file's own
+    // mimeType claims to be viewable but that browsers can't decode inline — HEIC/HEIF photos
+    // (the default format iPhone cameras save in) are the one people actually hit, since the file
+    // picker's accept="image/*" happily accepts them, but no mainstream desktop browser (and most
+    // mobile ones outside Safari's own native photo views) can paint HEIC into an <img> or <canvas>.
+    // Checking with a throwaway Image() first — instead of optimistically inserting the real <img>
+    // and only finding out later — means never leaving a half-broken zoomable view on screen for a
+    // file that was never going to render anyway; if it can't be checked and stays undecided this
+    // element itself is long gone since the modal's since closed, so we bail out either way.
+    const canDecode = await new Promise((resolve) => {
+      const probe = new Image();
+      probe.onload = () => resolve(true);
+      probe.onerror = () => resolve(false);
+      probe.src = url;
+    });
+    if(state.modal !== 'viewFile' || state.viewDocId !== id) return;
+    if(!canDecode){
+      const formatLabel = (doc.mimeType || '').split('/')[1];
+      contentEl.innerHTML = `<p class="error-text">This ${formatLabel ? formatLabel.toUpperCase() + ' ' : ''}image can't be previewed here — your browser can't display this format inline. Use Share or Download to open it in another app.</p>`;
+      return;
+    }
     contentEl.innerHTML = `<div class="view-zoom-inner"><img src="${url}" alt="${escapeHtml(doc.title)}" style="max-width:100%;border-radius:8px;display:block;margin:0 auto;"></div>`;
     wireViewFileZoom(contentEl);
   }
@@ -8823,6 +8883,13 @@ async function shareDocumentFile(docId, btnId = 'shareFileBtn', errElId = 'share
    consent popup, still within this same click's gesture). Doesn't touch the Firebase auth
    session or any already-loaded documents, since identity and Drive access are separate. */
 async function reconnectDrive(){
+  // Without this, a slow attempt (acquireDriveAccess() can mean a real network round trip, and
+  // Apps Script's own cold-start latency has been known to run into several seconds) looked
+  // completely dead — same click, same label, nothing on screen changing — which read as "the
+  // button doesn't work" even when it was still genuinely in progress.
+  const btn = document.getElementById('reconnectDriveBtn');
+  const originalLabel = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Reconnecting…'; }
   try{
     const tokenResp = await acquireDriveAccess();
     applyDriveTokenResponse(tokenResp);
@@ -8838,6 +8905,7 @@ async function reconnectDrive(){
     // Refreshes the offline banner's reason too, not just the toast — the retry may have failed
     // for a different reason than the original cold-open failure (or just confirms the same one).
     if(state.isOfflineMode){ state.offlineReason = describeDriveAuthError(e); render(); }
+    else if(btn){ btn.disabled = false; btn.textContent = originalLabel; } // render() above already redraws a fresh button in the isOfflineMode case; this restores it when render() isn't called at all
     toast(state.isOfflineMode ? 'Still offline — try again once you have a connection.' : 'Could not reconnect — please try again.');
   }
 }
@@ -9611,6 +9679,13 @@ auth.onAuthStateChanged(async (user) => {
   // the Apps Script round trip) should delay the other from even starting. Kicked off before
   // paintFromLocalCacheIfAny() below (not after) so neither promise loses time to that local read.
   const tokenPromise = mintDriveAccessTokenWithRetry();
+  // Lets driveFetch() (see its own comment) wait for THIS specific attempt instead of failing
+  // immediately if something tries to reach Drive while it's still in flight — e.g. tapping a
+  // just-uploaded document during the brief window paintFromLocalCacheIfAny() below can leave open
+  // before this resolves. Deliberately swallows the outcome (.catch(()=>{})): driveFetch only needs
+  // to know the attempt has settled one way or another, then re-checks driveTokenValid() itself —
+  // it has no separate use for the resolved value or a rejection here.
+  coldStartTokenSettled = tokenPromise.then(() => {}, () => {});
   const metaReadsPromise = prefetchUserMetaReads(user.uid);
   await paintFromLocalCacheIfAny(user.uid);
   try{
@@ -9642,6 +9717,7 @@ auth.onAuthStateChanged(async (user) => {
     }
   } finally {
     authFlowInProgress = false;
+    coldStartTokenSettled = null;
   }
 });
 
